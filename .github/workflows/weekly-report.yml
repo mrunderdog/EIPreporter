@@ -1,0 +1,52 @@
+name: EIPreporter Weekly Report
+
+on:
+  schedule:
+    - cron: "0 0 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  weekly-report:
+    runs-on: ubuntu-latest
+    env:
+      GITHUB_TOKEN: ${{ github.token }}
+      TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+      TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "26"
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Run tests
+        run: npm test
+
+      - name: Run typecheck
+        run: npm run typecheck
+
+      - name: Collect EIP and ERC proposals
+        run: npm run collect
+
+      - name: Generate weekly HTML report
+        run: npm run report:html -- --trend-days 180 --change-days 7
+
+      - name: Upload weekly HTML artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: eipreporter-weekly-html
+          path: reports/*.html
+          if-no-files-found: error
+
+      - name: Send weekly report to Telegram
+        run: npm run send:weekly -- --trend-days 180 --change-days 7

@@ -1,0 +1,24 @@
+{
+  "name": "eipreporter",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "EIP/ERC collector, change detector, and weekly radar reporter",
+  "scripts": {
+    "collect": "node --experimental-strip-types src/cli/collect.ts",
+    "diff": "node --experimental-strip-types src/cli/diff.ts",
+    "report:weekly": "node --experimental-strip-types src/cli/weekly-report.ts",
+    "report:html": "node --experimental-strip-types src/cli/html-report.ts",
+    "send:test": "node --experimental-strip-types src/cli/send-test.ts",
+    "send:weekly": "node --experimental-strip-types src/cli/send-weekly.ts",
+    "test": "node --experimental-strip-types --test tests/*.test.ts",
+    "typecheck": "tsc --noEmit"
+  },
+  "devDependencies": {
+    "@types/node": "^24.0.0",
+    "typescript": "^5.9.0"
+  },
+  "engines": {
+    "node": ">=26.0.0"
+  }
+}
