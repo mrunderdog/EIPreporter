@@ -65,7 +65,9 @@ export function writeWeeklyHtmlReport(
   const html = generateWeeklyHtml(report);
   writeFileSync(outputPath, html, { encoding: "utf8" });
   writeFileSync(resolve(directory, `weekly-${report.generatedAt.slice(0, 10)}.compact.json`), generateWeeklyCompactJson(report), { encoding: "utf8" });
-  writeFileSync(resolve(directory, `weekly-${report.generatedAt.slice(0, 10)}.quality.json`), generateWeeklyQualityJson(report, html), { encoding: "utf8" });
+  const qualityPath = resolve(directory, `weekly-${report.generatedAt.slice(0, 10)}.quality.json`);
+  writeFileSync(qualityPath, generateWeeklyQualityJson(report, html), { encoding: "utf8" });
+  JSON.parse(readFileSync(qualityPath, "utf8"));
   if (options.debug === true || process.env.DEBUG_REPORT === "1") writeWeeklyDebugSnapshot(report);
   return outputPath;
 }
@@ -251,7 +253,7 @@ export function generateWeeklyQualityJson(report: WeeklyRadarReport, html = gene
     qualityCheck("aa-f10-excluded-wording", aaExcludedWording(embeddedApi, visibleHtml), "fail", "AA-F10", "baseline-not-linked tracks are not rendered as monitoring excluded"),
     qualityCheck("aa-f11-raw-post-wording", aaRawPostWording(embeddedApi, visibleHtml), "fail", "AA-F11", "AA raw discussion activity is explicitly labeled"),
     qualityCheck("aa-f12-direction-evidence", aaDirectionEvidenceV2(embeddedApi), "fail", "AA-F12", "AA direction follows qualifying evidence"),
-    qualityCheck("aa-f13-non-aa-regression", aaNonAaRegression(embeddedApi), "fail", "AA-F13", "non-AA dashboard values remain stable"),
+    qualityCheck("aa-f13-non-aa-structural-regression", aaNonAaRegression(embeddedApi), "fail", aaNonAaRegressionObserved(embeddedApi), "AA-F13: AA renderer does not mutate non-AA canonical structures"),
     qualityCheck("aa-baseline-recent-separation", aaBaselineRecentSeparation(embeddedApi, visibleHtml), "fail", "AA-09", "baseline proposals and recent signals are rendered separately"),
     qualityCheck("aa-direction-evidence-v2", aaDirectionEvidenceV2(embeddedApi), "fail", "AA-10", "AA direction matches specification/discussion evidence state"),
     qualityCheck("aa-implementation-state", aaImplementationState(embeddedApi, visibleHtml), "fail", "AA-12", "implementation not collected is rendered as 미수집"),
@@ -337,11 +339,20 @@ export function generateWeeklyQualityJson(report: WeeklyRadarReport, html = gene
   const blockingChecks = checks.filter((check) =>
     check.severity === "fail" && (!sparseActivityFixture || sparseRequiredCheckIds.has(check.id))
   );
-  return `${JSON.stringify({ generatedAt: report.generatedAt, passed: blockingChecks.every((check) => check.passed), checks, failedForbiddenPairs, failedForbiddenRelations, staleKnowledgeFields, forbiddenTextMatches, discussionIntegrityFailures }, null, 2)}\n`;
+  return `${JSON.stringify({ generatedAt: report.generatedAt, reportDate: report.generatedAt.slice(0, 10), reportAsOf: report.generatedAt, passed: blockingChecks.every((check) => check.passed !== false), checks, failedForbiddenPairs, failedForbiddenRelations, staleKnowledgeFields, forbiddenTextMatches, discussionIntegrityFailures }, null, 2)}\n`;
 }
 
-function qualityCheck(id: string, passed: boolean, severity: "fail" | "warning", observed: string, expected: string, affectedIds: string[] = []) {
-  return { id, passed, severity, observed, expected, affectedIds, failureReason: passed ? "" : `${id} did not meet expected condition.` };
+function qualityCheck(id: string, passed: boolean | null, severity: "fail" | "warning", observed: string, expected: string, affectedIds: string[] = []) {
+  return {
+    id,
+    status: passed === null ? "not_applicable" : passed ? "passed" : "failed",
+    passed,
+    severity,
+    observed,
+    expected,
+    affectedIds,
+    failureReason: passed === false ? `${id} did not meet expected condition.` : "",
+  };
 }
 
 function safeJsonParse(value: string): unknown {
@@ -1000,21 +1011,44 @@ function aaRawPostWording(embeddedApi: unknown, visibleHtml: string): boolean {
 
 function aaNonAaRegression(embeddedApi: unknown): boolean {
   const dashboard = dashboardFromApi(embeddedApi);
-  if (!dashboard) return false;
-  const attentionTop3 = dashboard.developerAttention.activity.slice(0, 3).map((item) => item.proposalId).join(",");
+  const snapshot = intelligenceSnapshotFromApi(embeddedApi);
+  if (!dashboard || !snapshot) return false;
   const domainDiscussionConsistent = dashboard.technologyLandscape.every((domain) => {
     const ids = new Set(stringList(domain.discussion?.rawPostIds));
     return domain.rawDiscussionPosts === ids.size && domain.discussion?.rawPostCount === ids.size;
   });
-  const kgldCount = dashboard.kgldWatch.groups.research_now.length + dashboard.kgldWatch.groups.monitor.length + dashboard.kgldWatch.groups.no_action.length;
-  return attentionTop3 === "ERC-8183,EIP-8037,EIP-8151"
-    && dashboard.developerAttention.summary.rawPosts === new Set(dashboard.developerAttention.activity.flatMap((item) => stringList(item.rawPostIds))).size
+  const technologyAggregate = snapshot.aggregates.discussion?.technology_map_set as { rawPostIds?: string[]; rawPostCount?: number } | undefined;
+  const technologyUnion = new Set(dashboard.technologyLandscape.flatMap((domain) => stringList(domain.discussion?.rawPostIds)));
+  const developerAggregate = snapshot.aggregates.discussion?.developer_activity_set as { rawPosts?: number; activeThreads?: number; rawPostIds?: string[] } | undefined;
+  const developerUnion = new Set(dashboard.developerAttention.activity.flatMap((item) => stringList(item.rawPostIds)));
+  const executiveTop3 = dashboard.executivePulse.whatChanged.magiciansActivity.map((item) => item.proposalIds[0]).join(",");
+  const attentionTop3 = dashboard.developerAttention.activity.slice(0, 3).map((item) => item.proposalId).join(",");
+  const kgldGroups = dashboard.kgldWatch.groups;
+  const kgldCount = kgldGroups.research_now.length + kgldGroups.monitor.length + kgldGroups.no_action.length;
+  return Boolean(developerAggregate && technologyAggregate)
+    && developerAggregate!.rawPosts === developerUnion.size
+    && dashboard.developerAttention.summary.rawPosts === developerUnion.size
     && dashboard.developerAttention.summary.activeThreads === dashboard.developerAttention.activity.length
+    && developerAggregate!.activeThreads === dashboard.developerAttention.summary.activeThreads
+    && stringList(developerAggregate!.rawPostIds).length === developerAggregate!.rawPosts
+    && executiveTop3 === attentionTop3
     && domainDiscussionConsistent
-    && dashboard.technologyLandscape.length === 8
-    && dashboard.dataQuality.current7dUsableEventCount === 0
+    && technologyAggregate!.rawPostCount === technologyUnion.size
+    && stringList(technologyAggregate!.rawPostIds).every((id) => technologyUnion.has(id))
+    && Array.isArray(kgldGroups.research_now)
+    && Array.isArray(kgldGroups.monitor)
+    && Array.isArray(kgldGroups.no_action)
     && kgldCount === 3
-    && dashboard.developerAttention.activity.some((item) => item.proposalId === "EIP-8151" && item.title === "Account Code Restricted ecRecover");
+    && dashboard.technologyLandscape.length === 8
+    && dashboard.focusProgress.every((topic) => topic.topicId && Array.isArray(topic.proposalIds) && topic.progress)
+    && dashboard.accountAbstraction.tracks.length === 12
+    && snapshotHashConsistency(embeddedApi);
+}
+
+function aaNonAaRegressionObserved(embeddedApi: unknown): string {
+  const dashboard = dashboardFromApi(embeddedApi);
+  const aggregate = intelligenceSnapshotFromApi(embeddedApi)?.aggregates.discussion?.technology_map_set as { rawPostCount?: number } | undefined;
+  return `developer=${dashboard?.developerAttention.summary.rawPosts ?? "n/a"} posts/${dashboard?.developerAttention.summary.activeThreads ?? "n/a"} threads; top3=${dashboard?.developerAttention.activity.slice(0, 3).map((item) => item.proposalId).join("/") ?? "n/a"}; technologyMap=${aggregate?.rawPostCount ?? "n/a"}; domains=${dashboard?.technologyLandscape.length ?? "n/a"}; focus=${dashboard?.focusProgress.length ?? "n/a"}; AA=${dashboard?.accountAbstraction.tracks.length ?? "n/a"}`;
 }
 
 function aaBaselineRecentSeparation(embeddedApi: unknown, visibleHtml: string): boolean {
@@ -1376,28 +1410,115 @@ function finalRcGoldenTechnologyMapActivity(embeddedApi: unknown): boolean {
     && aggregate.rawPostIds.every((id) => domainUnion.has(id));
 }
 
-const GOLDEN_FIXTURES: Record<string, {
+type GoldenFixture = {
+  fixtureId: string;
+  fixtureVersion: string;
+  reportDate: string;
+  reportAsOf: string;
+  inputSnapshotHash: string;
   developerActivity: { postCount: number; threadCount: number; topProposals: string[] };
   technologyMap: { postCount: number };
-}> = {
-  "2026-07-30": {
-    developerActivity: { postCount: 44, threadCount: 8, topProposals: ["ERC-8183", "EIP-8037", "EIP-8151"] },
-    technologyMap: { postCount: 7 },
-  },
-  "2026-07-31": {
-    developerActivity: { postCount: 32, threadCount: 6, topProposals: ["ERC-8183", "EIP-8037", "EIP-8151"] },
-    technologyMap: { postCount: 5 },
-  },
 };
 
-function reportDateFromSnapshot(embeddedApi: unknown): string {
-  return intelligenceSnapshotFromApi(embeddedApi)?.metadata.generatedAt?.slice(0, 10) ?? "unknown";
+const GOLDEN_FIXTURE_VERSION = "final-fixture/v2";
+
+const GOLDEN_FIXTURES: GoldenFixture[] = [
+  goldenFixture({
+    fixtureId: "final-rc-2026-07-30T05:57:50.976Z",
+    reportDate: "2026-07-30",
+    reportAsOf: "2026-07-30T05:57:50.976Z",
+    developerActivity: { postCount: 44, threadCount: 8, topProposals: ["ERC-8183", "EIP-8037", "EIP-8151"] },
+    technologyMap: { postCount: 7 },
+  }),
+  goldenFixture({
+    fixtureId: "rolling-2026-07-31-fixture-a",
+    reportDate: "2026-07-31",
+    reportAsOf: "2026-07-31T00:00:00.000Z",
+    developerActivity: { postCount: 32, threadCount: 6, topProposals: ["ERC-8183", "EIP-8037", "EIP-8151"] },
+    technologyMap: { postCount: 5 },
+  }),
+  goldenFixture({
+    fixtureId: "rolling-2026-07-31-fixture-b",
+    reportDate: "2026-07-31",
+    reportAsOf: "2026-07-31T19:00:00.000Z",
+    developerActivity: { postCount: 13, threadCount: 5, topProposals: ["EIP-8037", "EIP-8151", "ERC-8330"] },
+    technologyMap: { postCount: 5 },
+  }),
+];
+
+function goldenFixture(input: Omit<GoldenFixture, "fixtureVersion" | "inputSnapshotHash">): GoldenFixture {
+  const versioned = { ...input, fixtureVersion: GOLDEN_FIXTURE_VERSION };
+  return {
+    ...versioned,
+    inputSnapshotHash: goldenFixtureInputHash(versioned),
+  };
 }
 
-function finalGoldenFixtureDateScope(embeddedApi: unknown): boolean {
-  const date = reportDateFromSnapshot(embeddedApi);
-  const fixture = GOLDEN_FIXTURES[date];
-  if (!fixture) return true;
+function goldenFixtureInputHash(input: Omit<GoldenFixture, "inputSnapshotHash">) {
+  return createHash("sha256").update(stableJson({
+    fixtureVersion: input.fixtureVersion,
+    reportDate: input.reportDate,
+    reportAsOf: input.reportAsOf,
+    developerActivity: input.developerActivity,
+    technologyMap: input.technologyMap,
+  })).digest("hex");
+}
+
+function reportDateFromSnapshot(embeddedApi: unknown): string {
+  const metadata = intelligenceSnapshotFromApi(embeddedApi)?.metadata;
+  return metadata?.reportDate ?? metadata?.generatedAt?.slice(0, 10) ?? "unknown";
+}
+
+function reportAsOfFromSnapshot(embeddedApi: unknown): string {
+  const metadata = intelligenceSnapshotFromApi(embeddedApi)?.metadata;
+  return metadata?.reportAsOf ?? metadata?.generatedAt ?? "unknown";
+}
+
+function inputSnapshotHashFromSnapshot(embeddedApi: unknown): string {
+  const snapshot = intelligenceSnapshotFromApi(embeddedApi);
+  if (!snapshot) return "unknown";
+  return snapshot.metadata.inputSnapshotHash ?? goldenFixtureInputHash({
+    fixtureId: "observed",
+    fixtureVersion: GOLDEN_FIXTURE_VERSION,
+    reportDate: snapshot.metadata.reportDate ?? snapshot.metadata.generatedAt?.slice(0, 10) ?? "unknown",
+    reportAsOf: snapshot.metadata.reportAsOf ?? snapshot.metadata.generatedAt ?? "unknown",
+    developerActivity: observedDeveloperFixture(snapshot),
+    technologyMap: observedTechnologyMapFixture(snapshot),
+  });
+}
+
+function observedDeveloperFixture(snapshot: ReturnType<typeof intelligenceSnapshotFromApi>): GoldenFixture["developerActivity"] {
+  const dashboard = snapshot?.views;
+  return {
+    postCount: dashboard?.developerAttention.summary.rawPosts ?? -1,
+    threadCount: dashboard?.developerAttention.summary.activeThreads ?? -1,
+    topProposals: dashboard?.developerAttention.activity.slice(0, 3).map((item) => item.proposalId) ?? [],
+  };
+}
+
+function observedTechnologyMapFixture(snapshot: ReturnType<typeof intelligenceSnapshotFromApi>): GoldenFixture["technologyMap"] {
+  const aggregate = snapshot?.aggregates.discussion?.technology_map_set as { rawPostCount?: number } | undefined;
+  return { postCount: aggregate?.rawPostCount ?? -1 };
+}
+
+function matchingGoldenFixture(embeddedApi: unknown): GoldenFixture | undefined {
+  const snapshot = intelligenceSnapshotFromApi(embeddedApi);
+  const metadata = snapshot?.metadata;
+  if (!snapshot || !metadata) return undefined;
+  const reportDate = metadata.reportDate ?? metadata.generatedAt?.slice(0, 10);
+  const reportAsOf = metadata.reportAsOf ?? metadata.generatedAt;
+  const inputHash = inputSnapshotHashFromSnapshot(embeddedApi);
+  return GOLDEN_FIXTURES.find((fixture) =>
+    fixture.fixtureVersion === GOLDEN_FIXTURE_VERSION
+    && fixture.reportDate === reportDate
+    && fixture.reportAsOf === reportAsOf
+    && fixture.inputSnapshotHash === inputHash
+  );
+}
+
+function finalGoldenFixtureDateScope(embeddedApi: unknown): boolean | null {
+  const fixture = matchingGoldenFixture(embeddedApi);
+  if (!fixture) return null;
   const dashboard = dashboardFromApi(embeddedApi);
   const aggregate = intelligenceSnapshotFromApi(embeddedApi)?.aggregates.discussion?.technology_map_set as { rawPostCount?: number } | undefined;
   const top3 = dashboard?.developerAttention.activity.slice(0, 3).map((item) => item.proposalId) ?? [];
@@ -1410,14 +1531,18 @@ function finalGoldenFixtureDateScope(embeddedApi: unknown): boolean {
 function finalGoldenObserved(embeddedApi: unknown): string {
   const dashboard = dashboardFromApi(embeddedApi);
   const date = reportDateFromSnapshot(embeddedApi);
+  const reportAsOf = reportAsOfFromSnapshot(embeddedApi);
+  const inputHash = inputSnapshotHashFromSnapshot(embeddedApi);
   const aggregate = intelligenceSnapshotFromApi(embeddedApi)?.aggregates.discussion?.technology_map_set as { rawPostCount?: number } | undefined;
   const top3 = dashboard?.developerAttention.activity.slice(0, 3).map((item) => item.proposalId).join("/") ?? "";
-  return `reportDate=${date}; developer=${dashboard?.developerAttention.summary.rawPosts ?? "n/a"} posts, ${dashboard?.developerAttention.summary.activeThreads ?? "n/a"} threads, ${top3}; technologyMap=${aggregate?.rawPostCount ?? "n/a"} posts`;
+  const fixture = matchingGoldenFixture(embeddedApi);
+  const status = fixture ? `matched fixture=${fixture.fixtureId}` : "live rolling snapshot; no matching frozen fixture";
+  return `status=${fixture ? "applicable" : "not_applicable"}; reportDate=${date}; reportAsOf=${reportAsOf}; inputSnapshotHash=${inputHash}; ${status}; developer=${dashboard?.developerAttention.summary.rawPosts ?? "n/a"} posts, ${dashboard?.developerAttention.summary.activeThreads ?? "n/a"} threads, ${top3}; technologyMap=${aggregate?.rawPostCount ?? "n/a"} posts`;
 }
 
 function finalGoldenExpected(embeddedApi: unknown): string {
-  const fixture = GOLDEN_FIXTURES[reportDateFromSnapshot(embeddedApi)];
-  if (!fixture) return "status=not_applicable; No golden fixture registered for report date";
+  const fixture = matchingGoldenFixture(embeddedApi);
+  if (!fixture) return "matching reportDate + reportAsOf + inputSnapshotHash fixture";
   return `${fixture.developerActivity.postCount} posts, ${fixture.developerActivity.threadCount} threads, ${fixture.developerActivity.topProposals.join("/")}; technologyMap=${fixture.technologyMap.postCount} posts`;
 }
 
@@ -1451,12 +1576,12 @@ function finalTechnologyMapCanonicalConsistency(embeddedApi: unknown, visibleHtm
   if (!snapshot) return false;
   const aggregate = snapshot.aggregates.discussion?.technology_map_set as { rawPostIds?: string[]; rawPostCount?: number } | undefined;
   const domainUnion = new Set(snapshot.views.technologyLandscape.flatMap((domain) => stringList(domain.discussion?.rawPostIds)));
+  const expectedCount = stringList(aggregate?.rawPostIds).length;
   return Boolean(aggregate)
-    && aggregate!.rawPostCount === stringList(aggregate!.rawPostIds).length
-    && aggregate!.rawPostCount === 5
-    && domainUnion.size === 5
+    && aggregate!.rawPostCount === expectedCount
+    && domainUnion.size === expectedCount
     && stringList(aggregate!.rawPostIds).every((id) => domainUnion.has(id))
-    && /기술 지도 최근 7일 댓글<\/span><b>5<\/b>/.test(visibleHtml);
+    && new RegExp(`기술 지도 최근 7일 댓글</span><b>${expectedCount}</b>`).test(visibleHtml);
 }
 
 function finalTechnologyMapObserved(embeddedApi: unknown): string {
@@ -1465,6 +1590,21 @@ function finalTechnologyMapObserved(embeddedApi: unknown): string {
   const domainUnion = new Set(snapshot?.views.technologyLandscape.flatMap((domain) => stringList(domain.discussion?.rawPostIds)) ?? []);
   return `technologyMap=${aggregate?.rawPostCount ?? "n/a"} posts; domainUnion=${domainUnion.size} posts`;
 }
+
+export const __qualityTestHooks = {
+  GOLDEN_FIXTURE_VERSION,
+  GOLDEN_FIXTURES,
+  aaNonAaRegression,
+  finalDeveloperActivityCanonicalConsistency,
+  finalGoldenExpected,
+  finalGoldenFixtureDateScope,
+  finalGoldenObserved,
+  finalTechnologyMapCanonicalConsistency,
+  goldenFixtureInputHash,
+  inputSnapshotHash,
+  qualityCheck,
+  snapshotHash,
+};
 
 function aaMetricDefinitions(embeddedApi: unknown) {
   return intelligenceSnapshotFromApi(embeddedApi)?.aggregates.metricDictionary?.filter((metric) => metric.metricId.startsWith("aa.")) ?? [];
@@ -1997,14 +2137,15 @@ function discussionPostRows(discussion: DiscussionHeatItem, windowStart: string,
   const start = Date.parse(windowStart);
   const end = Date.parse(windowEnd);
   const timestamps = (discussion.postTimestampTrace ?? [])
-    .filter((timestamp) => {
+    .map((timestamp, traceIndex) => ({ timestamp, traceIndex }))
+    .filter(({ timestamp }) => {
       const at = Date.parse(timestamp);
       return Number.isFinite(at) && at >= start && at < end;
     })
-    .sort();
-  return timestamps.map((createdAt, index) => {
+    .sort((left, right) => left.timestamp.localeCompare(right.timestamp) || left.traceIndex - right.traceIndex);
+  return timestamps.map(({ timestamp: createdAt, traceIndex }, index) => {
     return {
-      postId: `${discussion.discussionTopicId ?? discussion.proposalId}:${index}:${createdAt}`,
+      postId: `${discussion.discussionTopicId ?? discussion.proposalId}:${traceIndex}:${createdAt}`,
       topicId: discussion.discussionTopicId ? String(discussion.discussionTopicId) : discussion.proposalId,
       proposalId: discussion.proposalId,
       createdAt,
@@ -3016,6 +3157,8 @@ function buildIntelligenceSnapshot(report: WeeklyRadarReport, atlas: TechnologyA
       snapshotHash: "",
       generatedAt: report.generatedAt,
       reportDate: report.generatedAt.slice(0, 10),
+      reportAsOf: report.generatedAt,
+      inputSnapshotHash: "",
     },
     monitoringUniverse,
     facts: {
@@ -3078,8 +3221,22 @@ function buildIntelligenceSnapshot(report: WeeklyRadarReport, atlas: TechnologyA
       checks: [],
     },
   };
+  snapshot.metadata.inputSnapshotHash = inputSnapshotHash(snapshot);
   snapshot.metadata.snapshotHash = snapshotHash(snapshot);
   return snapshot;
+}
+
+function inputSnapshotHash(snapshot: {
+  metadata: { reportDate?: string; reportAsOf?: string; generatedAt?: string };
+  facts?: { discussionPosts?: unknown[]; developmentEvents?: unknown[]; specificationEvidence?: unknown[] };
+}) {
+  return createHash("sha256").update(stableJson({
+    reportDate: snapshot.metadata.reportDate,
+    reportAsOf: snapshot.metadata.reportAsOf ?? snapshot.metadata.generatedAt,
+    discussionPosts: snapshot.facts?.discussionPosts ?? [],
+    developmentEvents: snapshot.facts?.developmentEvents ?? [],
+    specificationEvidence: snapshot.facts?.specificationEvidence ?? [],
+  })).digest("hex");
 }
 
 function snapshotHash(snapshot: { metadata: { snapshotHash: string } }) {

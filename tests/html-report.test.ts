@@ -6,7 +6,7 @@ import { chdir, cwd } from "node:process";
 import { gunzipSync } from "node:zlib";
 import test from "node:test";
 import { insertSnapshot, openDatabase } from "../src/db.ts";
-import { generateWeeklyDebugJson, generateWeeklyHtml, weeklyDebugJsonPath, writeWeeklyHtmlReport } from "../src/html-report.ts";
+import { __qualityTestHooks, generateWeeklyDebugJson, generateWeeklyHtml, weeklyDebugJsonPath, writeWeeklyHtmlReport } from "../src/html-report.ts";
 import { buildWeeklyReport } from "../src/report.ts";
 import type { ProposalRecord } from "../src/types.ts";
 
@@ -345,12 +345,188 @@ test("writes Korean HTML as UTF-8 without mojibake", () => {
   }
 });
 
+test("applies exact golden fixtures only when reportAsOf and input hash match", () => {
+  const fixtureA = canonicalQualityFixture({
+    reportAsOf: "2026-07-31T00:00:00.000Z",
+    postCount: 32,
+    threadCount: 6,
+    topProposals: ["ERC-8183", "EIP-8037", "EIP-8151"],
+    technologyMapPostCount: 5,
+  });
+  const fixtureB = canonicalQualityFixture({
+    reportAsOf: "2026-07-31T19:00:00.000Z",
+    postCount: 13,
+    threadCount: 5,
+    topProposals: ["EIP-8037", "EIP-8151", "ERC-8330"],
+    technologyMapPostCount: 5,
+  });
+
+  for (const fixture of [fixtureA, fixtureB]) {
+    assert.equal(__qualityTestHooks.finalDeveloperActivityCanonicalConsistency(fixture.embeddedApi, fixture.visibleHtml), true);
+    assert.equal(__qualityTestHooks.finalTechnologyMapCanonicalConsistency(fixture.embeddedApi, fixture.visibleHtml), true);
+    assert.equal(__qualityTestHooks.aaNonAaRegression(fixture.embeddedApi), true);
+    assert.equal(__qualityTestHooks.finalGoldenFixtureDateScope(fixture.embeddedApi), true);
+  }
+
+  const dateOnly = canonicalQualityFixture({
+    reportAsOf: "2026-07-31T12:34:56.000Z",
+    postCount: 32,
+    threadCount: 6,
+    topProposals: ["ERC-8183", "EIP-8037", "EIP-8151"],
+    technologyMapPostCount: 5,
+    inputSnapshotHash: "date-only-is-not-enough",
+  });
+  assert.equal(__qualityTestHooks.finalGoldenFixtureDateScope(dateOnly.embeddedApi), null);
+  assert.match(__qualityTestHooks.finalGoldenObserved(dateOnly.embeddedApi), /status=not_applicable/);
+  assert.match(__qualityTestHooks.finalGoldenExpected(dateOnly.embeddedApi), /matching reportDate \+ reportAsOf \+ inputSnapshotHash fixture/);
+});
+
+test("quality check not_applicable serializes as parseable UTF-8 JSON", () => {
+  const check = __qualityTestHooks.qualityCheck(
+    "final-f01-golden-fixture-date-scope",
+    null,
+    "fail",
+    "live rolling snapshot; no matching frozen fixture · 한국어 유지",
+    "matching reportDate + reportAsOf + inputSnapshotHash fixture",
+  );
+  const json = JSON.stringify({ passed: true, checks: [check] }, null, 2);
+  const parsed = JSON.parse(json);
+
+  assert.equal(parsed.checks[0].status, "not_applicable");
+  assert.equal(parsed.checks[0].passed, null);
+  assert.equal(parsed.checks[0].failureReason, "");
+  assert.match(json, /한국어 유지/);
+  assert.doesNotMatch(json, /\bundefined\b/);
+});
+
 function visibleReportHtml(html: string): string {
   return html
     .replace(/<style>[\s\S]*?<\/style>/, "")
     .replace(/<script type="application\/json" id="technology-platform-api">[\s\S]*?<\/script>/, "")
     .replace(/<!-- EIPreporter chart data: [\s\S]*? -->/, "")
     .replace(/<script>[\s\S]*?<\/script>/, "");
+}
+
+function canonicalQualityFixture(input: {
+  reportAsOf: string;
+  postCount: number;
+  threadCount: number;
+  topProposals: string[];
+  technologyMapPostCount: number;
+  inputSnapshotHash?: string;
+}) {
+  const reportDate = "2026-07-31";
+  const fixture = __qualityTestHooks.GOLDEN_FIXTURES.find((item) =>
+    item.reportDate === reportDate
+    && item.reportAsOf === input.reportAsOf
+    && item.developerActivity.postCount === input.postCount
+    && item.developerActivity.threadCount === input.threadCount
+  );
+  const postIds = Array.from({ length: input.postCount }, (_, index) => `post-${index + 1}`);
+  const threadIds = Array.from({ length: input.threadCount }, (_, index) => `thread-${index + 1}`);
+  const counts = distributeCounts(input.postCount, input.topProposals.length);
+  const activity = input.topProposals.map((proposalId, index) => {
+    const rawPostIds = postIds.slice(counts.slice(0, index).reduce((sum, value) => sum + value, 0), counts.slice(0, index + 1).reduce((sum, value) => sum + value, 0));
+    return {
+      proposalId,
+      title: `${proposalId} title`,
+      rawPostIds,
+      rawPostCount: rawPostIds.length,
+    };
+  });
+  for (let index = input.topProposals.length; index < input.threadCount; index += 1) {
+    const proposalId = `ERC-${9000 + index}`;
+    activity.push({ proposalId, title: `${proposalId} title`, rawPostIds: [], rawPostCount: 0 });
+  }
+  const technologyPostIds = postIds.slice(0, input.technologyMapPostCount);
+  const domains = Array.from({ length: 8 }, (_, index) => {
+    const rawPostIds = index === 0 ? technologyPostIds : [];
+    return {
+      domainId: `domain-${index + 1}`,
+      rawDiscussionPosts: rawPostIds.length,
+      discussion: {
+        rawPostIds,
+        rawPostCount: rawPostIds.length,
+      },
+    };
+  });
+  const developerSummary = {
+    rawPostIds: postIds,
+    rawPosts: postIds.length,
+    activeThreadIds: threadIds,
+    activeThreads: threadIds.length,
+  };
+  const dashboard = {
+    executivePulse: {
+      whatChanged: {
+        magiciansActivity: activity.slice(0, 3).map((item) => ({ proposalIds: [item.proposalId] })),
+      },
+    },
+    technologyLandscape: domains,
+    focusProgress: [{ topicId: "focus-1", proposalIds: [input.topProposals[0]], progress: { specificationStage: "Draft" } }],
+    developerAttention: {
+      summary: developerSummary,
+      activity,
+    },
+    accountAbstraction: {
+      tracks: Array.from({ length: 12 }, (_, index) => ({ id: `aa-${index + 1}` })),
+      summary: { implementationEvidence: 0 },
+    },
+    kgldWatch: {
+      groups: {
+        research_now: [{ proposalId: "ERC-4626" }],
+        monitor: [{ proposalId: "EIP-712" }],
+        no_action: [{ proposalId: "ERC-20" }],
+      },
+    },
+  };
+  const snapshot = {
+    metadata: {
+      schemaVersion: "intelligence-snapshot/v2",
+      snapshotHash: "",
+      generatedAt: input.reportAsOf,
+      reportDate,
+      reportAsOf: input.reportAsOf,
+      inputSnapshotHash: input.inputSnapshotHash ?? fixture?.inputSnapshotHash ?? "unregistered-input-hash",
+    },
+    facts: {
+      discussionPosts: postIds.map((postId, index) => ({ postId, factId: `post:${postId}`, createdAt: input.reportAsOf })),
+      developmentEvents: [],
+      specificationEvidence: [],
+    },
+    aggregates: {
+      discussion: {
+        developer_activity_set: developerSummary,
+        technology_map_set: {
+          rawPostIds: technologyPostIds,
+          rawPostCount: technologyPostIds.length,
+        },
+      },
+    },
+    views: dashboard,
+  };
+  snapshot.metadata.snapshotHash = __qualityTestHooks.snapshotHash(snapshot);
+
+  return {
+    embeddedApi: {
+      schemaVersion: snapshot.metadata.schemaVersion,
+      snapshotHash: snapshot.metadata.snapshotHash,
+      intelligenceSnapshot: snapshot,
+    },
+    visibleHtml: `<span>기술 지도 최근 7일 댓글</span><b>${input.technologyMapPostCount}</b><span>Developer ${input.postCount}</span>`,
+  };
+}
+
+function distributeCounts(total: number, buckets: number): number[] {
+  const counts = Array.from({ length: buckets }, () => 1);
+  let remaining = Math.max(0, total - buckets);
+  let index = 0;
+  while (remaining > 0) {
+    counts[index % buckets] += 1;
+    remaining -= 1;
+    index += 1;
+  }
+  return counts;
 }
 
 function makeRecord(): ProposalRecord {
