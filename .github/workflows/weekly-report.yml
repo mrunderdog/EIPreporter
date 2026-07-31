@@ -46,37 +46,77 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+
           latest_quality="$(ls -1 reports/weekly-*.quality.json | sort | tail -n 1)"
-          report_date="$(basename "$latest_quality" | sed -E 's/^weekly-([0-9]{4}-[0-9]{2}-[0-9]{2})\.quality\.json$/\1/')"
+
+          report_date="$(
+            basename "$latest_quality" |
+            sed -E 's/^weekly-([0-9]{4}-[0-9]{2}-[0-9]{2})\.quality\.json$/\1/'
+          )"
+
           echo "report_date=$report_date" >> "$GITHUB_OUTPUT"
+          echo "Detected report date: $report_date"
+
+      - name: Upload weekly report artifacts
+        if: ${{ always() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: eipreporter-weekly-${{ github.run_id }}
+          path: |
+            reports/weekly-*.html
+            reports/weekly-*.compact.json
+            reports/weekly-*.quality.json
+          if-no-files-found: warn
+          retention-days: 30
 
       - name: Validate weekly report quality
         shell: bash
         run: |
           set -euo pipefail
+
           quality_path="reports/weekly-${{ steps.report-date.outputs.report_date }}.quality.json"
+
           node -e '
             const fs = require("fs");
+
             const qualityPath = process.argv[1];
-            const quality = JSON.parse(fs.readFileSync(qualityPath, "utf8"));
-            const failed = (quality.checks || []).filter((check) => check.severity === "fail" && check.passed === false);
+            const quality = JSON.parse(
+              fs.readFileSync(qualityPath, "utf8")
+            );
+
+            const failed = (quality.checks || []).filter(
+              (check) =>
+                check.severity === "fail" &&
+                check.passed === false
+            );
+
             if (quality.passed !== true || failed.length > 0) {
-              console.error(`Quality gate failed for ${qualityPath}`);
-              console.error(failed.map((check) => check.id).join("\n"));
+              console.error(
+                `Quality gate failed for ${qualityPath}`
+              );
+
+              for (const check of failed) {
+                console.error("");
+                console.error(`[${check.id}]`);
+                console.error(
+                  `observed: ${JSON.stringify(check.observed ?? "")}`
+                );
+                console.error(
+                  `expected: ${JSON.stringify(check.expected ?? "")}`
+                );
+                console.error(
+                  `failureReason: ${check.failureReason ?? ""}`
+                );
+                console.error(
+                  `affectedIds: ${JSON.stringify(check.affectedIds ?? [])}`
+                );
+              }
+
               process.exit(1);
             }
+
+            console.log(`Quality gate passed for ${qualityPath}`);
           ' "$quality_path"
 
       - name: Send weekly report to Telegram
         run: npm run send:weekly -- --trend-days 180 --change-days 7
-
-      - name: Upload weekly report artifacts
-        uses: actions/upload-artifact@v4
-        with:
-          name: eipreporter-weekly-${{ steps.report-date.outputs.report_date }}
-          path: |
-            reports/weekly-${{ steps.report-date.outputs.report_date }}.html
-            reports/weekly-${{ steps.report-date.outputs.report_date }}.compact.json
-            reports/weekly-${{ steps.report-date.outputs.report_date }}.quality.json
-          if-no-files-found: error
-          retention-days: 30
