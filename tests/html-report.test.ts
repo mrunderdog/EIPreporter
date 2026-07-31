@@ -2,6 +2,7 @@
 import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { chdir, cwd } from "node:process";
 import { gunzipSync } from "node:zlib";
 import test from "node:test";
 import { insertSnapshot, openDatabase } from "../src/db.ts";
@@ -297,6 +298,37 @@ test("keeps Discussion Heat diagnostics out of the end-user IA", () => {
   }
 });
 
+test("renders AA baseline proposals when optional metadata is null or uncollected", () => {
+  const db = openDatabase(":memory:");
+  const originalCwd = cwd();
+  const emptyDirectory = mkdtempSync(join(tmpdir(), "eipreporter-aa-nullable-"));
+
+  try {
+    insertSnapshot(db, [makeRecord()]);
+    const report = buildWeeklyReport(db, new Date("2026-06-12T12:00:00.000Z"));
+    assert.ok(report);
+    report.ethereumTechRadar.signalLayer.discussionHeat = [];
+
+    chdir(emptyDirectory);
+    const html = generateWeeklyHtml(report);
+    const visibleHtml = visibleReportHtml(html);
+
+    assert.match(html, /https:\/\/eips\.ethereum\.org\/EIPS\/eip-4337/);
+    assert.match(visibleHtml, /Discussion source 미수집/);
+    assert.doesNotMatch(visibleHtml, /href=""/);
+    assert.doesNotMatch(visibleHtml, /\bnull\b|\bundefined\b/);
+
+    const platformApi = JSON.parse(html.match(/<script type="application\/json" id="technology-platform-api">([\s\S]*?)<\/script>/)?.[1] ?? "{}");
+    assert.equal(platformApi.intelligenceSnapshot.views.accountAbstraction.tracks.length, 12);
+    assert.match(html, /https:\/\/eips\.ethereum\.org\/EIPS\/eip-8286/);
+    assert.match(html, /https:\/\/ethereum-magicians\.org\/t\/draft-erc-8286-modular-accounts-for-frame-transactions\/28695/);
+  } finally {
+    chdir(originalCwd);
+    db.close();
+    rmSync(emptyDirectory, { recursive: true, force: true });
+  }
+});
+
 test("writes Korean HTML as UTF-8 without mojibake", () => {
   const directory = mkdtempSync(join(tmpdir(), "eipreporter-utf8-"));
   const path = join(directory, "encoding.html");
@@ -312,6 +344,14 @@ test("writes Korean HTML as UTF-8 without mojibake", () => {
     rmSync(directory, { recursive: true, force: true });
   }
 });
+
+function visibleReportHtml(html: string): string {
+  return html
+    .replace(/<style>[\s\S]*?<\/style>/, "")
+    .replace(/<script type="application\/json" id="technology-platform-api">[\s\S]*?<\/script>/, "")
+    .replace(/<!-- EIPreporter chart data: [\s\S]*? -->/, "")
+    .replace(/<script>[\s\S]*?<\/script>/, "");
+}
 
 function makeRecord(): ProposalRecord {
   return {

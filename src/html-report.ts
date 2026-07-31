@@ -2450,11 +2450,15 @@ function aaAssignment(subjectId: string, role: string, reason: string, sourceTyp
     reason,
     sourceType,
     sourceUrl: sourceUrl ?? proposalUrl(subjectId),
-    discussionSourceUrl,
+    discussionSourceUrl: optionalAaString(discussionSourceUrl),
     status: sourceType === "official_specification" ? localSpecificationEvidence(subjectId).status : "미확인",
     sourceEvidenceId: `${sourceType === "discussion_draft" ? "discussion-draft" : "spec"}:${subjectId}`,
     manuallyValidated: true,
   };
+}
+
+function optionalAaString(value: unknown): string | null {
+  return typeof value === "string" && value.trim().length > 0 ? value.trim() : null;
 }
 
 function accountAbstractionDashboard(atlas: TechnologyAtlas, discussionHeat: DiscussionHeatItem[], current30dEvents: ChangeEvent[], current7dEvents: ChangeEvent[], windowEnd: string) {
@@ -2902,7 +2906,8 @@ function renderAaBaselineProposals(track: ReturnType<typeof accountAbstractionDa
   return track.baselineProposals.map((assignment) => {
     const label = assignment.role === "baseline" ? "기준 표준" : assignment.role === "supporting" ? "지원 Proposal" : assignment.role === "adjacent" ? "인접 Proposal" : "직접 Proposal";
     const spec = localSpecificationEvidence(assignment.subjectId);
-    return `<a href="${escapeHtml(assignment.sourceUrl)}" target="_blank" rel="noopener noreferrer">${escapeHtml(assignment.subjectId)}</a> <span class="badge">${escapeHtml(label)}</span> <span class="badge">${escapeHtml(spec.status ?? assignment.status ?? "상태 미확인")}</span> <span class="muted">${escapeHtml(spec.officialTitle)}</span>`;
+    const officialTitle = optionalAaString(spec.officialTitle);
+    return `<a href="${escapeHtml(assignment.sourceUrl)}" target="_blank" rel="noopener noreferrer">${escapeHtml(assignment.subjectId)}</a> <span class="badge">${escapeHtml(label)}</span> <span class="badge">${escapeHtml(spec.status ?? assignment.status ?? "상태 미확인")}</span>${officialTitle ? ` <span class="muted">${escapeHtml(officialTitle)}</span>` : ""}`;
   }).join(" ");
 }
 
@@ -2910,20 +2915,23 @@ function renderAaRecentSignals(track: ReturnType<typeof accountAbstractionDashbo
   if (track.recentSignals.length) {
     return track.recentSignals.slice(0, 4).map((signal) => {
       if (signal.signalType === "discussion_activity") {
-        const url = signal.threadUrl ?? signal.sourceUrls[0] ?? "";
+        const url = optionalAaString(signal.threadUrl) ?? optionalAaString(signal.sourceUrls[0]);
         const link = url ? `<a href="${escapeHtml(url)}" target="_blank" rel="noopener noreferrer">Magicians thread</a>` : "";
-        return `${escapeHtml(signal.proposalId)} · 원시 post ${signal.rawPostCount ?? 0}건 · 고유 thread ${signal.threadCount ?? 0}개 · 유효 기술 post 미분류 · 토론 방향 판단 불가 · 최근 활동 ${escapeHtml(signal.latestActivityAt?.slice(0, 10) ?? "확인 불가")} ${link}`;
+        const latestActivityAt = optionalAaString(signal.latestActivityAt?.slice(0, 10)) ?? "확인 불가";
+        return `${escapeHtml(signal.proposalId)} · 원시 post ${signal.rawPostCount ?? 0}건 · 고유 thread ${signal.threadCount ?? 0}개 · 유효 기술 post 미분류 · 토론 방향 판단 불가 · 최근 활동 ${escapeHtml(latestActivityAt)} ${link}`;
       }
       const url = signal.sourceUrls[0] ?? proposalUrl(signal.proposalId);
       return `<a href="${escapeHtml(url)}" target="_blank" rel="noopener noreferrer">${escapeHtml(signal.proposalId)}</a> <span class="badge">최근 명세 변화</span>`;
     }).join("<br>");
   }
-  const discussionSources = track.baselineProposals.filter((assignment) => assignment.discussionSourceUrl);
+  const discussionSources = track.baselineProposals
+    .map((assignment) => optionalAaString(assignment.discussionSourceUrl))
+    .filter((url): url is string => Boolean(url));
   if (discussionSources.length) {
-    return discussionSources.map((assignment) => `<span class="muted">Discussion source</span> Ethereum Magicians · 최근 30일 원시 post ${track.discussion30d.value ?? 0}건 · <a href="${escapeHtml(assignment.discussionSourceUrl)}" target="_blank" rel="noopener noreferrer">Magicians thread</a>`).join("<br>");
+    return discussionSources.map((url) => `<span class="muted">Discussion source</span> Ethereum Magicians · 최근 30일 원시 post ${track.discussion30d.value ?? 0}건 · <a href="${escapeHtml(url)}" target="_blank" rel="noopener noreferrer">Magicians thread</a>`).join("<br>");
   }
   return track.proposalIds.length
-    ? '<span class="muted">기준 Proposal은 존재하지만 최근 30일 확인된 변화는 없습니다.</span>'
+    ? '<span class="muted">기준 Proposal은 존재하지만 최근 30일 확인된 변화는 없습니다. · Discussion source 미수집</span>'
     : '<span class="muted">이 Track에 연결된 기준 Proposal이 아직 없습니다.</span>';
 }
 
