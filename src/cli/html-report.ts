@@ -1,7 +1,7 @@
 import { parseArgs, resolveDatabasePath } from "../config.ts";
 import { openDatabase } from "../db.ts";
 import { writeWeeklyHtmlReport } from "../html-report.ts";
-import { buildWeeklyReportWithDiscussionActivity } from "../report.ts";
+import { buildWeeklyReport, buildWeeklyReportWithDiscussionActivity, buildWeeklyReportWithDiscussionPosts } from "../report.ts";
 
 async function main(): Promise<void> {
   const args = parseArgs(process.argv.slice(2));
@@ -10,14 +10,23 @@ async function main(): Promise<void> {
   const db = openDatabase(databasePath);
 
   try {
-    const report = await buildWeeklyReportWithDiscussionActivity(db, new Date(), {
+    const options = {
       trendWindowDays: readDays(args["trend-days"], "--trend-days"),
       changeWindowDays: readDays(args["change-days"], "--change-days"),
-    });
+      limit: readPositiveInteger(args.limit, "--limit") ?? 240,
+      timeoutMs: readPositiveInteger(args["timeout-ms"], "--timeout-ms") ?? 5000,
+      cacheTtlHours: readPositiveInteger(args["cache-ttl-hours"], "--cache-ttl-hours"),
+    };
+    const generatedAt = readDate(args["generated-at"], "--generated-at") ?? new Date();
+    const report = args["full-enrichment"] === true
+      ? await buildWeeklyReportWithDiscussionActivity(db, generatedAt, options)
+      : args["no-discussion-fetch"] === true
+        ? buildWeeklyReport(db, generatedAt, options)
+        : await buildWeeklyReportWithDiscussionPosts(db, generatedAt, options);
     if (!report) {
       throw new Error("스냅샷이 없습니다. 먼저 `npm run collect`를 실행하세요.");
     }
-    console.log(writeWeeklyHtmlReport(report, outputDirectory));
+    console.log(writeWeeklyHtmlReport(report, outputDirectory, { debug: args.debug === true }));
   } finally {
     db.close();
   }
@@ -30,7 +39,24 @@ function readDays(value: string | boolean | undefined, option: string): number |
   return days;
 }
 
-main().catch((error: unknown) => {
+function readPositiveInteger(value: string | boolean | undefined, option: string): number | undefined {
+  if (value === undefined) return undefined;
+  const parsed = Number(value);
+  if (!Number.isInteger(parsed) || parsed <= 0) throw new Error(`${option} value must be a positive integer.`);
+  return parsed;
+}
+
+function readDate(value: string | boolean | undefined, option: string): Date | undefined {
+  if (value === undefined) return undefined;
+  if (typeof value !== "string") throw new Error(`${option} value must be an ISO-8601 timestamp.`);
+  const parsed = new Date(value);
+  if (Number.isNaN(parsed.getTime())) throw new Error(`${option} value must be an ISO-8601 timestamp.`);
+  return parsed;
+}
+
+main().then(() => {
+  process.exit(0);
+}).catch((error: unknown) => {
   console.error(error instanceof Error ? error.message : error);
-  process.exitCode = 1;
+  process.exit(1);
 });

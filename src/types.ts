@@ -76,6 +76,208 @@ export type ChangeEvent = ProposalChange & {
   snapshotId: number;
   previousSnapshotId: number;
   detectedAt: string;
+  occurredAt?: string;
+  occurredAtSource?: "git_commit" | "proposal_created_metadata" | "magicians_post" | "snapshot_updated" | "fallback_detected_at";
+  timestampConfidence?: "high" | "medium" | "low";
+  changeSemanticType?:
+    | "normative_specification"
+    | "rationale_or_motivation"
+    | "security_consideration"
+    | "interface_or_api"
+    | "test_vector"
+    | "metadata_status"
+    | "metadata_other"
+    | "editorial_text"
+    | "formatting_only"
+    | "link_only"
+    | "unknown";
+  timestampRecovery?: {
+    attempted: boolean;
+    recovered: boolean;
+    recoveredOccurredAt?: string;
+    recoveredSource?: string;
+    matchedCommitSha?: string;
+    confidence?: "high" | "medium" | "low";
+  };
+};
+
+export type IntelligenceEventType =
+  | "NEW_PROPOSAL"
+  | "STATUS_CHANGED"
+  | "SPEC_TEXT_CHANGED"
+  | "NORMATIVE_CHANGE"
+  | "SECURITY_CHANGE"
+  | "COMPATIBILITY_CHANGE"
+  | "DISCUSSION_STARTED"
+  | "DISCUSSION_RESUMED"
+  | "DISCUSSION_ACCELERATED"
+  | "AUTHOR_RESPONSE"
+  | "EDITOR_FEEDBACK"
+  | "CLIENT_ISSUE_OPENED"
+  | "CLIENT_PR_OPENED"
+  | "CLIENT_PR_MERGED"
+  | "CLIENT_COMMIT_ADDED"
+  | "IMPLEMENTATION_REJECTED"
+  | "IMPLEMENTATION_BLOCKED"
+  | "RELEASED"
+  | "DEVNET_INCLUDED"
+  | "TESTNET_INCLUDED"
+  | "FORK_CANDIDATE"
+  | "FORK_INCLUDED"
+  | "ACTIVATION_SCHEDULED"
+  | "ACTIVATED"
+  | "WALLET_ADOPTION"
+  | "INFRASTRUCTURE_ADOPTION"
+  | "ACCOUNT_ABSTRACTION_SIGNAL"
+  | "KGLD_RELEVANCE_CHANGED"
+  | "DEPRIORITIZED"
+  | "STALLED"
+  | "NO_MEANINGFUL_CHANGE";
+
+export type IntelligencePriority = "CRITICAL" | "HIGH" | "MEDIUM" | "WATCH" | "ARCHIVE";
+
+export type DecisionState =
+  | "ACTION_REQUIRED"
+  | "TECHNICAL_REVIEW"
+  | "PRIORITY_WATCH"
+  | "MONITOR"
+  | "BACKGROUND"
+  | "INSUFFICIENT_EVIDENCE";
+
+export type ConfidenceMetrics = {
+  collectionConfidence: number;
+  evidenceConfidence: number;
+  signalStrength: number;
+};
+
+export type EvidenceClaimType =
+  | "ACTIVITY"
+  | "SPECIFICATION_STATUS"
+  | "IMPLEMENTATION"
+  | "RELEASE"
+  | "NETWORK_ACTIVATION"
+  | "PRODUCTION_ADOPTION"
+  | "KGLD_RELEVANCE";
+
+export type IntelligenceEvent = {
+  entity: string;
+  eventType: IntelligenceEventType;
+  previousState?: string | null;
+  currentState?: string | null;
+  eventDate: string;
+  source: string;
+  evidence: string;
+  significance: number;
+  confidence: number;
+  affectedThemes: string[];
+  possibleFollowUp: string;
+  meaningful: boolean;
+  scoreBreakdown: ScoreBreakdownItem[];
+};
+
+export type IntelligenceTopStory = {
+  priority: IntelligencePriority;
+  decisionState?: DecisionState;
+  headline: string;
+  conclusion: string;
+  whatChanged: string;
+  whyItMatters: string;
+  evidence: string[];
+  maturity: string;
+  affectedSystems: string[];
+  followUpTrigger: string;
+  confidence: number;
+  confidenceMetrics?: ConfidenceMetrics;
+  relatedProposals: string[];
+  score: number;
+  scoreBreakdown: ScoreBreakdownItem[];
+};
+
+export type ThemeDirection = "accelerating" | "emerging" | "stable" | "slowing" | "stalled" | "insufficient evidence";
+
+export type ThemeIntelligenceSignal = {
+  theme: string;
+  direction: ThemeDirection;
+  reason: string;
+  reasoning?: string;
+  newProposals: number;
+  materialChanges: number;
+  implementationActivity: number;
+  discussionActivity: number;
+  recentShare?: number;
+  baselineShare?: number;
+  maturityChange: number;
+  independentActors: number;
+  confidence: number;
+  topEvidence: string[];
+};
+
+export type AccountAbstractionIntelligence = {
+  meaningful: boolean;
+  conclusion: string;
+  subdomains: string[];
+  assumptionChange: string;
+  implementationStatus: string;
+  walletImplication: string;
+  followUp: FollowUpItem[];
+  evidence: string[];
+};
+
+export type KgldCausalAssessment = {
+  proposalId?: string;
+  signal: string;
+  relevance: "direct" | "indirect" | "speculative" | "none";
+  proposalFunction?: string;
+  changedTechnicalAssumption?: string;
+  affectedComponent: string;
+  currentKgldDependency?: "USED" | "PLANNED" | "NOT_USED" | "UNKNOWN";
+  potentialBenefit?: string;
+  potentialRisk?: string;
+  causalPath: string;
+  currentMaturity: string;
+  timeHorizon: "immediate" | "medium-term" | "speculative" | "irrelevant";
+  requiredResponse: string;
+  recommendedAction?: "IGNORE" | "MONITOR" | "REVIEW" | "TECHNICAL_ASSESSMENT" | "POC" | "ADOPT";
+  followUpTrigger: string;
+  evidenceIds?: string[];
+  evidenceConfidence?: number;
+  evidence: string[];
+  confidence: number;
+};
+
+export type FollowUpOwner =
+  | "protocol research"
+  | "smart-contract development"
+  | "wallet or custody"
+  | "security"
+  | "operations"
+  | "product"
+  | "compliance"
+  | "no owner yet";
+
+export type FollowUpItem = {
+  target: string;
+  currentState: string;
+  nextTrigger: string;
+  rationale?: string;
+  sourceToMonitor: string;
+  owner: FollowUpOwner;
+  recommendedResponse: string;
+  urgency: IntelligencePriority;
+  expectedReviewHorizon: string;
+};
+
+export type IntelligenceLayer = {
+  mode: "normal" | "partial" | "incident";
+  events: IntelligenceEvent[];
+  topStories: IntelligenceTopStory[];
+  themeSignals: ThemeIntelligenceSignal[];
+  accountAbstraction: AccountAbstractionIntelligence;
+  kgldAssessments: KgldCausalAssessment[];
+  followUpQueue: FollowUpItem[];
+  meaningfulChangeCount: number;
+  quietWeek: boolean;
+  generatedBy: "deterministic_signal_engine";
 };
 
 export type ChangeSummary = Record<ChangeType, number>;
@@ -242,6 +444,25 @@ export type WeeklyRadarReport = {
       newProposals: ChangeEvent[];
       contentHashChanges: ChangeEvent[];
     };
+    trendChanges?: {
+      total: number;
+      byEventType: ChangeSummary;
+      finalTransitions: ChangeEvent[];
+      withdrawnTransitions: ChangeEvent[];
+      statusChanges: ChangeEvent[];
+      newProposals: ChangeEvent[];
+      contentHashChanges: ChangeEvent[];
+    };
+    historicalInputDiagnostics?: HistoricalInputDiagnostics;
+    previousChanges?: {
+      total: number;
+      byEventType: ChangeSummary;
+      finalTransitions: ChangeEvent[];
+      withdrawnTransitions: ChangeEvent[];
+      statusChanges: ChangeEvent[];
+      newProposals: ChangeEvent[];
+      contentHashChanges: ChangeEvent[];
+    };
     signalLayer: {
       discussionHeat: DiscussionHeatItem[];
       diffIntelligence: DiffIntelligenceItem[];
@@ -249,6 +470,10 @@ export type WeeklyRadarReport = {
     narrativeLayer: NarrativeLayer;
     watchlistLayer?: WatchlistLayer;
     adoptionLayer?: AdoptionLayer;
+    intelligenceLayer?: IntelligenceLayer;
+    topicClusterLayer?: import("./topic-cluster.ts").TopicClusterLayer;
+    knowledgeGraphLayer?: import("./knowledge-graph.ts").KnowledgeGraphLayer;
+    ecosystemStateLayer?: import("./ecosystem-state.ts").EcosystemStateLayer;
     technologyPlatformLayer?: TechnologyPlatformLayer;
   };
   kgldOpportunityRadar: {
@@ -256,6 +481,73 @@ export type WeeklyRadarReport = {
     candidates: KgldCandidate[];
   };
   chartData: WeeklyChartData;
+};
+
+export type HistoricalInputDiagnostics = {
+  inputEventCount: number;
+  earliestEventAt: string | null;
+  latestEventAt: string | null;
+  eventsWithTimestamp: number;
+  eventsWithoutTimestamp: number;
+  eventsCurrent7d: number;
+  eventsCurrent180d: number;
+  uniqueEventDates: number;
+  uniqueWeeks: number;
+  sourceTablesOrFiles: string[];
+  timestampFieldUsed: string;
+  trendAndCurrentUseSameEvents: boolean;
+  validHistoricalCoverage: boolean;
+  failureCode?: "INSUFFICIENT_HISTORICAL_WINDOW" | "WINDOW_FILTER_REGRESSION";
+  gitBackfillAttempted?: boolean;
+  gitBackfillEventCount?: number;
+  gitBackfillFetchFailures?: number;
+  gitBackfillParseFailures?: number;
+  historicalBackfillSource?: string;
+  eventsByOccurredAtSource?: Record<string, number>;
+  fallbackDetectedAtCount?: number;
+  fallbackDetectedAtRatio?: number;
+  medianDetectionLagHours?: number;
+  maxDetectionLagHours?: number;
+  eventsDetectedThisWeekButOccurredEarlier?: number;
+  affectedProposalIds?: string[];
+  gitBackfillDiagnostics?: {
+    requestedTargets: number;
+    successfulTargets: number;
+    failedTargets: number;
+    successRate: number;
+    failedProposalIds: string[];
+    failureCodes: string[];
+    retryCount: number;
+    rateLimitedCount: number;
+    notFoundCount: number;
+  };
+  currentWindowConcentration?: {
+    share: number;
+    warning?: "CURRENT_WINDOW_CONCENTRATION_HIGH";
+    current7dEventsBySource: Record<string, number>;
+    current7dEventsByType: Record<string, number>;
+    current7dEventsByOccurredAtSource: Record<string, number>;
+    uniqueProposalCount: number;
+    maxEventsPerProposal: number;
+    duplicateCandidateCount: number;
+    detectedThisWeekButOccurredEarlier: number;
+  };
+  timestampQuality?: {
+    overallFallbackCount: number;
+    overallFallbackRatio: number;
+    current7dFallbackCount: number;
+    current7dFallbackRatio: number;
+    previous7dFallbackCount: number;
+    previous7dFallbackRatio: number;
+    baseline8wFallbackRatioByWeek: number[];
+    weeklyRankingValidity: "reliable" | "acceptable" | "degraded" | "invalid";
+  };
+  duplicateDiagnostics?: {
+    rawEventCount: number;
+    deduplicatedEventCount: number;
+    duplicateRemovedCount: number;
+    duplicateEventIds: string[];
+  };
 };
 
 export type WatchlistLayer = {
@@ -288,6 +580,8 @@ export type AdoptionLayer = {
   generatedBy: "deterministic" | "github_search" | "fallback";
   collectionStatus?: "collected" | "skipped" | "failed" | "fallback";
   note?: string;
+  sourceDiagnostics?: SourceCollectionDiagnostic[];
+  evidenceSummary?: EvidenceTaxonomySummary;
 };
 
 export type AdoptionEvidenceLevel = "None" | "Mention" | "Reference" | "Implementation" | "Unknown";
@@ -338,6 +632,39 @@ export type AdoptionEvidenceSource = {
   confidence?: "Low" | "Medium" | "High";
   evidenceId?: string;
   freshness?: FreshnessMetadata;
+  evidenceType?: EvidenceType;
+  sourceAuthority?: "canonical" | "client" | "discussion" | "release" | "business" | "derived";
+  directlySupportedClaim?: string;
+  confidenceContribution?: number;
+};
+
+export type EvidenceType =
+  | "specification"
+  | "change"
+  | "discussion"
+  | "implementation"
+  | "release"
+  | "activation"
+  | "adoption"
+  | "business"
+  | "derived";
+
+export type EvidenceTaxonomySummary = Record<EvidenceType, number>;
+
+export type SourceCollectionDiagnostic = {
+  sourceName: string;
+  sourceType: "github_search" | "github_api" | "cache" | "local_snapshot" | "derived";
+  requestAttempted: boolean;
+  requestUrl?: string;
+  requestQuery?: string;
+  result: "success" | "partial_failure" | "failure" | "skipped" | "empty" | "cache_hit" | "stale_cache";
+  httpStatus?: number;
+  failureReason?: string;
+  retryCount: number;
+  cachedDataAvailable: boolean;
+  lastSuccessfulCollectionAt?: string;
+  recordCountCollected: number;
+  freshness?: FreshnessMetadata;
 };
 
 export type InformationValueClass = "actionable" | "informative" | "redundant" | "empty" | "low-confidence";
@@ -378,6 +705,35 @@ export type DataCompleteness = {
   enrichmentSkipped: string[];
   rateLimitDegradation: boolean;
   explanation: string;
+  diagnostics?: SourceCollectionDiagnostic[];
+  collectionCompleteness?: number;
+  evidenceStrength?: number;
+  editorialConfidence?: number;
+  confidenceMetrics?: ConfidenceMetrics;
+  evidenceMetrics?: EvidenceMetrics;
+};
+
+export type EvidenceMetrics = {
+  rawCandidates: number;
+  matchedSources: number;
+  acceptedEvidence: number;
+  displayedEvidence: number;
+  uniqueDirectEvidence: number;
+  uniqueClusterReferences: number;
+  proposalEvidenceRelations?: number;
+  failedSources: number;
+  categoryMetrics?: EvidenceCategoryMetrics;
+};
+
+export type EvidenceCategoryMetrics = {
+  specificationEvidence: number;
+  discussionEvidence: number;
+  implementationTrackingEvidence: number;
+  implementationCandidateEvidence: number;
+  verifiedImplementationEvidence: number;
+  releaseEvidence: number;
+  activationEvidence: number;
+  adoptionEvidence: number;
 };
 
 export type SectionVisibilityDecision = {
@@ -438,11 +794,77 @@ export type DiscussionHeatItem = {
   discussionTags?: string[];
   discussionFreshnessDays?: number;
   discussionActivityScore?: number;
+  discussionCollectionStatus?: DiscussionCollectionStatus;
+  discussionFetchAttempted?: boolean;
+  discussionDiscovery?: DiscussionDiscovery;
+  postTimestampTrace?: string[];
+  postsCollectedCount?: number;
+  totalPostIds?: number[];
+  fetchedPostIds?: number[];
+  missingPostIds?: number[];
+  postsExpectedCount?: number;
+  paginationComplete?: boolean;
+  latestCollectedPostAt?: string;
+  postsInCurrent7d?: number;
+  postsInPrevious7d?: number;
+  participantCountCurrent7d?: number;
+  authorParticipatedCurrent7d?: boolean;
+  latestPostAuthors?: string[];
+  keyIssues?: string[];
+  objections?: string[];
+  alternatives?: string[];
+  unresolvedQuestions?: string[];
+  specChangeReferences?: string[];
+  discussionAnalysis?: DiscussionAnalysis;
   discussionSummaryFallback?: string;
   activityLevel?: "High" | "Medium" | "Low" | "Unknown";
   error?: string;
   whyItMatters: string;
   canonicalUrl: string;
+};
+
+export type DiscussionCollectionStatus =
+  | "not_searched"
+  | "url_not_found"
+  | "url_confirmed"
+  | "fetch_failed"
+  | "parse_failed"
+  | "posts_partially_collected"
+  | "posts_fully_collected";
+
+export type DiscussionAnalysis = {
+  analysisAttempted: boolean;
+  analysisCompleted: boolean;
+  analyzedPostCount: number;
+  contentAvailable: boolean;
+  keyIssues: DiscussionAnalysisItem[];
+  objections: DiscussionAnalysisItem[];
+  alternatives: DiscussionAnalysisItem[];
+  unresolvedQuestions: DiscussionAnalysisItem[];
+  proposalAuthorResponses: DiscussionAnalysisItem[];
+  specificationReferences: DiscussionAnalysisItem[];
+};
+
+export type DiscussionAnalysisItem = {
+  text: string;
+  sourcePostIds: number[];
+  sourceUsernames: string[];
+  sourceDates: string[];
+  evidenceUrl?: string;
+};
+
+export type DiscussionDiscovery = {
+  searchAttempted: boolean;
+  discoveryCompleted?: boolean;
+  methodsTried: Array<
+    | "frontmatter_discussions_to"
+    | "eips_page_link"
+    | "existing_database"
+    | "magicians_search"
+  >;
+  matchedBy?: "frontmatter_discussions_to" | "eips_page_link" | "existing_database" | "magicians_search";
+  candidateUrls: string[];
+  result: DiscussionCollectionStatus | "discovery_not_run" | "discovery_completed_not_found" | "discovery_ambiguous";
 };
 
 export type DiscussionActivity = {
@@ -518,6 +940,21 @@ export type LifecycleTimeline = {
   currentStage: LifecycleStageName;
   stages: LifecycleStage[];
   traceability: TraceabilityMetadata;
+};
+
+export type SpecificationStatus = "DRAFT" | "REVIEW" | "LAST_CALL" | "FINAL" | "LIVING" | "STAGNANT" | "WITHDRAWN" | "UNKNOWN";
+export type ImplementationAxisStatus = "NONE_COLLECTED" | "TRACKING" | "CANDIDATE" | "VERIFIED" | "RELEASED";
+export type NetworkStatus = "NOT_SCHEDULED" | "FORK_CANDIDATE" | "SCHEDULED" | "ACTIVATED" | "NOT_APPLICABLE" | "UNKNOWN";
+export type AdoptionStatus = "NONE_COLLECTED" | "EXPERIMENTAL" | "PRODUCTION" | "UNKNOWN";
+
+export type LifecycleAxis = {
+  proposalId: string;
+  axis: "Specification" | "Implementation" | "Network" | "Adoption";
+  status: SpecificationStatus | ImplementationAxisStatus | NetworkStatus | AdoptionStatus;
+  evidenceCount: number;
+  strongestEvidence?: string;
+  updatedAt?: string;
+  limitations: string[];
 };
 
 export type ClientName =
@@ -691,6 +1128,7 @@ export type PlatformDashboard = {
 export type TechnologyPlatformLayer = {
   generatedBy: "deterministic";
   lifecycleTimelines: LifecycleTimeline[];
+  lifecycleAxes?: LifecycleAxis[];
   clientMatrices: ClientCoverageMatrix[];
   releaseIntelligence: ReleaseIntelligence[];
   deploymentIntelligence: DeploymentIntelligence[];
@@ -708,6 +1146,7 @@ export type TechnologyPlatformLayer = {
   staleEvidenceCount: number;
   api: {
     lifecycle: LifecycleTimeline[];
+    lifecycleAxes?: LifecycleAxis[];
     clientMatrix: ClientCoverageMatrix[];
     evidenceGraph: EvidenceGraph[];
     themes: ThemeIntelligence[];

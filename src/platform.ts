@@ -11,12 +11,17 @@ import type {
   DataCompletenessStatus,
   DeploymentIntelligence,
   DeploymentStatus,
+  EvidenceCategoryMetrics,
+  EvidenceClaimType,
+  EvidenceMetrics,
   EvidenceGraph,
   EvidenceGraphEdgeType,
   EvidenceGraphNodeType,
   KgldImpactArea,
   KgldImpactLevel,
   KgldIntelligenceItem,
+  LifecycleAxis,
+  LifecycleStageEvidence,
   LifecycleStage,
   LifecycleStageName,
   LifecycleTimeline,
@@ -38,6 +43,7 @@ type PlatformProposal = {
   title: string;
   status: string;
   theme: string;
+  kind?: string;
   canonicalUrl?: string;
 };
 
@@ -67,6 +73,13 @@ const RULE_VERSION = "phase12-conservative-1";
 export function buildTechnologyPlatformLayer(report: PlatformReportInput): TechnologyPlatformLayer {
   const proposals = platformProposals(report);
   const lifecycleTimelines = proposals.map((proposal) => buildLifecycleTimeline(report, proposal));
+  const lifecycleAxes = proposals.flatMap((proposal) =>
+    buildLifecycleAxes(
+      proposal,
+      lifecycleTimelines.find((item) => item.proposalId === proposal.proposalId),
+      report,
+    )
+  );
   const clientMatrices = proposals.map((proposal) => buildClientCoverageMatrix(report, proposal.proposalId));
   const releaseIntelligence = proposals.map((proposal) => buildReleaseIntelligence(report, proposal.proposalId));
   const deploymentIntelligence = proposals.map((proposal) => buildDeploymentIntelligence(report, proposal.proposalId));
@@ -105,6 +118,7 @@ export function buildTechnologyPlatformLayer(report: PlatformReportInput): Techn
   const layer: TechnologyPlatformLayer = {
     generatedBy: "deterministic",
     lifecycleTimelines,
+    lifecycleAxes,
     clientMatrices,
     releaseIntelligence,
     deploymentIntelligence,
@@ -122,6 +136,7 @@ export function buildTechnologyPlatformLayer(report: PlatformReportInput): Techn
     staleEvidenceCount,
     api: {
       lifecycle: lifecycleTimelines,
+      lifecycleAxes,
       clientMatrix: clientMatrices,
       evidenceGraph: evidenceGraphs,
       themes: themeIntelligence,
@@ -228,6 +243,127 @@ function buildLifecycleTimeline(report: PlatformReportInput, proposal: PlatformP
   };
 }
 
+function buildLifecycleAxes(proposal: PlatformProposal, timeline: LifecycleTimeline | undefined, report: PlatformReportInput): LifecycleAxis[] {
+  const adoption = adoptionEvidenceForProposal(report.ethereumTechRadar.adoptionLayer, [proposal.proposalId]);
+  const sources = adoption?.sources ?? [];
+  const stage = (name: LifecycleStageName) => timeline?.stages.find((item) => item.name === name);
+  const specificationEvidence = ["Draft", "Review", "Last Call", "Final"].flatMap((name) => stage(name as LifecycleStageName)?.evidence ?? []);
+  const implementationSources = sources.filter((source) => ["implementation_tracker", "client_implementation_pr", "client_code_reference"].includes(source.semanticType ?? ""));
+  const releaseSources = sources.filter((source) => source.sourceType === "release_note");
+  const activationSources = sources.filter((source) => source.relationship === "direct" && /activate|activation|mainnet|testnet|fork/i.test(`${source.title ?? ""} ${source.path ?? ""}`));
+  const adoptionSources = sources.filter((source) => source.relationship === "direct" && /production|adoption|integration|deployed|wallet|provider/i.test(`${source.title ?? ""} ${source.path ?? ""}`) && source.sourceType !== "release_note");
+  return [
+    {
+      proposalId: proposal.proposalId,
+      axis: "Specification",
+      status: specificationStatus(proposal.status),
+      evidenceCount: specificationEvidence.length,
+      strongestEvidence: specificationEvidence[0]?.label,
+      updatedAt: strongestDate(specificationEvidence),
+      limitations: ["Specification status is canonical metadata; it does not imply implementation, release, network activation, or production adoption."],
+    },
+    {
+      proposalId: proposal.proposalId,
+      axis: "Implementation",
+      status: implementationAxisStatus(sources),
+      evidenceCount: implementationSources.length,
+      strongestEvidence: implementationSources[0]?.title ?? implementationSources[0]?.repo,
+      updatedAt: strongestSourceDate(implementationSources),
+      limitations: axisLimitations(
+        implementationSources,
+        implementationSources.length ? "Implementation evidence is separated into tracking, candidate, verified, and released states." : "이번 수집에서 확인된 구현 근거 없음. 미지원으로 해석하지 않습니다.",
+        report.generatedAt,
+      ),
+    },
+    {
+      proposalId: proposal.proposalId,
+      axis: "Network",
+      status: networkStatus(proposal, activationSources),
+      evidenceCount: activationSources.length,
+      strongestEvidence: activationSources[0]?.title ?? activationSources[0]?.repo,
+      updatedAt: strongestSourceDate(activationSources),
+      limitations: axisLimitations(
+        activationSources,
+        proposal.kind === "ERC" ? "ERC 표준에는 네트워크 활성화 축이 적용되지 않을 수 있습니다." : "Network status requires fork, testnet, mainnet, or activation evidence.",
+        report.generatedAt,
+      ),
+    },
+    {
+      proposalId: proposal.proposalId,
+      axis: "Adoption",
+      status: adoptionStatus(adoptionSources),
+      evidenceCount: adoptionSources.length,
+      strongestEvidence: adoptionSources[0]?.title ?? adoptionSources[0]?.repo,
+      updatedAt: strongestSourceDate(adoptionSources),
+      limitations: axisLimitations(
+        adoptionSources,
+        adoptionSources.length ? "Adoption evidence is separate from specification finality and client implementation." : "이번 수집에서 운영 채택 근거 없음. 채택되지 않았다는 뜻은 아닙니다.",
+        report.generatedAt,
+      ),
+    },
+  ];
+}
+
+function axisLimitations(sources: AdoptionEvidenceSource[], fallback: string, generatedAt: string): string[] {
+  const stale = sources.find((source) => source.freshness?.stale);
+  if (stale?.freshness?.ageDays !== undefined) {
+    return [`근거가 오래되었을 수 있습니다. 마지막 출처 업데이트는 ${stale.freshness.ageDays}일 전입니다.`, fallback];
+  }
+  const dated = sources
+    .map((source) => source.updatedAt ?? source.observedAt)
+    .filter((value): value is string => Boolean(value))
+    .sort()[0];
+  if (dated) {
+    const ageDays = Math.max(0, Math.floor((new Date(generatedAt).getTime() - new Date(dated).getTime()) / 86_400_000));
+    if (ageDays > 14) return [`근거가 오래되었을 수 있습니다. 마지막 출처 업데이트는 ${ageDays}일 전입니다.`, fallback];
+  }
+  return [fallback];
+}
+
+function specificationStatus(status: string): LifecycleAxis["status"] {
+  const normalized = status.toLowerCase();
+  if (/withdrawn/.test(normalized)) return "WITHDRAWN";
+  if (/stagnant/.test(normalized)) return "STAGNANT";
+  if (/living/.test(normalized)) return "LIVING";
+  if (/final/.test(normalized)) return "FINAL";
+  if (/last call/.test(normalized)) return "LAST_CALL";
+  if (/review/.test(normalized)) return "REVIEW";
+  if (/draft/.test(normalized)) return "DRAFT";
+  return "UNKNOWN";
+}
+
+function implementationAxisStatus(sources: AdoptionEvidenceSource[]): LifecycleAxis["status"] {
+  if (sources.some((source) => source.sourceType === "release_note")) return "RELEASED";
+  if (sources.some((source) => (source.semanticType === "client_implementation_pr" && source.state === "merged") || (source.semanticType === "client_code_reference" && source.relationship === "direct"))) return "VERIFIED";
+  if (sources.some((source) => source.semanticType === "client_implementation_pr")) return "CANDIDATE";
+  if (sources.some((source) => source.semanticType === "implementation_tracker")) return "TRACKING";
+  return "NONE_COLLECTED";
+}
+
+function networkStatus(proposal: PlatformProposal, sources: AdoptionEvidenceSource[]): LifecycleAxis["status"] {
+  if (proposal.proposalId.startsWith("ERC-")) return "NOT_APPLICABLE";
+  const text = sources.map((source) => `${source.title ?? ""} ${source.path ?? ""}`).join(" ");
+  if (/mainnet|activated/i.test(text)) return "ACTIVATED";
+  if (/schedule|scheduled/i.test(text)) return "SCHEDULED";
+  if (/fork candidate|included|upgrade meta/i.test(text)) return "FORK_CANDIDATE";
+  return sources.length ? "UNKNOWN" : "NOT_SCHEDULED";
+}
+
+function adoptionStatus(sources: AdoptionEvidenceSource[]): LifecycleAxis["status"] {
+  const text = sources.map((source) => `${source.title ?? ""} ${source.path ?? ""}`).join(" ");
+  if (/production|mainnet usage|operational use|deployed/i.test(text)) return "PRODUCTION";
+  if (sources.length) return "EXPERIMENTAL";
+  return "NONE_COLLECTED";
+}
+
+function strongestDate(evidence: LifecycleStageEvidence[]): string | undefined {
+  return evidence.map((item) => item.freshness?.sourceUpdatedAt ?? item.freshness?.collectedAt).filter((item): item is string => Boolean(item)).sort().at(-1);
+}
+
+function strongestSourceDate(sources: AdoptionEvidenceSource[]): string | undefined {
+  return sources.map((source) => source.updatedAt ?? source.observedAt).filter((item): item is string => Boolean(item)).sort().at(-1);
+}
+
 function titleCaseStatus(status: string): LifecycleStageName {
   if (/last call/i.test(status)) return "Last Call";
   if (/final/i.test(status)) return "Final";
@@ -254,6 +390,7 @@ function stageForAdoptionSource(source: AdoptionEvidenceSource): LifecycleStageN
   if (source.sourceType === "release_note" && /\b(?:rc|beta|candidate)\b/i.test(`${source.title ?? ""} ${source.path ?? ""}`)) return "Released";
   if (source.sourceType === "release_note") return "Released";
   if (source.semanticType === "implementation_tracker") return "Implementation Tracking";
+  if (source.semanticType === "client_implementation_pr" && source.state === "merged") return "Verified Implementation";
   if (source.semanticType === "client_implementation_pr") return "Implementation Candidate";
   if (source.semanticType === "client_code_reference" && source.evidenceKind === "implementation" && source.relationship === "direct") return "Verified Implementation";
   return null;
@@ -267,7 +404,7 @@ function currentLifecycleStage(
   if (evidence.get("Production Adoption")?.length) return "Production Adoption";
   if (evidence.get("Activated")?.length) return "Activated";
   if (evidence.get("Released")?.length) return "Released";
-  if (adoption?.evidenceLevel === "Implementation" || evidence.get("Verified Implementation")?.length) return "Verified Implementation";
+  if (evidence.get("Verified Implementation")?.length) return "Verified Implementation";
   if (evidence.get("Implementation Candidate")?.length) return "Implementation Candidate";
   if (evidence.get("Implementation Tracking")?.length) return "Implementation Tracking";
   if (/final/i.test(status)) return "Final";
@@ -292,7 +429,7 @@ function isStageCompletedByStatus(stage: LifecycleStageName, status: string): bo
 
 function stageConfidence(stage: LifecycleStageName, evidence: LifecycleStage["evidence"], adoption: AdoptionEvidenceItem | undefined): number {
   if (!evidence.length && !["Discussion", "Draft"].includes(stage)) return 0;
-  if (stage === "Verified Implementation") return adoption?.evidenceLevel === "Implementation" ? 70 : 0;
+  if (stage === "Verified Implementation") return evidence.length ? 70 : 0;
   if (stage === "Implementation Tracking") return Math.min(80, 35 + evidence.length * 10);
   if (stage === "Released" || stage === "Activated" || stage === "Production Adoption") return evidence.length ? 50 : 0;
   return Math.min(85, 40 + evidence.length * 10);
@@ -629,23 +766,36 @@ function buildPlatformDashboard(
 
 function buildDataCompleteness(report: PlatformReportInput) {
   const adoption = report.ethereumTechRadar.adoptionLayer;
-  const attempted = Math.max(1, (report.ethereumTechRadar.watchlistLayer?.items.length ?? 0) * 3);
-  const succeeded = adoption?.collectionStatus === "collected" ? attempted : adoption?.collectionStatus === "failed" || adoption?.collectionStatus === "skipped" ? 0 : Math.max(0, attempted - 1);
-  const failed = Math.max(0, attempted - succeeded);
-  const partialCollection = adoption?.collectionStatus === "failed" || adoption?.collectionStatus === "skipped" || failed > 0;
+  const diagnostics = adoption?.sourceDiagnostics ?? [];
+  const attempted = diagnostics.length
+    ? diagnostics.filter((item) => item.requestAttempted).length
+    : Math.max(1, (report.ethereumTechRadar.watchlistLayer?.items.length ?? 0) * 3);
+  const succeeded = diagnostics.length
+    ? diagnostics.filter((item) => item.result === "success" || item.result === "empty" || item.result === "cache_hit").length
+    : adoption?.collectionStatus === "collected" ? attempted : adoption?.collectionStatus === "failed" || adoption?.collectionStatus === "skipped" ? 0 : Math.max(0, attempted - 1);
+  const failed = diagnostics.length
+    ? diagnostics.filter((item) => item.result === "failure" || item.result === "partial_failure").length
+    : Math.max(0, attempted - succeeded);
+  const cacheHits = diagnostics.filter((item) => item.result === "cache_hit").length;
+  const staleCacheUse = diagnostics.filter((item) => item.result === "stale_cache").length;
+  const partialCollection = adoption?.collectionStatus === "failed" || adoption?.collectionStatus === "skipped" || failed > 0 || staleCacheUse > 0;
   const missingFields = missingFieldsFor(report);
   const status: DataCompletenessStatus = adoption?.collectionStatus === "failed" ? "degraded"
     : adoption?.collectionStatus === "skipped" ? "unavailable"
       : failed > 0 ? "partial"
         : missingFields.length > 0 ? "mostly_complete"
           : "complete";
+  const collectionCompleteness = attempted > 0 ? Math.round((succeeded / attempted) * 100) : 0;
+  const evidenceMetrics = evidenceMetricsFor(report, failed);
+  const evidenceStrength = evidenceStrengthFor(report, collectionCompleteness, evidenceMetrics);
+  const editorialConfidence = Math.round((collectionCompleteness * 0.45) + (evidenceStrength * 0.4) + (missingFields.length ? 5 : 15));
   return {
     status,
     requiredSourcesAttempted: attempted,
     sourcesSucceeded: succeeded,
     sourcesFailed: failed,
-    cacheHits: process.env.EIPREPORTER_BYPASS_ADOPTION_CACHE === "1" ? 0 : 1,
-    staleCacheUse: 0,
+    cacheHits,
+    staleCacheUse,
     partialCollection,
     missingFields,
     enrichmentSkipped: adoption?.collectionStatus === "skipped" ? ["github_adoption"] : [],
@@ -653,7 +803,158 @@ function buildDataCompleteness(report: PlatformReportInput) {
     explanation: partialCollection
       ? "Evidence collection was incomplete; absence of evidence must not be read as negative evidence."
       : "Core report and adoption evidence collection completed for the monitored scope.",
+    diagnostics,
+    collectionCompleteness,
+    evidenceStrength,
+    editorialConfidence: Math.max(0, Math.min(100, editorialConfidence)),
+    confidenceMetrics: {
+      collectionConfidence: collectionCompleteness,
+      evidenceConfidence: evidenceStrength,
+      signalStrength: signalStrengthFor(report),
+    },
+    evidenceMetrics,
   };
+}
+
+function evidenceMetricsFor(report: PlatformReportInput, failedSources: number): EvidenceMetrics {
+  const adoption = report.ethereumTechRadar.adoptionLayer;
+  const rawCandidates = (adoption?.items ?? []).reduce((sum, item) => sum + (item.rawResultCount ?? item.sources.length), 0);
+  const matchedSources = (adoption?.items ?? []).reduce((sum, item) => sum + (item.acceptedSourceCount ?? item.sources.length), 0);
+  const displayedEvidence = (adoption?.items ?? []).reduce((sum, item) => sum + (item.renderedSourceCount ?? Math.min(3, item.sources.length)), 0);
+  const acceptedKeys = new Set<string>();
+  const directKeys = new Set<string>();
+  const clusterKeys = new Set<string>();
+  let relationCount = 0;
+  const categoryMetrics: EvidenceCategoryMetrics = {
+    specificationEvidence: 0,
+    discussionEvidence: 0,
+    implementationTrackingEvidence: 0,
+    implementationCandidateEvidence: 0,
+    verifiedImplementationEvidence: 0,
+    releaseEvidence: 0,
+    activationEvidence: 0,
+    adoptionEvidence: 0,
+  };
+  for (const item of adoption?.items ?? []) {
+    for (const source of item.sources) {
+      const key = evidenceKeyForSource(source, item.proposalId);
+      relationCount += 1;
+      acceptedKeys.add(key);
+      if (source.relationship === "cluster_related") clusterKeys.add(key);
+      else if (source.relationship === "direct" || !source.relationship) directKeys.add(key);
+      addEvidenceCategory(categoryMetrics, source);
+    }
+  }
+  return {
+    rawCandidates: Math.max(rawCandidates, matchedSources),
+    matchedSources: Math.max(matchedSources, acceptedKeys.size),
+    acceptedEvidence: acceptedKeys.size,
+    displayedEvidence: Math.min(displayedEvidence, acceptedKeys.size),
+    uniqueDirectEvidence: directKeys.size,
+    uniqueClusterReferences: clusterKeys.size,
+    proposalEvidenceRelations: relationCount,
+    failedSources,
+    categoryMetrics,
+  };
+}
+
+function addEvidenceCategory(metrics: EvidenceCategoryMetrics, source: AdoptionEvidenceSource): void {
+  if (source.semanticType === "canonical_status_change" || source.semanticType === "canonical_document_change") metrics.specificationEvidence += 1;
+  if (source.evidenceType === "discussion" || source.semanticType === "cluster_reference" || source.evidenceKind === "mention") metrics.discussionEvidence += 1;
+  if (source.semanticType === "implementation_tracker") metrics.implementationTrackingEvidence += 1;
+  if (source.semanticType === "client_implementation_pr") {
+    if (source.state === "merged") metrics.verifiedImplementationEvidence += 1;
+    else metrics.implementationCandidateEvidence += 1;
+  }
+  if (source.semanticType === "client_code_reference" && source.relationship === "direct") metrics.verifiedImplementationEvidence += 1;
+  if (source.sourceType === "release_note") metrics.releaseEvidence += 1;
+  if (source.evidenceType === "activation") metrics.activationEvidence += 1;
+  if (source.evidenceType === "adoption") metrics.adoptionEvidence += 1;
+}
+
+function signalStrengthFor(report: PlatformReportInput): number {
+  const changes = report.ethereumTechRadar.recentChanges;
+  const discussion = report.ethereumTechRadar.signalLayer.discussionHeat.reduce((max, item) => Math.max(max, item.discussionActivityScore ?? item.discussionScore ?? 0), 0);
+  const changeScore = Math.min(65, changes.newProposals.length * 4 + changes.statusChanges.length * 6 + changes.contentHashChanges.length * 3 + changes.finalTransitions.length * 8);
+  return Math.min(100, Math.round(changeScore + discussion * 0.35));
+}
+
+function evidenceKeyForSource(source: AdoptionEvidenceSource, proposalId: string): string {
+  if (source.evidenceId) return source.evidenceId;
+  if (source.url) {
+    const normalized = normalizeEvidenceUrl(source.url);
+    const github = normalized.match(/github\.com\/([^/]+)\/([^/]+)\/(issues|pull)\/(\d+)/i);
+    if (github) return `github:${github[1]}/${github[2]}:${github[3] === "pull" ? "pull" : "issue"}:${github[4]}`.toLowerCase();
+    const discussion = normalized.match(/ethereum-magicians\.org\/t\/[^/]+\/(\d+)/i);
+    if (discussion) return `discussion:ethereum-magicians:${discussion[1]}`;
+    return normalized;
+  }
+  if (source.semanticType === "canonical_status_change" || source.semanticType === "canonical_document_change") return `proposal:${proposalId}:${source.matchedTerm ?? source.updatedAt ?? "metadata"}`;
+  return `${proposalId}:${source.sourceType}:${source.semanticType ?? "unknown"}:${source.repo ?? source.title ?? source.path ?? "source"}`;
+}
+
+function normalizeEvidenceUrl(url: string): string {
+  try {
+    const parsed = new URL(url);
+    parsed.hash = "";
+    parsed.search = "";
+    return parsed.toString().replace(/\/$/, "");
+  } catch {
+    return url.replace(/[?#].*$/, "").replace(/\/$/, "");
+  }
+}
+
+function evidenceStrengthFor(report: PlatformReportInput, collectionConfidence: number, metrics: EvidenceMetrics): number {
+  const categories = metrics.categoryMetrics;
+  const activityEvidence = (categories?.discussionEvidence ?? 0)
+    + report.ethereumTechRadar.recentChanges.total
+    + report.ethereumTechRadar.signalLayer.discussionHeat.filter((item) => (item.discussionActivityScore ?? item.discussionScore ?? 0) > 0).length;
+  const claims = [
+    claimEvidenceConfidence("ACTIVITY", activityEvidence, collectionConfidence, metrics),
+    claimEvidenceConfidence("SPECIFICATION_STATUS", categories?.specificationEvidence ?? 0, collectionConfidence, metrics),
+    claimEvidenceConfidence("IMPLEMENTATION", (categories?.implementationTrackingEvidence ?? 0) + (categories?.implementationCandidateEvidence ?? 0) + (categories?.verifiedImplementationEvidence ?? 0), collectionConfidence, metrics),
+    claimEvidenceConfidence("RELEASE", categories?.releaseEvidence ?? 0, collectionConfidence, metrics),
+    claimEvidenceConfidence("NETWORK_ACTIVATION", categories?.activationEvidence ?? 0, collectionConfidence, metrics),
+    claimEvidenceConfidence("PRODUCTION_ADOPTION", categories?.adoptionEvidence ?? 0, collectionConfidence, metrics),
+    claimEvidenceConfidence("KGLD_RELEVANCE", report.kgldOpportunityRadar.candidates.length, collectionConfidence, metrics),
+  ];
+  const weights = [0.18, 0.17, 0.2, 0.14, 0.11, 0.1, 0.1];
+  return Math.round(claims.reduce((sum, claim, index) => sum + claim * weights[index]!, 0));
+}
+
+function claimEvidenceConfidence(claimType: EvidenceClaimType, evidenceCount: number, collectionConfidence: number, metrics: EvidenceMetrics): number {
+  const categories = metrics.categoryMetrics;
+  const requiredGateSatisfied = gateSatisfied(claimType, categories, evidenceCount);
+  const gateCoverage = requiredGateSatisfied ? Math.min(100, evidenceCount * 25) : Math.min(35, evidenceCount * 8);
+  const sourceAuthorityScore = Math.min(90, 35 + (categories?.specificationEvidence ?? 0) * 10 + (categories?.verifiedImplementationEvidence ?? 0) * 20 + (categories?.releaseEvidence ?? 0) * 25);
+  const directEvidenceRatio = metrics.acceptedEvidence ? Math.round((metrics.uniqueDirectEvidence / metrics.acceptedEvidence) * 100) : 0;
+  const independenceScore = metrics.acceptedEvidence ? Math.min(80, metrics.acceptedEvidence * 12) : 0;
+  const freshnessScore = collectionConfidence;
+  const claimCoverageScore = Math.min(100, collectionConfidence);
+  let score = Math.round(
+    gateCoverage * 0.35
+    + sourceAuthorityScore * 0.2
+    + directEvidenceRatio * 0.15
+    + independenceScore * 0.1
+    + freshnessScore * 0.1
+    + claimCoverageScore * 0.1,
+  );
+  if (!requiredGateSatisfied) score = Math.min(score, 49);
+  if (claimType === "IMPLEMENTATION" && !(categories?.implementationCandidateEvidence || categories?.verifiedImplementationEvidence || categories?.implementationTrackingEvidence)) score = Math.min(score, 49);
+  if (claimType === "RELEASE" && !(categories?.releaseEvidence)) score = Math.min(score, 29);
+  if (claimType === "NETWORK_ACTIVATION" && !(categories?.activationEvidence)) score = Math.min(score, 29);
+  if (claimType === "PRODUCTION_ADOPTION" && !(categories?.adoptionEvidence)) score = Math.min(score, 19);
+  return Math.max(0, Math.min(100, score));
+}
+
+function gateSatisfied(claimType: EvidenceClaimType, categories: EvidenceCategoryMetrics | undefined, evidenceCount: number): boolean {
+  if (claimType === "ACTIVITY") return evidenceCount > 0;
+  if (claimType === "SPECIFICATION_STATUS") return (categories?.specificationEvidence ?? 0) > 0;
+  if (claimType === "IMPLEMENTATION") return ((categories?.implementationTrackingEvidence ?? 0) + (categories?.implementationCandidateEvidence ?? 0) + (categories?.verifiedImplementationEvidence ?? 0)) > 0;
+  if (claimType === "RELEASE") return (categories?.releaseEvidence ?? 0) > 0 && (categories?.verifiedImplementationEvidence ?? 0) > 0;
+  if (claimType === "NETWORK_ACTIVATION") return (categories?.activationEvidence ?? 0) > 0;
+  if (claimType === "PRODUCTION_ADOPTION") return (categories?.adoptionEvidence ?? 0) > 0;
+  return evidenceCount > 0 && ((categories?.specificationEvidence ?? 0) + (categories?.implementationTrackingEvidence ?? 0) + (categories?.implementationCandidateEvidence ?? 0) + (categories?.verifiedImplementationEvidence ?? 0)) > 0;
 }
 
 function missingFieldsFor(report: PlatformReportInput): string[] {

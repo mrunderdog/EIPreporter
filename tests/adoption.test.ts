@@ -452,6 +452,11 @@ test("partial endpoint failure still returns collected evidence", async () => {
 
   assert.equal(layer.collectionStatus, "collected");
   assert.equal(layer.items[0]?.evidenceLevel, "Implementation");
+  assert.equal(layer.sourceDiagnostics?.some((item) => item.result === "failure" && item.httpStatus === 500), true);
+  assert.equal(layer.sourceDiagnostics?.some((item) => item.result === "success" || item.result === "empty"), true);
+  assert.equal(layer.evidenceSummary?.implementation, 1);
+  assert.equal(layer.items[0]?.sources[0]?.evidenceType, "implementation");
+  assert.ok(layer.items[0]?.sources[0]?.directlySupportedClaim);
 });
 
 test("only all-endpoint failure produces total fallback", async () => {
@@ -464,6 +469,35 @@ test("only all-endpoint failure produces total fallback", async () => {
   assert.equal(layer.collectionStatus, "failed");
   assert.equal(layer.note, "GitHub evidence collection could not be completed for this run.");
   assert.equal(layer.items[0]?.evidenceLevel, "Unknown");
+  assert.equal(layer.sourceDiagnostics?.[0]?.result, "failure");
+  assert.match(layer.sourceDiagnostics?.[0]?.failureReason ?? "", /GitHub adoption search failed|rate limited/i);
+});
+
+test("source diagnostics distinguish empty result, malformed response, rate limit, and authentication failure", async () => {
+  const empty = await buildAdoptionLayerWithGithubSearch(makeReport(), {
+    token: "test-token",
+    cachePath: tempCachePath(),
+    fetchImpl: mockFetch(() => ({ items: [] })),
+  });
+  assert.equal(empty.collectionStatus, "collected");
+  assert.equal(empty.sourceDiagnostics?.every((item) => item.result === "empty"), true);
+
+  const rateLimited = await buildAdoptionLayerWithGithubSearch(makeReport(), {
+    token: "test-token",
+    cachePath: tempCachePath(),
+    fetchImpl: mockFetch(() => new Response(JSON.stringify({ message: "rate limited" }), { status: 403, headers: { "x-ratelimit-remaining": "0" } })),
+  });
+  assert.equal(rateLimited.collectionStatus, "failed");
+  assert.equal(rateLimited.sourceDiagnostics?.[0]?.result, "failure");
+  assert.match(rateLimited.sourceDiagnostics?.[0]?.failureReason ?? "", /rate limited/i);
+
+  const authFailed = await buildAdoptionLayerWithGithubSearch(makeReport(), {
+    token: "test-token",
+    cachePath: tempCachePath(),
+    fetchImpl: mockFetch(() => new Response(JSON.stringify({ message: "bad credentials" }), { status: 401 })),
+  });
+  assert.equal(authFailed.collectionStatus, "failed");
+  assert.equal(authFailed.sourceDiagnostics?.[0]?.httpStatus, 401);
 });
 
 test("fresh collected cache is preferred over same-scope failed cache", async () => {
@@ -505,7 +539,7 @@ test("fresh collected cache is preferred over same-scope failed cache", async ()
   }
 });
 
-test("HTML renders GitHub skipped state", () => {
+test("HTML keeps GitHub skipped diagnostics out of the end-user IA", () => {
   const report = makeReport();
   report.ethereumTechRadar.adoptionLayer = {
     generatedBy: "fallback",
@@ -515,7 +549,8 @@ test("HTML renders GitHub skipped state", () => {
   };
 
   const html = generateWeeklyHtml(report);
-  assert.match(html, /GITHUB_TOKEN이 설정되지 않아 GitHub 근거 수집을 건너뛰었습니다/);
+  assert.match(html, /Executive Pulse/);
+  assert.doesNotMatch(html, /GITHUB_TOKEN이 설정되지 않아 GitHub 근거 수집을 건너뛰었습니다/);
   assert.doesNotMatch(html, /[湲蹂理]|쨌|�/);
 });
 
@@ -529,15 +564,19 @@ test("HTML renders mention, reference, and implementation evidence without sayin
     };
     report.ethereumTechRadar.narrativeLayer = buildNarrativeLayer(report);
     const html = generateWeeklyHtml(report);
+    const visibleHtml = html
+      .replace(/<style>[\s\S]*?<\/style>/, "")
+      .replace(/<script type="application\/json" id="technology-platform-api">[\s\S]*?<\/script>/, "")
+      .replace(/<script>[\s\S]*?<\/script>/, "");
 
-    assert.match(html, new RegExp(evidenceLevel === "Implementation" ? "구현" : evidenceLevel === "Reference" ? "참조" : "언급"));
-    assert.doesNotMatch(html, /\b(adopted|adoption across|implemented in production|client supports|production implementation|price impact|token price|market impact)\b/i);
+    assert.match(html, /Executive Pulse|KGLD Technology Watch/);
+    assert.doesNotMatch(visibleHtml, /\b(adopted|adoption across|implemented in production|client supports|production implementation|price impact|token price|market impact)\b/i);
     assert.doesNotMatch(html, /Goldstation/);
     assert.doesNotMatch(html, /Hana/i);
   }
 });
 
-test("watchlist tile shows adoption evidence chip when evidence exists", () => {
+test("HTML does not render adoption evidence chips as primary content", () => {
   const report = makeReport();
   report.ethereumTechRadar.adoptionLayer = {
     generatedBy: "github_search",
@@ -546,10 +585,11 @@ test("watchlist tile shows adoption evidence chip when evidence exists", () => {
   };
 
   const html = generateWeeklyHtml(report);
-  assert.match(html, /외부 참조/);
+  assert.match(html, /Proposal 근거 appendix/);
+  assert.doesNotMatch(html, /외부 참조/);
 });
 
-test("HTML distinguishes accepted sources from retained rendered sources", () => {
+test("HTML keeps accepted source counts in diagnostics rather than visible IA", () => {
   const report = makeReport();
   report.ethereumTechRadar.adoptionLayer = {
     generatedBy: "github_search",
@@ -562,16 +602,17 @@ test("HTML distinguishes accepted sources from retained rendered sources", () =>
   };
 
   const html = generateWeeklyHtml(report);
-  assert.match(html, /채택된 출처/);
-  assert.match(html, /<span>채택된 출처<\/span><b>12<\/b>/);
-  assert.match(html, /보관\/표시/);
-  assert.match(html, /<span>보관\/표시<\/span><b>5<\/b>/);
-  assert.match(html, /직접 근거/);
-  assert.match(html, /관련 출처: 12건/);
+  const visibleHtml = stripEmbeddedPayloads(html);
+  assert.doesNotMatch(visibleHtml, /채택된 출처/);
+  assert.doesNotMatch(visibleHtml, /<span>채택된 출처<\/span><b>12<\/b>/);
+  assert.doesNotMatch(visibleHtml, /보관\/표시/);
+  assert.doesNotMatch(visibleHtml, /<span>보관\/표시<\/span><b>5<\/b>/);
+  assert.doesNotMatch(visibleHtml, /<th>직접 근거<\/th>|직접 근거<\/dt>|직접 근거<\/span>/);
+  assert.doesNotMatch(visibleHtml, /관련 출처: 12건/);
   assert.doesNotMatch(html, /Source count/);
 });
 
-test("HTML separates direct evidence from related cluster references", () => {
+test("HTML hides direct evidence tables and related cluster references", () => {
   const report = makeReport();
   report.ethereumTechRadar.adoptionLayer = {
     generatedBy: "github_search",
@@ -608,13 +649,13 @@ test("HTML separates direct evidence from related cluster references", () => {
   };
 
   const html = generateWeeklyHtml(report);
-  assert.match(html, /직접 근거/);
-  assert.match(html, /관련 클러스터 참조/);
-  assert.match(html, /구현 추적 이슈/);
-  assert.match(html, /직접/);
-  assert.match(html, /업데이트 2026-07-18/);
-  assert.match(html, /클러스터 참조/);
-  assert.match(html, /클러스터 관련/);
+  const visibleHtml = stripEmbeddedPayloads(html);
+  assert.doesNotMatch(visibleHtml, /<th>직접 근거<\/th>|직접 근거<\/dt>|직접 근거<\/span>/);
+  assert.doesNotMatch(visibleHtml, /관련 클러스터 참조/);
+  assert.doesNotMatch(visibleHtml, /구현 추적 이슈/);
+  assert.doesNotMatch(visibleHtml, /업데이트 2026-07-18/);
+  assert.doesNotMatch(visibleHtml, /클러스터 참조/);
+  assert.doesNotMatch(visibleHtml, /클러스터 관련/);
 });
 
 test("narrative wording changes by evidence level", () => {
@@ -664,7 +705,7 @@ test("narrative distinguishes implementation tracking from production adoption",
   assert.doesNotMatch(text, /\bproduction adoption\b/i);
 });
 
-test("Business Impact wording changes by evidence level", () => {
+test("KGLD section remains reasoning-oriented without evidence-level scoring copy", () => {
   const expectations: Array<["Unknown" | "Reference" | "Implementation", RegExp]> = [
     ["Unknown", /확인된 구현 근거가 없으므로/],
     ["Reference", /외부 참조 근거가 있으나/],
@@ -679,7 +720,8 @@ test("Business Impact wording changes by evidence level", () => {
       items: [level === "Unknown" ? unknownItem() : evidenceItem(level)],
     };
     const html = generateWeeklyHtml(report);
-    assert.match(html, expected);
+    assert.match(html, /KGLD Technology Watch/);
+    assert.doesNotMatch(html, expected);
   }
 });
 
@@ -693,6 +735,14 @@ function mockFetch(bodyForUrl: (url: string) => GitHubSearchBody | GitHubPullFil
       headers: { "content-type": "application/json" },
     });
   }) as typeof fetch;
+}
+
+function stripEmbeddedPayloads(html: string): string {
+  return html
+    .replace(/<style>[\s\S]*?<\/style>/, "")
+    .replace(/<script type="application\/json" id="technology-platform-api">[\s\S]*?<\/script>/, "")
+    .replace(/<!-- EIPreporter chart data: [\s\S]*? -->/, "")
+    .replace(/<script>[\s\S]*?<\/script>/, "");
 }
 
 type GitHubSearchBody = { items: unknown[]; total_count?: number };
@@ -791,7 +841,7 @@ function evidenceItem(evidenceLevel: "Mention" | "Reference" | "Implementation")
         ? "1 external reference source(s) were collected. This is not client support or production adoption evidence."
         : "1 source(s) indicate implementation evidence. This does not imply adoption or client support.",
     caution: evidenceLevel === "Implementation"
-      ? "Implementation evidence is not adoption, release confirmation, or live usage."
+      ? "구현 근거만으로 릴리스, 운영 채택, 실제 사용을 판단할 수 없습니다."
       : "Reference evidence should be reviewed manually before upgrading the signal.",
   };
 }

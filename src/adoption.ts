@@ -5,6 +5,9 @@ import type {
   AdoptionEvidenceLevel,
   AdoptionEvidenceSource,
   AdoptionLayer,
+  EvidenceTaxonomySummary,
+  EvidenceType,
+  SourceCollectionDiagnostic,
   ThemeInsight,
   WatchlistItem,
   WeeklyRadarReport,
@@ -23,6 +26,7 @@ type GitHubSearchOptions = {
   fetchImpl?: typeof fetch;
   now?: Date;
   timeoutMs?: number;
+  itemLimit?: number;
   cachePath?: string;
 };
 
@@ -61,6 +65,7 @@ type GithubItemResult = {
   item: AdoptionEvidenceItem;
   hadEndpointSuccess: boolean;
   hadEndpointFailure: boolean;
+  diagnostics: SourceCollectionDiagnostic[];
 };
 
 type DebugSummary = Record<SearchKind, {
@@ -99,10 +104,13 @@ const SHORT_CACHE_TTL_MS = 60 * 60 * 1000;
 const STALE_SUCCESS_FALLBACK_TTL_MS = 7 * 24 * 60 * 60 * 1000;
 
 export function buildAdoptionLayer(report: AdoptionReportInput): AdoptionLayer {
+  const items = topWatchlistItems(report, 1).map((item) => buildFallbackItem(report, item, "Unknown"));
   return {
-    items: topWatchlistItems(report, 1).map((item) => buildFallbackItem(report, item, "Unknown")),
+    items,
     generatedBy: "fallback",
     collectionStatus: "fallback",
+    sourceDiagnostics: [derivedDiagnostic("adoption_fallback", "empty", items.length)],
+    evidenceSummary: evidenceSummaryForItems(items),
   };
 }
 
@@ -117,15 +125,18 @@ export async function buildAdoptionLayerWithGithubSearch(
 
   if (process.env.EIPREPORTER_BYPASS_ADOPTION_CACHE !== "1") {
     const cached = readCachedLayer(cachePath, cacheKey, now);
-    if (cached) return cached;
+    if (cached) return withCacheDiagnostic(cached, now);
   }
 
   if (!token) {
+    const items = topWatchlistItems(report, 1).map((item) => buildFallbackItem(report, item, "Unknown"));
     const layer = {
-      items: topWatchlistItems(report, 1).map((item) => buildFallbackItem(report, item, "Unknown")),
+      items,
       generatedBy: "fallback" as const,
       collectionStatus: "skipped" as const,
       note: GITHUB_SKIPPED_MESSAGE,
+      sourceDiagnostics: [githubSkippedDiagnostic("GitHub adoption search", "GITHUB_TOKEN is not configured", items.length)],
+      evidenceSummary: evidenceSummaryForItems(items),
     };
     writeCachedLayer(cachePath, cacheKey, layer, now);
     return layer;
@@ -136,22 +147,36 @@ export async function buildAdoptionLayerWithGithubSearch(
 
   try {
     const itemResults: GithubItemResult[] = [];
-    for (const watchlistItem of topWatchlistItems(report, 3)) {
+    for (const watchlistItem of topWatchlistItems(report, options.itemLimit ?? 3)) {
       itemResults.push(await buildGithubItem(report, watchlistItem, token, fetchImpl, observedAt, options.timeoutMs ?? 7000));
     }
     if (itemResults.length > 0 && itemResults.every((result) => result.hadEndpointFailure && !result.hadEndpointSuccess)) {
-      throw new Error("All GitHub adoption search endpoints failed");
+      const items = topWatchlistItems(report, 1).map((item) => buildFallbackItem(report, item, "Unknown"));
+      const layer = {
+        items,
+        generatedBy: "fallback" as const,
+        collectionStatus: "failed" as const,
+        note: GITHUB_FAILED_MESSAGE,
+        sourceDiagnostics: itemResults.flatMap((result) => result.diagnostics),
+        evidenceSummary: evidenceSummaryForItems(items),
+      };
+      writeCachedLayer(cachePath, cacheKey, layer, now);
+      return layer;
     }
     const items = itemResults.map((result) => result.item);
-    const layer = { items, generatedBy: "github_search" as const, collectionStatus: "collected" as const };
+    const diagnostics = itemResults.flatMap((result) => result.diagnostics);
+    const layer = { items, generatedBy: "github_search" as const, collectionStatus: "collected" as const, sourceDiagnostics: diagnostics, evidenceSummary: evidenceSummaryForItems(items) };
     writeCachedLayer(cachePath, cacheKey, layer, now);
     return layer;
-  } catch {
+  } catch (error) {
+    const items = topWatchlistItems(report, 1).map((item) => buildFallbackItem(report, item, "Unknown"));
     const layer = {
-      items: topWatchlistItems(report, 1).map((item) => buildFallbackItem(report, item, "Unknown")),
+      items,
       generatedBy: "fallback" as const,
       collectionStatus: "failed" as const,
       note: GITHUB_FAILED_MESSAGE,
+      sourceDiagnostics: [githubFailureDiagnostic("GitHub adoption search", error, items.length)],
+      evidenceSummary: evidenceSummaryForItems(items),
     };
     writeCachedLayer(cachePath, cacheKey, layer, now);
     return layer;
@@ -250,6 +275,7 @@ async function buildGithubItem(
   const proposalTitle = titleForProposal(report, proposalId);
   const repoScope = adoptionSearchRepos().map((repo) => `repo:${repo}`).join(" ");
   const sources: AdoptionEvidenceSource[] = [];
+  const diagnostics: SourceCollectionDiagnostic[] = [];
   const debug = newDebugSummary();
   let hadEndpointSuccess = false;
   let hadEndpointFailure = false;
@@ -259,6 +285,7 @@ async function buildGithubItem(
       if (sources.length >= MAX_ACCEPTED_SOURCE_CANDIDATES_PER_ITEM) break;
       const query = githubQueryForKind(term, repoScope, kind);
       const endpointResult = await searchGithubEndpoint(query, kind, token, fetchImpl, timeoutMs);
+      diagnostics.push(endpointResult.diagnostic);
       if (endpointResult.ok) {
         hadEndpointSuccess = true;
       } else {
@@ -284,7 +311,7 @@ async function buildGithubItem(
     if (sources.length >= MAX_ACCEPTED_SOURCE_CANDIDATES_PER_ITEM) break;
   }
 
-  const acceptedSources = dedupeSources(sources, Number.POSITIVE_INFINITY);
+  const acceptedSources = dedupeSources(sources.map((source) => enrichEvidenceSource(source, proposalId)), Number.POSITIVE_INFINITY);
   const dedupedSources = acceptedSources.slice(0, MAX_RETAINED_SOURCES_PER_ITEM);
   for (const kind of Object.keys(debug) as SearchKind[]) {
     debug[kind].deduplicatedCount = debug[kind].acceptedCount - acceptedSources.filter((source) => searchKindForSource(source) === kind).length;
@@ -292,7 +319,7 @@ async function buildGithubItem(
   if (!dedupedSources.length) {
     const fallback = buildFallbackItem(report, item, "None");
     printDebugSummary(debug, fallback.evidenceLevel);
-    return { item: fallback, hadEndpointSuccess, hadEndpointFailure };
+    return { item: fallback, hadEndpointSuccess, hadEndpointFailure, diagnostics };
   }
 
   const score = Math.min(100, Math.max(...dedupedSources.map(scoreSource)));
@@ -314,7 +341,7 @@ async function buildGithubItem(
     caution: cautionForEvidence(level),
   };
   printDebugSummary(debug, level);
-  return { item: evidenceItem, hadEndpointSuccess, hadEndpointFailure };
+  return { item: evidenceItem, hadEndpointSuccess, hadEndpointFailure, diagnostics };
 }
 
 function githubQueryForKind(term: string, repoScope: string, kind: SearchKind): string {
@@ -330,17 +357,20 @@ async function searchGithubEndpoint(
   token: string,
   fetchImpl: typeof fetch,
   timeoutMs: number,
-): Promise<{ ok: true; response: GitHubSearchResponse } | { ok: false; error: unknown }> {
+): Promise<{ ok: true; response: GitHubSearchResponse; diagnostic: SourceCollectionDiagnostic } | { ok: false; error: unknown; diagnostic: SourceCollectionDiagnostic }> {
   if ((kind === "issue" || kind === "pr") && !/\bis:(issue|pull-request)\b/.test(query)) {
-    return { ok: false, error: new Error("Refusing to call /search/issues without an issue or pull-request qualifier") };
+    const error = new Error("Refusing to call /search/issues without an issue or pull-request qualifier");
+    return { ok: false, error, diagnostic: githubEndpointDiagnostic(query, kind, "failure", 0, error.message) };
   }
   const endpoint = kind === "code" ? "code" : "issues";
   const perPage = kind === "pr" ? MAX_RAW_PR_RESULTS_PER_QUERY : 5;
   const url = `https://api.github.com/search/${endpoint}?q=${encodeURIComponent(query)}&per_page=${perPage}`;
   try {
-    return { ok: true, response: await githubSearch(url, token, fetchImpl, timeoutMs) };
+    const result = await githubSearch(url, token, fetchImpl, timeoutMs);
+    const count = result.response.items?.length ?? 0;
+    return { ok: true, response: result.response, diagnostic: githubEndpointDiagnostic(query, kind, count > 0 ? "success" : "empty", count, undefined, url, result.status, result.retryCount) };
   } catch (error) {
-    return { ok: false, error };
+    return { ok: false, error, diagnostic: githubEndpointDiagnostic(query, kind, "failure", 0, errorMessage(error), url, statusFromError(error), retryCountFromError(error)) };
   }
 }
 
@@ -349,8 +379,9 @@ async function githubSearch(
   token: string,
   fetchImpl: typeof fetch,
   timeoutMs: number,
-): Promise<GitHubSearchResponse> {
-  return githubSearchAttempt(url, token, fetchImpl, timeoutMs, true);
+): Promise<{ response: GitHubSearchResponse; status: number; retryCount: number }> {
+  const result = await githubSearchAttempt(url, token, fetchImpl, timeoutMs, true);
+  return { ...result, response: result.response as GitHubSearchResponse };
 }
 
 async function githubSearchAttempt(
@@ -359,7 +390,7 @@ async function githubSearchAttempt(
   fetchImpl: typeof fetch,
   timeoutMs: number,
   canRetry: boolean,
-): Promise<GitHubSearchResponse> {
+): Promise<{ response: unknown; status: number; retryCount: number }> {
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), timeoutMs);
   try {
@@ -367,18 +398,111 @@ async function githubSearchAttempt(
       headers: {
         Accept: "application/vnd.github+json",
         Authorization: `Bearer ${token}`,
+        "X-GitHub-Api-Version": "2022-11-28",
         "User-Agent": "EIPreporter",
       },
       signal: controller.signal,
     });
-    if (response.ok) return await response.json() as GitHubSearchResponse;
+    if (response.ok) return { response: await response.json() as GitHubSearchResponse, status: response.status, retryCount: canRetry ? 0 : 1 };
     const retryable = [502, 503, 504].includes(response.status);
     const rateLimited = response.status === 403 && response.headers.get("x-ratelimit-remaining") === "0";
     if (canRetry && retryable) return githubSearchAttempt(url, token, fetchImpl, timeoutMs, false);
-    throw new Error(rateLimited ? "GitHub adoption search rate limited" : `GitHub adoption search failed: ${response.status}`);
+    throw githubHttpError(rateLimited ? "GitHub adoption search rate limited" : `GitHub adoption search failed: ${response.status}`, response.status, canRetry ? 0 : 1);
   } finally {
     clearTimeout(timeout);
   }
+}
+
+function githubHttpError(message: string, status: number, retryCount: number): Error {
+  const error = new Error(message) as Error & { status?: number; retryCount?: number };
+  error.status = status;
+  error.retryCount = retryCount;
+  return error;
+}
+
+function statusFromError(error: unknown): number | undefined {
+  return typeof error === "object" && error !== null && "status" in error && typeof (error as { status?: unknown }).status === "number"
+    ? (error as { status: number }).status
+    : undefined;
+}
+
+function retryCountFromError(error: unknown): number {
+  return typeof error === "object" && error !== null && "retryCount" in error && typeof (error as { retryCount?: unknown }).retryCount === "number"
+    ? (error as { retryCount: number }).retryCount
+    : 0;
+}
+
+function errorMessage(error: unknown): string {
+  if (!(error instanceof Error)) return String(error);
+  const cause = "cause" in error ? error.cause as { code?: unknown; errno?: unknown; syscall?: unknown; hostname?: unknown; message?: unknown } | undefined : undefined;
+  const details = cause
+    ? [cause.message, cause.code ? `code=${String(cause.code)}` : "", cause.errno ? `errno=${String(cause.errno)}` : "", cause.syscall ? `syscall=${String(cause.syscall)}` : "", cause.hostname ? `hostname=${String(cause.hostname)}` : ""].filter(Boolean).join(" ")
+    : "";
+  return details ? `${error.message}: ${details}` : error.message;
+}
+
+function githubEndpointDiagnostic(
+  query: string,
+  kind: SearchKind,
+  result: SourceCollectionDiagnostic["result"],
+  recordCountCollected: number,
+  failureReason?: string,
+  requestUrl?: string,
+  httpStatus?: number,
+  retryCount = 0,
+): SourceCollectionDiagnostic {
+  return {
+    sourceName: `GitHub ${kind} search`,
+    sourceType: "github_search",
+    requestAttempted: true,
+    requestUrl,
+    requestQuery: query,
+    result,
+    httpStatus,
+    failureReason,
+    retryCount,
+    cachedDataAvailable: false,
+    recordCountCollected,
+  };
+}
+
+function githubSkippedDiagnostic(sourceName: string, reason: string, recordCountCollected: number): SourceCollectionDiagnostic {
+  return {
+    sourceName,
+    sourceType: "github_search",
+    requestAttempted: false,
+    result: "skipped",
+    failureReason: reason,
+    retryCount: 0,
+    cachedDataAvailable: false,
+    recordCountCollected,
+  };
+}
+
+function githubFailureDiagnostic(sourceName: string, error: unknown, recordCountCollected: number): SourceCollectionDiagnostic {
+  return {
+    sourceName,
+    sourceType: "github_search",
+    requestAttempted: true,
+    result: "failure",
+    httpStatus: statusFromError(error),
+    failureReason: errorMessage(error),
+    retryCount: retryCountFromError(error),
+    cachedDataAvailable: false,
+    recordCountCollected,
+  };
+}
+
+function derivedDiagnostic(sourceName: string, result: SourceCollectionDiagnostic["result"], recordCountCollected: number): SourceCollectionDiagnostic {
+  return {
+    sourceName,
+    sourceType: "derived",
+    requestAttempted: false,
+    result,
+    retryCount: 0,
+    cachedDataAvailable: false,
+    recordCountCollected,
+  };
 }
 
 function titleForProposal(report: AdoptionReportInput, proposalId: string): string | undefined {
@@ -552,7 +676,7 @@ async function pullRequestFiles(
       timeoutMs,
       true,
     );
-    return Array.isArray(response) ? response as GitHubPullFile[] : [];
+    return Array.isArray(response.response) ? response.response as GitHubPullFile[] : [];
   } catch {
     return [];
   }
@@ -773,6 +897,62 @@ function isVerifiedImplementationSource(source: AdoptionEvidenceSource): boolean
     && source.evidenceKind === "implementation";
 }
 
+function evidenceTypeForSource(source: AdoptionEvidenceSource): EvidenceType {
+  if (source.sourceType === "release_note") return "release";
+  if (source.semanticType === "canonical_status_change" || source.semanticType === "canonical_document_change") return "change";
+  if (source.semanticType === "client_implementation_pr" || source.semanticType === "client_code_reference") return "implementation";
+  if (source.semanticType === "protocol_spec_reference") return "specification";
+  if (source.semanticType === "core_developer_coordination" || source.sourceType === "github_issue") return "discussion";
+  return "derived";
+}
+
+function sourceAuthorityForType(type: EvidenceType): AdoptionEvidenceSource["sourceAuthority"] {
+  if (type === "specification" || type === "change") return "canonical";
+  if (type === "implementation") return "client";
+  if (type === "discussion") return "discussion";
+  if (type === "release") return "release";
+  if (type === "business") return "business";
+  return "derived";
+}
+
+function enrichEvidenceSource(source: AdoptionEvidenceSource, proposalId: string): AdoptionEvidenceSource {
+  const evidenceType = evidenceTypeForSource(source);
+  return {
+    ...source,
+    evidenceType,
+    sourceAuthority: sourceAuthorityForType(evidenceType),
+    directlySupportedClaim: directlySupportedClaim(source, proposalId, evidenceType),
+    confidenceContribution: scoreSource(source),
+  };
+}
+
+function directlySupportedClaim(source: AdoptionEvidenceSource, proposalId: string, type: EvidenceType): string {
+  if (type === "implementation") return `${proposalId} has client implementation tracking evidence from ${source.repo ?? source.sourceType}.`;
+  if (type === "release") return `${proposalId} appears in release-oriented evidence from ${source.repo ?? source.sourceType}.`;
+  if (type === "change") return `${proposalId} has canonical specification or status change evidence.`;
+  if (type === "specification") return `${proposalId} is referenced by specification evidence.`;
+  if (type === "discussion") return `${proposalId} has public discussion or coordination evidence.`;
+  return `${proposalId} has derived or weak supporting evidence.`;
+}
+
+function evidenceSummaryForItems(items: AdoptionEvidenceItem[]): EvidenceTaxonomySummary {
+  const summary: EvidenceTaxonomySummary = {
+    specification: 0,
+    change: 0,
+    discussion: 0,
+    implementation: 0,
+    release: 0,
+    activation: 0,
+    adoption: 0,
+    business: 0,
+    derived: 0,
+  };
+  for (const source of items.flatMap((item) => item.sources)) {
+    summary[source.evidenceType ?? evidenceTypeForSource(source)] += 1;
+  }
+  return summary;
+}
+
 function summaryForEvidence(level: AdoptionEvidenceLevel, sourceCount: number, sources: AdoptionEvidenceSource[] = []): string {
   if (sources.some((source) => source.semanticType === "implementation_tracker")) {
     return "Implementation tracking references were found, but no verified client implementation or production support was identified.";
@@ -786,7 +966,7 @@ function summaryForEvidence(level: AdoptionEvidenceLevel, sourceCount: number, s
 function cautionForEvidence(level: AdoptionEvidenceLevel): string {
   if (level === "Mention") return "A mention is not implementation evidence; keep this as discussion/reference signal.";
   if (level === "Reference") return "Reference evidence should be reviewed manually before upgrading the signal.";
-  if (level === "Implementation") return "Implementation evidence is not adoption, release confirmation, or live usage.";
+  if (level === "Implementation") return "구현 근거만으로 릴리스, 운영 채택, 실제 사용을 판단할 수 없습니다.";
   return FALLBACK_CAUTION;
 }
 
@@ -822,6 +1002,41 @@ function readCachedLayer(path: string, key: string, now: Date): AdoptionLayer | 
   } catch {
     return null;
   }
+}
+
+function withCacheDiagnostic(layer: AdoptionLayer, now: Date): AdoptionLayer {
+  const latest = latestSourceTime(layer);
+  return {
+    ...layer,
+    sourceDiagnostics: [
+      {
+        sourceName: "Adoption evidence cache",
+        sourceType: "cache",
+        requestAttempted: false,
+        result: latest ? "cache_hit" : "stale_cache",
+        retryCount: 0,
+        cachedDataAvailable: true,
+        lastSuccessfulCollectionAt: latest,
+        recordCountCollected: layer.items.reduce((sum, item) => sum + item.sources.length, 0),
+        freshness: {
+          collectedAt: now.toISOString(),
+          sourceUpdatedAt: latest,
+          ageDays: latest ? Math.max(0, Math.floor((now.getTime() - Date.parse(latest)) / (24 * 60 * 60 * 1000))) : undefined,
+          stale: latest ? now.getTime() - Date.parse(latest) > STALE_SUCCESS_FALLBACK_TTL_MS : true,
+        },
+      },
+      ...(layer.sourceDiagnostics ?? []),
+    ],
+    evidenceSummary: layer.evidenceSummary ?? evidenceSummaryForItems(layer.items),
+  };
+}
+
+function latestSourceTime(layer: AdoptionLayer): string | undefined {
+  return layer.items
+    .flatMap((item) => item.sources.flatMap((source) => [source.updatedAt, source.observedAt]))
+    .filter((value): value is string => Boolean(value))
+    .sort()
+    .at(-1);
 }
 
 function readFreshCollectedLayer(cache: Record<string, CachedLayer>, key: string, now: Date, ttlMs: number): AdoptionLayer | null {

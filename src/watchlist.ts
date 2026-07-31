@@ -199,7 +199,7 @@ function monitorNextForTheme(theme: ThemeInsight, report: WatchlistReportInput):
     proposals.length ? `${proposals.join(" / ")} content diff` : `${theme.theme} content diff`,
     report.ethereumTechRadar.signalLayer.diffIntelligence.length === 0
       ? "whether momentum becomes a spec-change signal"
-      : "whether recent diffs continue next week",
+      : "최근 변경 흐름이 다음 주에도 이어지는지 확인",
   ];
 }
 
@@ -224,7 +224,7 @@ function businessRelevanceForTheme(theme: string): WatchlistItem["businessReleva
     };
   }
   if (theme === "Wallet UX" || theme === "Account Abstraction") {
-    return { area: "Wallet", note: "Wallet flow relevance is plausible and should be checked against explicit proposal scope." };
+    return { area: "Wallet", note: "지갑 흐름과의 관련성은 가능성 수준이며, 실제 proposal 범위와 직접 대조해야 합니다." };
   }
   if (theme === "Identity / Credential") {
     return { area: "RWA / Compliance", note: "Identity and credential mechanics may be relevant to compliance review." };

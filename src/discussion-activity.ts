@@ -29,6 +29,24 @@ type DiscourseTopicJson = {
   details?: {
     participants?: unknown;
   };
+  post_stream?: {
+    posts?: unknown;
+    stream?: unknown;
+  };
+};
+
+type DiscoursePost = {
+  id?: unknown;
+  post_number?: unknown;
+  created_at?: unknown;
+  updated_at?: unknown;
+  username?: unknown;
+  name?: unknown;
+  cooked?: unknown;
+  raw?: unknown;
+  reply_to_post_number?: unknown;
+  hidden?: unknown;
+  deleted_at?: unknown;
 };
 
 const DEFAULT_LIMIT = 25;
@@ -72,7 +90,14 @@ export async function enrichDiscussionItem(
   item: DiscussionHeatItem,
   options: FetchDiscussionOptions = {},
 ): Promise<DiscussionHeatItem> {
-  if (!item.discussionUrl) return withUnavailableActivity(item, "Discussion URL unavailable.");
+  if (!item.discussionUrl) {
+    const discovered = await discoverDiscussionUrl(item, options);
+    if (discovered.discussionUrl) return enrichDiscussionItem({ ...item, ...discovered }, options);
+    return {
+      ...withUnavailableActivity(item, "frontmatter thread 없음 · 추가 탐색 미실행"),
+      ...discovered,
+    };
+  }
 
   const now = options.now ?? new Date();
   const cached = readFreshCache(item.discussionUrl, now, options);
@@ -85,6 +110,8 @@ export async function enrichDiscussionItem(
         discussionSource: sourceName(item.discussionUrl),
         discussionActivityScore: calculateDiscussionActivityScore({ hasDiscussionLink: true }),
         discussionScore: calculateDiscussionActivityScore({ hasDiscussionLink: true }),
+        discussionCollectionStatus: "parse_failed",
+        discussionFetchAttempted: true,
         activityLevel: "Unknown",
         discussionSummaryFallback: "Activity details unavailable.",
         whyItMatters: buildDiscussionFallbackWhyItMatters(item),
@@ -93,7 +120,7 @@ export async function enrichDiscussionItem(
     }
 
     const json = await fetchFirstJson(topicJsonUrls, options);
-    const activity = extractDiscourseActivity(json, item.discussionUrl, now);
+    const activity = await extractDiscourseActivityWithPagination(json, item.discussionUrl, now, options);
     return cacheAndApply(item, activity, now, options);
   } catch (error) {
     const detail = error instanceof Error ? error.message : String(error);
@@ -101,12 +128,74 @@ export async function enrichDiscussionItem(
       discussionSource: sourceName(item.discussionUrl),
       discussionActivityScore: calculateDiscussionActivityScore({ hasDiscussionLink: true }),
       discussionScore: calculateDiscussionActivityScore({ hasDiscussionLink: true }),
+      discussionCollectionStatus: "fetch_failed",
+      discussionFetchAttempted: true,
       activityLevel: "Unknown",
       discussionSummaryFallback: "Activity details unavailable.",
       whyItMatters: buildDiscussionFallbackWhyItMatters(item),
       error: detail,
     }, now, options);
   }
+}
+
+async function discoverDiscussionUrl(
+  item: DiscussionHeatItem,
+  options: FetchDiscussionOptions,
+): Promise<Partial<DiscussionHeatItem>> {
+  const methodsTried: NonNullable<DiscussionHeatItem["discussionDiscovery"]>["methodsTried"] = ["frontmatter_discussions_to", "eips_page_link", "existing_database", "magicians_search"];
+  const queries = unique([
+    item.proposalId,
+    item.title ? `"${item.title}"` : "",
+  ].filter(Boolean));
+  const candidates: string[] = [];
+  for (const query of queries) {
+    try {
+      const url = new URL("https://ethereum-magicians.org/search.json");
+      url.searchParams.set("q", query);
+      const json = await fetchJson(url.toString(), options);
+      candidates.push(...discussionCandidatesFromSearch(json, item));
+    } catch {
+      // Search failure is recorded as no confirmed URL; fetch failures for confirmed URLs are tracked separately.
+    }
+  }
+  const uniqueCandidates = unique(candidates);
+  const exact = uniqueCandidates.filter((url) => url.toLowerCase().includes(item.proposalId.toLowerCase()));
+  const accepted = exact.length === 1 ? exact[0] : uniqueCandidates.length === 1 && searchCandidateLooksExact(uniqueCandidates[0]!, item) ? uniqueCandidates[0] : undefined;
+  const result = accepted ? "url_confirmed" : uniqueCandidates.length > 1 ? "discovery_ambiguous" : "discovery_completed_not_found";
+  return {
+    discussionUrl: accepted ?? null,
+    discussionLinks: accepted ? [accepted] : item.discussionLinks,
+    discussionCollectionStatus: accepted ? "url_confirmed" : "url_not_found",
+    discussionDiscovery: {
+      searchAttempted: true,
+      discoveryCompleted: true,
+      methodsTried,
+      matchedBy: accepted ? "magicians_search" : undefined,
+      candidateUrls: uniqueCandidates,
+      result,
+    },
+  };
+}
+
+function discussionCandidatesFromSearch(json: unknown, item: DiscussionHeatItem): string[] {
+  const payload = json && typeof json === "object" ? json as { topics?: unknown; posts?: unknown } : {};
+  const records = [
+    ...(Array.isArray(payload.topics) ? payload.topics : []),
+    ...(Array.isArray(payload.posts) ? payload.posts : []),
+  ].filter((record): record is Record<string, unknown> => Boolean(record) && typeof record === "object");
+  return records.flatMap((record) => {
+    const title = readString(record.title) ?? "";
+    const slug = readString(record.slug);
+    const id = readNumber(record.id) ?? readNumber(record.topic_id);
+    const text = `${title} ${readString(record.blurb) ?? ""} ${readString(record.excerpt) ?? ""}`;
+    if (!id || !slug) return [];
+    if (!new RegExp(`\\b${escapeRegExp(item.proposalId)}\\b`, "i").test(text)) return [];
+    return [`https://ethereum-magicians.org/t/${slug}/${id}`];
+  });
+}
+
+function searchCandidateLooksExact(url: string, item: DiscussionHeatItem): boolean {
+  return url.toLowerCase().includes(item.proposalId.toLowerCase());
 }
 
 export function buildDiscourseTopicJsonUrl(rawUrl: string): string | null {
@@ -124,21 +213,25 @@ export function buildDiscourseTopicJsonUrlCandidates(rawUrl: string): string[] {
   if (!isLikelyDiscourseTopicUrl(url)) return [];
 
   const candidates: string[] = [];
-  const addCandidate = (pathname: string) => {
+  const addCandidate = (pathname: string, search = "") => {
     const candidate = new URL(url.toString());
     candidate.pathname = pathname;
-    candidate.search = "";
+    candidate.search = search;
     candidate.hash = "";
     const value = candidate.toString();
     if (!candidates.includes(value)) candidates.push(value);
   };
 
   const normalizedPath = url.pathname.replace(/\/+$/, "");
-  addCandidate(normalizedPath.endsWith(".json") ? normalizedPath : `${normalizedPath}.json`);
+  const normalizedJsonPath = normalizedPath.endsWith(".json") ? normalizedPath : `${normalizedPath}.json`;
+  addCandidate(normalizedJsonPath, "?print=true");
+  addCandidate(normalizedJsonPath);
 
   const topicId = extractDiscourseTopicId(rawUrl);
   if (topicId) {
+    addCandidate(`/t/${topicId}.json`, "?print=true");
     addCandidate(`/t/${topicId}.json`);
+    addCandidate(`/t/-/${topicId}.json`, "?print=true");
     addCandidate(`/t/-/${topicId}.json`);
   }
 
@@ -172,6 +265,50 @@ export function extractDiscourseActivity(
   discussionUrl: string,
   now = new Date(),
 ): Partial<DiscussionHeatItem> {
+  return extractDiscourseActivityFromPosts(json, discussionUrl, now, undefined);
+}
+
+async function extractDiscourseActivityWithPagination(
+  json: unknown,
+  discussionUrl: string,
+  now: Date,
+  options: FetchDiscussionOptions,
+): Promise<Partial<DiscussionHeatItem>> {
+  const topic = json && typeof json === "object" ? json as DiscourseTopicJson : {};
+  const initialPosts = readPosts(topic.post_stream?.posts);
+  const totalPostIds = readNumberArray(topic.post_stream?.stream);
+  const fetchedIds = new Set(initialPosts.map(postId).filter((value): value is number => value !== undefined));
+  const missingIds = totalPostIds.filter((id) => !fetchedIds.has(id));
+  const fetchedPosts: DiscoursePost[] = [];
+  const stillMissing: number[] = [];
+  for (const id of missingIds) {
+    try {
+      const post = await fetchDiscoursePost(discussionUrl, id, options);
+      if (post) {
+        fetchedPosts.push(post);
+        fetchedIds.add(id);
+      } else {
+        stillMissing.push(id);
+      }
+    } catch {
+      stillMissing.push(id);
+    }
+  }
+  const allPosts = uniquePosts([...initialPosts, ...fetchedPosts]);
+  return extractDiscourseActivityFromPosts(json, discussionUrl, now, {
+    posts: allPosts,
+    totalPostIds,
+    fetchedPostIds: [...fetchedIds].sort((a, b) => a - b),
+    missingPostIds: stillMissing,
+  });
+}
+
+function extractDiscourseActivityFromPosts(
+  json: unknown,
+  discussionUrl: string,
+  now = new Date(),
+  override: { posts: DiscoursePost[]; totalPostIds: number[]; fetchedPostIds: number[]; missingPostIds: number[] } | undefined,
+): Partial<DiscussionHeatItem> {
   const topic = json && typeof json === "object" ? json as DiscourseTopicJson : {};
   const createdAt = readString(topic.created_at);
   const lastActivityAt = readString(topic.last_posted_at) ?? readString(topic.bumped_at);
@@ -190,6 +327,22 @@ export function extractDiscourseActivity(
     participantCount,
     viewCount,
   });
+  const initialPosts = readPosts(topic.post_stream?.posts);
+  const totalPostIds = override?.totalPostIds ?? readNumberArray(topic.post_stream?.stream);
+  const posts = override?.posts ?? initialPosts;
+  const fetchedPostIds = override?.fetchedPostIds ?? unique(posts.map(postId).filter((value): value is number => value !== undefined)).sort((a, b) => a - b);
+  const missingPostIds = override?.missingPostIds ?? totalPostIds.filter((id) => !fetchedPostIds.includes(id));
+  const hasPostArray = Array.isArray(topic.post_stream?.posts);
+  const postSignals = extractPostSignals(posts, now, discussionUrl);
+  const parsedTopic = Boolean(readNumber(topic.id) || readString(topic.title) || createdAt || lastActivityAt);
+  const expectedCount = totalPostIds.length || readNumber(topic.posts_count) || posts.length;
+  const paginationComplete = parsedTopic
+    && postSignals.postTimestampTrace.length > 0
+    && missingPostIds.length === 0
+    && latestPostConsistent(postSignals.latestCollectedPostAt, lastActivityAt);
+  const collectionStatus = parsedTopic && posts.length > 0
+    ? paginationComplete ? "posts_fully_collected" : "posts_partially_collected"
+    : hasPostArray ? "parse_failed" : "parse_failed";
 
   return {
     discussionTopicId: readNumber(topic.id) ?? undefined,
@@ -204,10 +357,224 @@ export function extractDiscourseActivity(
     discussionFreshnessDays: freshnessDays,
     discussionActivityScore,
     discussionScore: discussionActivityScore,
-    activityLevel: classifyDiscussionActivity(discussionActivityScore, true),
-    discussionSummaryFallback: "Discussion metadata collected from public topic activity.",
+    discussionCollectionStatus: collectionStatus,
+    discussionFetchAttempted: true,
+    postsCollectedCount: postSignals.postsCollectedCount,
+    totalPostIds,
+    fetchedPostIds,
+    missingPostIds,
+    postsExpectedCount: expectedCount,
+    paginationComplete,
+    latestCollectedPostAt: postSignals.latestCollectedPostAt,
+    postTimestampTrace: postSignals.postTimestampTrace,
+    postsInCurrent7d: postSignals.postsInCurrent7d,
+    postsInPrevious7d: postSignals.postsInPrevious7d,
+    participantCountCurrent7d: postSignals.participantCountCurrent7d,
+    authorParticipatedCurrent7d: postSignals.authorParticipatedCurrent7d,
+    latestPostAuthors: postSignals.latestPostAuthors,
+    keyIssues: postSignals.keyIssues,
+    objections: postSignals.objections,
+    alternatives: postSignals.alternatives,
+    unresolvedQuestions: postSignals.unresolvedQuestions,
+    specChangeReferences: postSignals.specChangeReferences,
+    discussionAnalysis: postSignals.discussionAnalysis,
+    activityLevel: classifyDiscussionActivity(discussionActivityScore, parsedTopic),
+    discussionSummaryFallback: collectionStatus === "posts_fully_collected"
+      ? "Discussion post activity metadata collected from public topic."
+      : collectionStatus === "posts_partially_collected"
+        ? "Discussion topic metadata received, but only part of the post stream was collected."
+        : "Discussion topic metadata received, but posts were not parsed.",
     whyItMatters: whyItMatters(freshnessDays, discussionActivityScore),
   };
+}
+
+function extractPostSignals(value: unknown, now: Date, discussionUrl = ""): {
+  postsCollectedCount: number;
+  postTimestampTrace: string[];
+  latestCollectedPostAt?: string;
+  postsInCurrent7d: number;
+  postsInPrevious7d: number;
+  participantCountCurrent7d: number;
+  authorParticipatedCurrent7d: boolean;
+  latestPostAuthors: string[];
+  keyIssues: string[];
+  objections: string[];
+  alternatives: string[];
+  unresolvedQuestions: string[];
+  specChangeReferences: string[];
+  discussionAnalysis: NonNullable<DiscussionHeatItem["discussionAnalysis"]>;
+} {
+  const posts = readPosts(value)
+    .filter((post) => !readString(post.deleted_at))
+    .sort((a, b) => (readNumber(a.post_number) ?? 0) - (readNumber(b.post_number) ?? 0) || timestamp(a.created_at) - timestamp(b.created_at));
+  const timestampTrace = posts
+    .map((post) => readString(post.created_at))
+    .filter((value): value is string => Boolean(value));
+  const latestCollectedPostAt = timestampTrace.length
+    ? new Date(Math.max(...timestampTrace.map((value) => Date.parse(value)).filter(Number.isFinite))).toISOString()
+    : undefined;
+  const currentFrom = now.getTime() - 7 * DAY_MS;
+  const previousFrom = now.getTime() - 14 * DAY_MS;
+  const currentPosts = posts.filter((post) => inWindow(post.created_at, currentFrom, now.getTime()));
+  const previousPosts = posts.filter((post) => inWindow(post.created_at, previousFrom, currentFrom));
+  const currentAuthors = unique(currentPosts.map(postAuthor).filter(Boolean) as string[]);
+  const latestPostAuthors = unique([...posts]
+    .sort((a, b) => timestamp(b.created_at) - timestamp(a.created_at))
+    .map(postAuthor)
+    .filter(Boolean) as string[])
+    .slice(0, 5);
+  const currentText = currentPosts.map(postText).join("\n");
+  const analysis = buildDiscussionAnalysis(posts, discussionUrl);
+  return {
+    postsCollectedCount: posts.length,
+    postTimestampTrace: timestampTrace,
+    latestCollectedPostAt,
+    postsInCurrent7d: currentPosts.length,
+    postsInPrevious7d: previousPosts.length,
+    participantCountCurrent7d: currentAuthors.length,
+    authorParticipatedCurrent7d: currentPosts.some((post) => /\bauthor\b|eip[-_ ]?editor|erc[-_ ]?editor/i.test(postAuthor(post) ?? "")),
+    latestPostAuthors,
+    keyIssues: extractIssuePhrases(currentText, /\b(issue|concern|problem|question|risk|trade[- ]off)\b/i),
+    objections: extractIssuePhrases(currentText, /\b(object|objection|concern|disagree|not agree|problematic)\b/i),
+    alternatives: extractIssuePhrases(currentText, /\b(alternative|instead|option|proposal|approach)\b/i),
+    unresolvedQuestions: extractIssuePhrases(currentText, /\?|unresolved|open question|not decided/i),
+    specChangeReferences: extractIssuePhrases(currentText, /\b(spec|specification|eip|erc|change|update|edit|PR)\b/i),
+    discussionAnalysis: analysis,
+  };
+}
+
+async function fetchDiscoursePost(rawTopicUrl: string, postId: number, options: FetchDiscussionOptions): Promise<DiscoursePost | undefined> {
+  const url = new URL(rawTopicUrl);
+  url.pathname = `/posts/${postId}.json`;
+  url.search = "";
+  url.hash = "";
+  const json = await fetchJson(url.toString(), options);
+  if (!json || typeof json !== "object") return undefined;
+  const record = json as { post?: unknown };
+  const value = record.post && typeof record.post === "object" ? record.post : json;
+  return value && typeof value === "object" ? value as DiscoursePost : undefined;
+}
+
+function readPosts(value: unknown): DiscoursePost[] {
+  return Array.isArray(value) ? value.filter((item): item is DiscoursePost => Boolean(item) && typeof item === "object") : [];
+}
+
+function postId(post: DiscoursePost): number | undefined {
+  return readNumber(post.id);
+}
+
+function uniquePosts(posts: DiscoursePost[]): DiscoursePost[] {
+  const byId = new Map<number | string, DiscoursePost>();
+  posts.forEach((post, index) => {
+    const key = postId(post) ?? `${readString(post.created_at) ?? "unknown"}:${readString(post.username) ?? index}`;
+    if (!byId.has(key)) byId.set(key, post);
+  });
+  return [...byId.values()];
+}
+
+function readNumberArray(value: unknown): number[] {
+  return Array.isArray(value)
+    ? unique(value.map((item) => typeof item === "number" ? item : Number(item)).filter((item) => Number.isInteger(item) && item > 0))
+    : [];
+}
+
+function latestPostConsistent(latestCollectedPostAt: string | undefined, lastActivityAt: string | undefined): boolean {
+  if (!lastActivityAt) return Boolean(latestCollectedPostAt);
+  if (!latestCollectedPostAt) return false;
+  const delta = Math.abs(Date.parse(latestCollectedPostAt) - Date.parse(lastActivityAt));
+  return Number.isFinite(delta) && delta <= 2_000;
+}
+
+function buildDiscussionAnalysis(posts: DiscoursePost[], discussionUrl: string): NonNullable<DiscussionHeatItem["discussionAnalysis"]> {
+  const analysisPosts = posts
+    .filter((post) => !isSystemOrTinyPost(post))
+    .slice(-80);
+  const keyIssues = extractAnalysisItems(analysisPosts, /\b(issue|concern|problem|question|risk|trade[- ]off)\b/i, discussionUrl);
+  const objections = extractAnalysisItems(analysisPosts, /\b(object|objection|concern|disagree|not agree|problematic)\b/i, discussionUrl);
+  const alternatives = extractAnalysisItems(analysisPosts, /\b(alternative|instead|option|approach)\b/i, discussionUrl);
+  const unresolvedQuestions = extractAnalysisItems(analysisPosts, /\?|unresolved|open question|not decided/i, discussionUrl);
+  const specificationReferences = extractAnalysisItems(analysisPosts, /\b(spec|specification|eip|erc|change|update|edit|PR)\b/i, discussionUrl);
+  const proposalAuthorResponses = extractAnalysisItems(analysisPosts, /\b(author|editor|champion)\b/i, discussionUrl);
+  return {
+    analysisAttempted: posts.length > 0,
+    analysisCompleted: false,
+    analyzedPostCount: analysisPosts.length,
+    contentAvailable: analysisPosts.some((post) => postText(post).length > 0),
+    keyIssues,
+    objections,
+    alternatives,
+    unresolvedQuestions,
+    proposalAuthorResponses,
+    specificationReferences,
+  };
+}
+
+function extractAnalysisItems(posts: DiscoursePost[], pattern: RegExp, discussionUrl: string): NonNullable<DiscussionHeatItem["discussionAnalysis"]>["keyIssues"] {
+  const items = posts.flatMap((post) => {
+    const text = postText(post);
+    const sentence = text
+      .split(/(?<=[.!?])\s+|\n+/)
+      .map((item) => item.trim())
+      .find((item) => item.length >= 16 && pattern.test(item));
+    if (!sentence) return [];
+    const id = postId(post);
+    const postNumber = readNumber(post.post_number);
+    return [{
+      text: sentence.slice(0, 180),
+      sourcePostIds: id ? [id] : [],
+      sourceUsernames: [postAuthor(post)].filter((value): value is string => Boolean(value)),
+      sourceDates: [readString(post.created_at)].filter((value): value is string => Boolean(value)),
+      evidenceUrl: postNumber ? `${discussionUrl.replace(/\/+$/, "")}/${postNumber}` : discussionUrl,
+    }];
+  });
+  return uniqueByText(items).slice(0, 3);
+}
+
+function uniqueByText<T extends { text: string }>(items: T[]): T[] {
+  const seen = new Set<string>();
+  return items.filter((item) => {
+    const key = item.text.toLowerCase();
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+}
+
+function isSystemOrTinyPost(post: DiscoursePost): boolean {
+  const author = postAuthor(post) ?? "";
+  const text = postText(post).toLowerCase();
+  return /system|discobot/i.test(author) || /^(thanks|thank you|\+1|bump|ok|agree)\.?$/i.test(text) || text.length < 12;
+}
+
+function inWindow(value: unknown, fromInclusive: number, toExclusive: number): boolean {
+  const time = timestamp(value);
+  return Number.isFinite(time) && time >= fromInclusive && time < toExclusive;
+}
+
+function timestamp(value: unknown): number {
+  return typeof value === "string" ? Date.parse(value) : Number.NaN;
+}
+
+function postAuthor(post: DiscoursePost): string | undefined {
+  return readString(post.username) ?? readString(post.name);
+}
+
+function postText(post: DiscoursePost): string {
+  return stripHtml(readString(post.raw) ?? readString(post.cooked) ?? "");
+}
+
+function stripHtml(value: string): string {
+  return value.replace(/<[^>]*>/g, " ").replace(/\s+/g, " ").trim();
+}
+
+function extractIssuePhrases(text: string, pattern: RegExp): string[] {
+  if (!text) return [];
+  return unique(text
+    .split(/(?<=[.!?])\s+|\n+/)
+    .map((item) => item.trim())
+    .filter((item) => item.length >= 12 && pattern.test(item))
+    .map((item) => item.slice(0, 180)))
+    .slice(0, 3);
 }
 
 export function calculateDiscussionActivityScore(input: {
@@ -281,6 +648,10 @@ function readFreshCache(
   const fetchedAt = Date.parse(cached.fetchedAt);
   if (!Number.isFinite(fetchedAt)) return null;
   if (isUnavailableActivity(cached.activity)) return null;
+  if (!cached.activity.discussionCollectionStatus || cached.activity.discussionFetchAttempted !== true) return null;
+  if (cached.activity.discussionCollectionStatus === "posts_partially_collected") return null;
+  if (cached.activity.discussionCollectionStatus === "posts_fully_collected" && cached.activity.paginationComplete !== true) return null;
+  if (cached.activity.discussionAnalysis?.analysisCompleted === true) return null;
   return now.getTime() - fetchedAt <= ttlHours * HOUR_MS ? cached.activity : null;
 }
 
@@ -318,6 +689,7 @@ function applyActivity(
 function withUnavailableActivity(item: DiscussionHeatItem, message: string): DiscussionHeatItem {
   return {
     ...item,
+    discussionCollectionStatus: item.discussionUrl ? "url_confirmed" : "not_searched",
     discussionActivityScore: item.discussionScore ?? 0,
     activityLevel: "Unknown",
     discussionSummaryFallback: message,
@@ -391,8 +763,16 @@ function readParticipantCount(value: unknown): number | undefined {
   return Array.isArray(value) ? value.length : undefined;
 }
 
+function unique<T>(items: T[]): T[] {
+  return [...new Set(items)];
+}
+
 function boundedSubtract(value: number | undefined, amount: number): number | undefined {
   return value === undefined ? undefined : Math.max(0, value - amount);
+}
+
+function escapeRegExp(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
 function whyItMatters(freshnessDays: number | undefined, score: number): string {

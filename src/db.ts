@@ -323,7 +323,7 @@ export function getChangeEvents(db: AppDatabase, snapshotId: number): ChangeEven
         ORDER BY proposal_id, id
       `,
     )
-    .all(snapshotId) as Array<Omit<ChangeEvent, "changedFiles" | "changedSections"> & {
+    .all(snapshotId) as unknown as Array<Omit<ChangeEvent, "changedFiles" | "changedSections"> & {
       changedFilesJson: string;
       changedSectionsJson: string | null;
     }>;
@@ -363,7 +363,7 @@ export function getChangeEventsSince(db: AppDatabase, since: string, until: stri
         ORDER BY detected_at DESC, proposal_id, id
       `,
     )
-    .all(since, until) as Array<Omit<ChangeEvent, "changedFiles" | "changedSections"> & {
+    .all(since, until) as unknown as Array<Omit<ChangeEvent, "changedFiles" | "changedSections"> & {
       changedFilesJson: string;
       changedSectionsJson: string | null;
     }>;

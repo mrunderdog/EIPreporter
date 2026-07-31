@@ -3,7 +3,7 @@ import test from "node:test";
 import { scoreKgldOpportunity } from "../src/scoring.ts";
 import type { ProposalRecord } from "../src/types.ts";
 
-test("scores high-value ERC proposals with status and repository weights", () => {
+test("scores high-value ERC proposals conservatively without score-only PoC", () => {
   const candidate = scoreKgldOpportunity(
     makeRecord("ERC-7579", "Last Call", "Smart account session key and paymaster"),
   );
@@ -13,9 +13,9 @@ test("scores high-value ERC proposals with status and repository weights", () =>
   assert.equal(candidate.businessImpact, 5);
   assert.equal(candidate.implementationEffort, 4);
   assert.equal(candidate.urgency, 5);
-  assert.equal(candidate.recommendedAction, "poc");
+  assert.equal(candidate.recommendedAction, "review");
   assert.ok(candidate.matchedThemes.includes("Account Abstraction"));
-  assert.ok(candidate.whyRelevantToKGLD.includes("지갑 경험"));
+  assert.ok(candidate.whyRelevantToKGLD.includes("PoC로 올리지 않습니다"));
   assert.ok(candidate.potentialUseCases.includes("KGLD Wallet UX"));
   assert.ok(candidate.reasonCodes.includes("STATUS_LAST_CALL"));
 });

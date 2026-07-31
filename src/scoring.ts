@@ -104,9 +104,9 @@ function buildWhyRelevant(
   themes: ThemeName[],
   useCases: KgldPotentialUseCase[],
 ): string {
-  const themeText = themes.slice(0, 3).join(", ") || "토큰 및 인프라";
+  const themeText = themes.slice(0, 3).join(", ") || "관련 테마";
   const useCaseText = useCases.join(", ");
-  return `${themeText} 기술은 KGLD의 발행·상환, 지갑 경험, DeFi 연결 과정에 영향을 줄 수 있습니다. 특히 ${useCaseText} 적용 가능성과 보안·운영 복잡도를 함께 검토할 필요가 있습니다.`;
+  return `${themeText}와 KGLD 운영 구성요소 사이에 개념적 연결 가능성이 있습니다. 현재 단계에서는 ${useCaseText || "후보 use case"} 관점의 명세 검토 또는 관찰만 지원하며, 구현체와 직접 의존성 근거 없이는 PoC로 올리지 않습니다.`;
 }
 
 function relevantThemes(themes: ThemeName[]): ThemeName[] {
@@ -141,7 +141,6 @@ function calculateUrgency(status: string): number {
 
 function recommendAction(status: string, score: number): KgldRecommendedAction {
   if (status === "withdrawn" || score < 20) return "ignore";
-  if (score >= 75) return "poc";
   if (score >= 50) return "review";
   return "monitor";
 }

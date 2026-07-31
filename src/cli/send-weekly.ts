@@ -1,4 +1,4 @@
-import { existsSync, statSync } from "node:fs";
+import { existsSync, readFileSync, statSync } from "node:fs";
 import { resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { getConfig, parseArgs, resolveDatabasePath } from "../config.ts";
@@ -30,6 +30,7 @@ export async function sendWeeklyReport(
   deliveryContext: WeeklyDeliveryContext = {},
 ): Promise<{ messageCount: number; fileName: string }> {
   assertHtmlReportFile(htmlReportPath);
+  assertQualityReportPassed(htmlReportPath);
 
   const sendMessage = dependencies.sendMessage ?? sendTelegramMessage;
   const sendDocument = dependencies.sendDocument ?? sendTelegramDocument;
@@ -48,6 +49,23 @@ export async function sendWeeklyReport(
   } catch (error) {
     const detail = error instanceof Error ? error.message : String(error);
     throw new Error(`Weekly summary sent, but HTML document upload failed: ${detail}`);
+  }
+}
+
+function assertQualityReportPassed(htmlReportPath: string): void {
+  const qualityPath = htmlReportPath.replace(/\.html$/i, ".quality.json");
+  if (qualityPath === htmlReportPath || !existsSync(qualityPath)) {
+    throw new Error(`Quality report not found for HTML report: ${qualityPath}`);
+  }
+  const parsed = JSON.parse(readFileSync(qualityPath, "utf8")) as {
+    passed?: boolean;
+    checks?: Array<{ id?: string; passed?: boolean; severity?: string }>;
+  };
+  const failedBlockingChecks = (parsed.checks ?? [])
+    .filter((check) => check.severity === "fail" && check.passed === false)
+    .map((check) => check.id ?? "unknown");
+  if (parsed.passed !== true || failedBlockingChecks.length > 0) {
+    throw new Error(`Quality gate failed; Telegram delivery blocked. Failed checks: ${failedBlockingChecks.join(", ") || "quality.passed=false"}`);
   }
 }
 

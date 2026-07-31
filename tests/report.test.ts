@@ -165,7 +165,7 @@ test("matches KGLD keywords and assigns score and recommended action", () => {
   assert.equal(candidate?.businessImpact, 5);
   assert.equal(candidate?.implementationEffort, 4);
   assert.equal(candidate?.urgency, 3);
-  assert.equal(candidate?.recommendedAction, "poc");
+  assert.equal(candidate?.recommendedAction, "review");
   assert.ok(candidate?.reasonCodes.includes("ERC_PROPOSAL"));
   assert.ok(candidate?.reasonCodes.includes("ETHEREUM_ERCS_SOURCE"));
 

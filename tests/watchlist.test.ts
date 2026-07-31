@@ -1,4 +1,4 @@
-import assert from "node:assert/strict";
+﻿import assert from "node:assert/strict";
 import test from "node:test";
 import { buildAdoptionLayer } from "../src/adoption.ts";
 import { generateWeeklyHtml } from "../src/html-report.ts";
@@ -79,50 +79,44 @@ test("adoption layer fallback marks EIP-8141 evidence as unknown without externa
   }
 });
 
-test("HTML renders refined watchlist summary, compact cards, and structured actions", () => {
+test("HTML keeps watchlist context out of the main Atlas IA", () => {
   const report = makeReport();
   report.ethereumTechRadar.watchlistLayer = buildWatchlistLayer(report);
   const html = generateWeeklyHtml(report);
-  const frameCard = html.slice(html.indexOf("Frame Transaction follow-through"), html.indexOf("Network Upgrade / Governance follow-through"));
 
-  assert.match(html, /관찰 목록 \/ 다음 신호/);
-  assert.match(html, /구현·채택 근거/);
-  assert.match(html, /채택 근거:<\/b> 확인 불가/);
-  assert.match(html, /이번 실행에서 구현 또는 외부 참조 근거가 수집되지 않았습니다/);
-  assert.match(html, /현재 watchlist 신호는 discussion\/momentum 기반으로 유지됩니다/);
-  assert.match(html, /최우선 관찰 신호[\s\S]*Frame Transaction follow-through/);
-  assert.match(html, /최고 신뢰도[\s\S]*중간 60\/100/);
-  assert.match(html, /관찰 항목 수[\s\S]*3/);
-  assert.match(html, /명세 변경 신호[\s\S]*문안 변경 0건/);
-  assert.match(html, /주요 모드[\s\S]*discussion\/momentum 기반/);
-  assert.match(html, /discussion 활동이 강하지만 content diff나 status movement가 없으면 신뢰도는 상한을 둡니다\./);
-  assert.match(html, /신뢰도 중간 60\/100/);
-  assert.match(html, /Frame Transaction follow-through/);
-  assert.match(html, /<span class="evidence-chip">댓글 96개<\/span>/);
-  assert.match(html, /<span class="evidence-chip">참여자 29명<\/span>/);
-  assert.match(html, /<span class="evidence-chip">관련 proposal 5건<\/span>/);
-  assert.match(html, /<span class="evidence-chip">이번 주 diff 0건<\/span>/);
-  assert.match(frameCard, /EIP-8141 content diff/);
-  assert.match(frameCard, /EIP-8250 \/ EIP-8266 \/ EIP-8272 변경/);
-  assert.match(frameCard, /Ethereum Magicians 신규 댓글/);
-  assert.doesNotMatch(frameCard, /<li>status movement<\/li>/);
-  assert.match(html, /이전 기준값 없음/);
-  assert.match(html, /EIP-8141을 다음 주 주요 관찰 신호로 추적/);
-  assert.match(html, /<b>이유:<\/b> discussion heat는 높지만 이번 주 spec diff는 감지되지 않았습니다\./);
-  assert.match(html, /<b>근거:<\/b> EIP-8141: 댓글 96개, 참여자 29명\. 마지막 활동 2026-07-19/);
-  assert.match(html, /<b>다음 확인 항목:<\/b> EIP-8141 content diff; EIP-8250 \/ EIP-8266 \/ EIP-8272 변경; Ethereum Magicians 신규 댓글/);
+  assert.match(html, /Proposal 근거 appendix/);
+  assert.doesNotMatch(html, /Proposal Directory/);
+  assert.doesNotMatch(html, /DATA COLLECTION DEGRADED/);
+  assert.match(html, /이번 주 관찰 신호/);
+  assert.doesNotMatch(html, /채택 근거:<\/b> 확인 불가/);
+  assert.doesNotMatch(html, /이번 실행에서 구현 또는 외부 참조 근거가 수집되지 않았습니다/);
+  assert.doesNotMatch(html, /현재 관찰 신호는 논의와 모멘텀 기반으로 유지됩니다/);
+  assert.doesNotMatch(html, /즉시 대응[\s\S]*지원 근거 없음/);
+  assert.doesNotMatch(html, /Primary narrative|Development Signals/);
+  assert.doesNotMatch(html, /최고 신호 강도[\s\S]*60\/100/);
+  assert.doesNotMatch(html, /관찰 항목 수[\s\S]*3/);
+  assert.doesNotMatch(html, /명세 변경 신호[\s\S]*문안 변경 0건/);
+  assert.doesNotMatch(html, /주요 모드[\s\S]*논의\/모멘텀 기반/);
+  assert.doesNotMatch(html, /논의 활동이 강해도 문안 변경이나 상태 변화가 없으면 신뢰도는 상한을 둡니다\./);
+  assert.doesNotMatch(html, /Frame Transaction follow-through/);
+  assert.doesNotMatch(html, /<span class="evidence-chip">댓글 96개<\/span>/);
+  assert.doesNotMatch(html, /<span class="evidence-chip">참여자 29명<\/span>/);
+  assert.doesNotMatch(html, /<span class="evidence-chip">관련 제안 5건<\/span>/);
+  assert.doesNotMatch(html, /<span class="evidence-chip">이번 주 문안 변경 0건<\/span>/);
+  assert.doesNotMatch(html, /이전 기준값 없음/);
   assert.doesNotMatch(html, /<b>Watch theme<\/b>/);
-  assert.match(html, /EIP-8141은 확인된 구현 근거가 없으므로/);
-  assert.match(html, /신호 유형:<\/b> discussion\/momentum 신호/);
-  assert.match(html, /protocol \/ wallet execution-boundary/);
-  assert.doesNotMatch(html, /[湲蹂理]|쨌|�/);
+  assert.doesNotMatch(html, /확인된 구현 근거가 없으므로 즉시 실행 가능한 KGLD 또는 운영 판단은 지원되지 않습니다/);
+  assert.match(html, /Technology Landscape/);
+  assert.doesNotMatch(html, /�/);
   assert.doesNotMatch(html, /Goldstation/);
   assert.doesNotMatch(html, /Hana/i);
   assert.doesNotMatch(html, /Netflix/);
   assert.doesNotMatch(html, /Continue Watching|Watch Now|Trailer|Season|Episode|>Play</);
-  assert.doesNotMatch(html, /\b(adopted|adoption across|implemented by|production use|mainnet usage|ecosystem support|client support|price impact|token price|market impact)\b/i);
+  const visibleHtml = html
+    .replace(/<style[\s\S]*?<\/style>/g, "")
+    .replace(/<script[\s\S]*?<\/script>/g, "");
+  assert.doesNotMatch(visibleHtml, /\b(adopted|adoption across|implemented by|production use|mainnet usage|ecosystem support|client support|price impact|token price|market impact)\b/i);
 });
-
 test("WatchlistItem supports week-over-week baseline fields", () => {
   const item = buildWatchlistLayer(makeReport()).items[0];
   const typedItem: WatchlistItem = {
@@ -137,7 +131,7 @@ test("WatchlistItem supports week-over-week baseline fields", () => {
   assert.equal(typedItem.changeSinceLastReport, "Up");
 });
 
-test("Recommended Actions are limited to top 4 structured action cards", () => {
+test("Recommended action cards are not duplicated in the main report", () => {
   const report = makeReport();
   const base = buildWatchlistLayer(report).items[0];
   report.ethereumTechRadar.watchlistLayer = {
@@ -151,10 +145,11 @@ test("Recommended Actions are limited to top 4 structured action cards", () => {
   };
 
   const html = generateWeeklyHtml(report);
-  const actionSection = html.slice(html.indexOf('id="recommended-actions"'));
-  const actionCardCount = (actionSection.match(/recommendation-card/g) ?? []).length;
+  const actionCardCount = (html.match(/recommendation-card/g) ?? []).length;
 
-  assert.equal(actionCardCount, 4);
+  assert.equal(actionCardCount, 0);
+  assert.match(html, /Proposal 근거 appendix/);
+  assert.doesNotMatch(html, /Proposal Directory/);
 });
 
 function makeReport(): WeeklyRadarReport {
@@ -276,3 +271,4 @@ function theme(
     interpretation: "Momentum signal.",
   };
 }
+

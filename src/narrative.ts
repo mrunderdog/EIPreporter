@@ -1,4 +1,5 @@
 import { adoptionEvidenceForProposal, topWatchlistAdoptionLevel } from "./adoption.ts";
+import type { KnowledgeGraphLayer, KnowledgeGraphNode } from "./knowledge-graph.ts";
 import type {
   DiscussionHeatItem,
   NarrativeEvidence,
@@ -29,12 +30,72 @@ const ADOPTION_CLAIM_PATTERN = /\b(adopted|adoption across|implemented by|produc
 export function buildNarrativeLayer(
   report: NarrativeReportInput,
 ): NarrativeLayer {
+  const graph = report.ethereumTechRadar.knowledgeGraphLayer;
   return {
-    weeklyNarrative: buildWeeklyNarrative(report),
-    topStories: buildTechnologyStories(report),
+    weeklyNarrative: graph ? buildKnowledgeGraphWeeklyNarrative(graph) : buildWeeklyNarrative(report),
+    topStories: graph ? buildKnowledgeGraphTechnologyStories(graph) : buildTechnologyStories(report),
     signalEvidence: buildNarrativeEvidence(report),
     generatedBy: "deterministic",
   };
+}
+
+function buildKnowledgeGraphWeeklyNarrative(graph: KnowledgeGraphLayer): string[] {
+  const topics = graph.nodes
+    .filter((node) => node.type === "Topic")
+    .sort((left, right) => graphNodeNumber(right, "confidence") - graphNodeNumber(left, "confidence") || left.label.localeCompare(right.label))
+    .slice(0, 3);
+  if (!topics.length) return ["이번 주 지식 그래프에서 의사결정에 사용할 수 있는 기술 주제가 충분히 구성되지 않았습니다."];
+  const systems = graph.nodes.filter((node) => node.type === "System").map((node) => node.label).slice(0, 4);
+  const inferredEdges = graph.edges.filter((edge) => edge.inferred).length;
+  return [
+    `이번 주 해석은 Topic Cluster를 직접 나열하지 않고 Knowledge Graph의 개념, 메커니즘, 시스템 연결을 기준으로 구성했습니다. 중심 주제는 ${topics.map((topic) => topic.label).join(", ")}입니다.`,
+    systems.length ? `영향을 받을 수 있는 시스템 축은 ${systems.join(", ")}입니다. 이 연결은 graph edge로 보존되며, 추론 edge ${inferredEdges}건은 inferred=true로 구분됩니다.` : "시스템 영향은 아직 제한적으로만 식별됐습니다.",
+    "구현, 릴리스, 활성화, 운영 채택은 Knowledge Graph의 evidence traceability가 있는 경우에만 상향 해석합니다.",
+  ];
+}
+
+function buildKnowledgeGraphTechnologyStories(graph: KnowledgeGraphLayer): TechnologyStory[] {
+  return graph.nodes
+    .filter((node) => node.type === "Topic")
+    .sort((left, right) => graphNodeNumber(right, "confidence") - graphNodeNumber(left, "confidence") || left.label.localeCompare(right.label))
+    .slice(0, 3)
+    .map((topic) => {
+      const proposals = graphNodeStrings(topic, "proposalIds").slice(0, 4);
+      const concepts = graph.edges
+        .filter((edge) => edge.from === topic.id && edge.type === "RELATES_TO" && edge.to.startsWith("Concept:"))
+        .map((edge) => graph.nodes.find((node) => node.id === edge.to)?.label)
+        .filter((label): label is string => Boolean(label))
+        .slice(0, 4);
+      const systems = graph.edges
+        .filter((edge) => edge.from === topic.id && edge.type === "AFFECTS" && edge.to.startsWith("System:"))
+        .map((edge) => graph.nodes.find((node) => node.id === edge.to)?.label)
+        .filter((label): label is string => Boolean(label))
+        .slice(0, 3);
+      return {
+        storyTitle: topic.label,
+        primaryTheme: concepts[0] ?? "Knowledge Graph",
+        relatedProposals: proposals,
+        evidence: [
+          `graph node: ${topic.id}`,
+          `trace topics: ${topic.traceability.topicIds.join(", ")}`,
+          `evidence ids: ${topic.traceability.evidenceIds.slice(0, 3).join(", ") || "topic cluster trace"}`,
+        ],
+        interpretation: systems.length
+          ? `${topic.label}은 ${systems.join(", ")}와 연결되는 graph topic입니다. inferred edge는 추론으로 표시되어 직접 근거와 구분됩니다.`
+          : `${topic.label}은 Knowledge Graph에서 관찰되는 topic입니다. 시스템 영향은 추가 근거가 필요합니다.`,
+        watchNext: `${topic.label}의 Proposal, Mechanism, System edge에 새 evidence가 연결되는지 확인합니다.`,
+      };
+    });
+}
+
+function graphNodeNumber(node: KnowledgeGraphNode, key: string): number {
+  const value = node.properties[key];
+  return typeof value === "number" ? value : 0;
+}
+
+function graphNodeStrings(node: KnowledgeGraphNode, key: string): string[] {
+  const value = node.properties[key];
+  return Array.isArray(value) ? value.filter((item): item is string => typeof item === "string") : [];
 }
 
 export function validateAiNarrativeLayer(

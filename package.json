@@ -6,8 +6,10 @@
   "description": "EIP/ERC collector, change detector, and weekly radar reporter",
   "scripts": {
     "collect": "node --experimental-strip-types src/cli/collect.ts",
+    "collect:health": "node --experimental-strip-types src/cli/collect-health.ts",
     "diff": "node --experimental-strip-types src/cli/diff.ts",
-    "report:weekly": "node --experimental-strip-types src/cli/weekly-report.ts",
+    "report:weekly": "node --experimental-strip-types src/cli/html-report.ts",
+    "report:weekly:debug": "node --experimental-strip-types src/cli/html-report.ts --debug",
     "report:html": "node --experimental-strip-types src/cli/html-report.ts",
     "send:test": "node --experimental-strip-types src/cli/send-test.ts",
     "send:weekly": "node --experimental-strip-types src/cli/send-weekly.ts",

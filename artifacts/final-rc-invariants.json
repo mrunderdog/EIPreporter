@@ -1,0 +1,75 @@
+{
+  "schemaVersion": "final-rc-invariants/v1",
+  "generatedFor": "EIPreporter Final Release Candidate Closure",
+  "invariants": [
+    {
+      "id": "subject-registry-complete",
+      "description": "Every public proposal ID has a ProposalSubject role."
+    },
+    {
+      "id": "fact-reference-integrity",
+      "description": "All aggregate, signal, and editorial claim fact IDs resolve to canonical facts."
+    },
+    {
+      "id": "discussion-fact-union-complete",
+      "description": "All public rawPostIds are present in facts.discussionPosts."
+    },
+    {
+      "id": "discussion-window-boundary",
+      "description": "Every current-window discussion post uses windowStart <= createdAt < windowEnd."
+    },
+    {
+      "id": "weekly-usable-single-source",
+      "description": "Weekly development views use only weeklyUsable events."
+    },
+    {
+      "id": "logical-proposal-introduction-unique",
+      "description": "A proposal has at most one public proposal_published logical event."
+    },
+    {
+      "id": "aa-track-post-intersection",
+      "description": "AA track posts are counted only when post.proposalId is assigned to the track."
+    },
+    {
+      "id": "canonical-render-source",
+      "description": "HTML and interaction code read intelligenceSnapshot.views only."
+    },
+    {
+      "id": "snapshot-hash-recomputed",
+      "description": "Snapshot hash is SHA-256 of canonical serialization excluding metadata.snapshotHash."
+    },
+    {
+      "id": "public-metric-unit-visible",
+      "description": "Every public metric label includes a clear unit."
+    }
+  ],
+  "goldenFixture": {
+    "generatedAt": "2026-07-30T05:57:50.976Z",
+    "current7dRawEvents": 97,
+    "current7dFallbackEvents": 85,
+    "current7dUnknownSemanticEvents": 12,
+    "current7dUsableEvents": 0,
+    "developerActivityRawPosts": 38,
+    "developerActivityActiveThreads": 7,
+    "developerActivityTop3": [
+      "ERC-8183",
+      "EIP-8037",
+      "EIP-8151"
+    ],
+    "technologyMapRawPosts": 7
+  },
+  "latestObserved": {
+    "htmlPath": "reports/weekly-2026-07-30.html",
+    "compactJsonPath": "reports/weekly-2026-07-30.compact.json",
+    "qualityJsonPath": "reports/weekly-2026-07-30.quality.json",
+    "qualityPassed": true,
+    "developerActivityRawPosts": 17,
+    "developerActivityActiveThreads": 7,
+    "developerActivityTop3": [
+      "EIP-8037",
+      "EIP-8151",
+      "ERC-8330"
+    ],
+    "blockingAcceptanceGap": "ERC-8183 thread remains posts_partially_collected, so the 23 expected recent posts are not canonical DiscussionPost facts."
+  }
+}

@@ -1,4 +1,4 @@
-import assert from "node:assert/strict";
+﻿import assert from "node:assert/strict";
 import test from "node:test";
 import { generateWeeklyHtml } from "../src/html-report.ts";
 import { buildTechnologyPlatformLayer } from "../src/platform.ts";
@@ -71,9 +71,27 @@ test("builds evidence graph, radar, risk, confidence, KGLD and dashboard API mod
   assert.equal(platform.dashboard.releaseWatch.length, 0);
   assert.equal(platform.dashboard.activationWatch.length, 0);
   assert.equal(platform.api.lifecycle.length, platform.lifecycleTimelines.length);
+  assert.ok(platform.dataCompleteness.confidenceMetrics);
+  assert.equal(typeof platform.dataCompleteness.confidenceMetrics.collectionConfidence, "number");
+  assert.equal(typeof platform.dataCompleteness.confidenceMetrics.evidenceConfidence, "number");
+  assert.equal(typeof platform.dataCompleteness.confidenceMetrics.signalStrength, "number");
+  assert.ok(platform.dataCompleteness.confidenceMetrics.evidenceConfidence < 100);
+  assert.ok(platform.dataCompleteness.evidenceMetrics);
+  const metrics = platform.dataCompleteness.evidenceMetrics;
+  assert.ok(metrics.displayedEvidence <= metrics.acceptedEvidence);
+  assert.ok(metrics.acceptedEvidence <= metrics.matchedSources);
+  assert.ok(metrics.matchedSources <= metrics.rawCandidates);
+  assert.ok(metrics.uniqueDirectEvidence + metrics.uniqueClusterReferences <= metrics.acceptedEvidence);
+  assert.equal(typeof metrics.proposalEvidenceRelations, "number");
+  assert.ok(metrics.categoryMetrics);
+  assert.equal(typeof metrics.categoryMetrics?.implementationTrackingEvidence, "number");
+  assert.ok(platform.lifecycleAxes?.some((axis) => axis.proposalId === "EIP-8141" && axis.axis === "Specification"));
+  assert.ok(platform.lifecycleAxes?.some((axis) => axis.proposalId === "EIP-8141" && axis.axis === "Implementation"));
+  assert.ok(platform.lifecycleAxes?.some((axis) => axis.proposalId === "EIP-8141" && axis.axis === "Network"));
+  assert.ok(platform.lifecycleAxes?.some((axis) => axis.proposalId === "EIP-8141" && axis.axis === "Adoption"));
 });
 
-test("HTML renders executive UX with collapsed low-value sections and score explanations", () => {
+test("HTML renders theme-centric intelligence IA without proposal-centric dashboards", () => {
   const report = makeReport([implementationTrackerEvidence()]);
   report.ethereumTechRadar.technologyPlatformLayer = buildTechnologyPlatformLayer(report);
   const html = generateWeeklyHtml(report);
@@ -81,32 +99,87 @@ test("HTML renders executive UX with collapsed low-value sections and score expl
     .replace(/<script type="application\/json" id="technology-platform-api">[\s\S]*?<\/script>/, "")
     .replace(/<!-- EIPreporter chart data: [\s\S]*? -->/, "");
 
-  assert.match(html, /이번 주 핵심 신호/);
-  assert.match(html, /플랫폼 대시보드/);
-  assert.match(html, /데이터 수집 완전성/);
-  assert.match(html, /라이프사이클 인텔리전스/);
-  assert.match(html, /lifecycle-rail/);
-  assert.match(html, /secondary-lifecycle/);
-  assert.match(html, /클라이언트 구현 현황/);
-  assert.match(html, /target-specific 구현 근거가 확인되지 않았습니다/);
+  assert.match(html, /Ethereum Technology Atlas/);
+  assert.match(html, /Executive Pulse/);
+  assert.match(html, /Technology Landscape/);
+  assert.match(html, /Focus & Progress/);
+  assert.match(html, /Developer Attention/);
+  assert.match(html, /Account Abstraction Radar/);
+  assert.doesNotMatch(html, /기술 성숙도/);
+  assert.match(html, /Evidence & Data Quality/);
+  assert.match(html, /이번 주 관찰 신호/);
+  assert.match(html, /KGLD Technology Watch/);
+  assert.match(html, /Proposal 근거 appendix/);
+  assert.doesNotMatch(html, /Evolution Timeline/);
+  assert.doesNotMatch(html, /Development Signals/);
+  assert.doesNotMatch(html, /This Week's Contribution/);
+  assert.doesNotMatch(html, /Implementation and Lifecycle/);
+  assert.doesNotMatch(html, /Business Relevance/);
+  assert.doesNotMatch(html, /Evidence and Limitations/);
+  assert.equal((html.match(/<nav class="section-nav"[\s\S]*?<\/nav>/)?.[0].match(/<a /g) ?? []).length, 8);
+  assert.doesNotMatch(html, /DATA COLLECTION DEGRADED/);
+  assert.doesNotMatch(html, /수집 신뢰도|근거 신뢰도/);
+  assert.match(html, /Evidence & Data Quality/);
+  assert.doesNotMatch(
+    html
+      .replace(/<style>[\s\S]*?<\/style>/, "")
+      .replace(/<script type="application\/json" id="technology-platform-api">[\s\S]*?<\/script>/, ""),
+    /lifecycle-rail/,
+  );
+  assert.doesNotMatch(html, /검증된 클라이언트 구현/);
+  assert.doesNotMatch(html, /<th>클라이언트<\/th>/);
+  assert.doesNotMatch(html, /제안별 구현 근거가 수집되지 않았습니다/);
   assert.doesNotMatch(html, /<h2>릴리스 관찰<\/h2>/);
   assert.doesNotMatch(html, /<h2>활성화 관찰<\/h2>/);
   assert.doesNotMatch(html, /id="release-deployment-intelligence"><\/section>/);
-  assert.match(html, /근거 그래프/);
-  assert.match(html, /기술 레이더/);
-  assert.match(html, /radar-grid quadrants-1/);
-  assert.match(html, /테마 인텔리전스/);
-  assert.match(html, /KGLD 영향 요약/);
-  assert.match(html, /리스크 근거/);
-  assert.match(html, /신뢰도 산식/);
-  assert.match(html, /라이프사이클 신뢰도/);
-  assert.match(html, /KGLD 근거/);
+  assert.doesNotMatch(html, /Calculation and Traceability Metadata/);
+  assert.doesNotMatch(html, /id="kgld-intelligence"|KGLD 인텔리전스/);
+  assert.match(html, /atlas-domain-grid/);
+  assert.doesNotMatch(html, /직접 근거<\/th><th>클러스터 참조<\/th>/);
+  assert.doesNotMatch(html, /Theme Scores/);
+  assert.doesNotMatch(html, /KGLD Scoring Details/);
+  assert.doesNotMatch(html, /결론 내리면 안 되는 항목/);
+  assert.doesNotMatch(html, /명세 상태, 구현 상태, 네트워크 활성화, 운영 채택/);
+  assert.doesNotMatch(html, /근거 기준/);
   assert.match(html, /technology-platform-api/);
+  assert.doesNotMatch(html, /chart data/);
   assert.doesNotMatch(html, /운영 채택<\/span><\/div><span class="meta"[^>]*>[^<]*current/);
   assert.doesNotMatch(html, /[湲蹂理]|쨌|�/);
-  assert.doesNotMatch(visibleHtml, /impact 은|impact 는|source\(s\)|area\(s\)|Draft with Monitor|Discussion contributes/);
+  assert.doesNotMatch(visibleHtml, /impact ??|impact ??source\(s\)|area\(s\)|Draft with Monitor|Discussion contributes/);
+  assert.doesNotMatch(visibleHtml, /KPI 대시보드/);
 });
 
+test("HTML keeps collection incidents out of the end-user IA", () => {
+  const degradedReport = makeReport([]);
+  degradedReport.ethereumTechRadar.adoptionLayer = {
+    generatedBy: "github_search",
+    collectionStatus: "failed",
+    items: [],
+    note: "GitHub evidence collection failed",
+  };
+  degradedReport.ethereumTechRadar.technologyPlatformLayer = buildTechnologyPlatformLayer(degradedReport);
+  const degradedHtml = generateWeeklyHtml(degradedReport);
+  const degradedNav = degradedHtml.match(/<nav class="section-nav"[\s\S]*?<\/nav>/)?.[0] ?? "";
+
+  assert.doesNotMatch(degradedHtml, /DATA COLLECTION DEGRADED/);
+  assert.doesNotMatch(degradedHtml, /Collection Incident Summary/);
+  assert.doesNotMatch(degradedHtml, /Successfully Collected Evidence/);
+  assert.doesNotMatch(degradedHtml, /Unsupported Conclusions/);
+  assert.doesNotMatch(degradedHtml, /Recovery Priorities/);
+  assert.doesNotMatch(degradedHtml, /Executive Rating/);
+  assert.equal((degradedNav.match(/<a /g) ?? []).length, 8);
+  assert.match(degradedHtml, /Executive Pulse/);
+  assert.match(degradedHtml, /Technology Landscape/);
+  assert.match(degradedHtml, /KGLD Technology Watch/);
+  assert.doesNotMatch(degradedHtml, /id="kgld-intelligence"|KGLD 인텔리전스/);
+
+  const normalReport = makeReport([verifiedGethEvidence()]);
+  normalReport.ethereumTechRadar.technologyPlatformLayer = buildTechnologyPlatformLayer(normalReport);
+  const normalHtml = generateWeeklyHtml(normalReport);
+
+  assert.doesNotMatch(normalHtml, /DATA COLLECTION DEGRADED/);
+  assert.match(normalHtml, /Executive Pulse/);
+});
 test("partial collection is not treated as no evidence", () => {
   const report = makeReport([]);
   report.ethereumTechRadar.adoptionLayer = { generatedBy: "github_search", collectionStatus: "failed", items: [], note: "GitHub API rate limited" };
@@ -127,7 +200,8 @@ test("stale evidence is marked without presenting it as current", () => {
 
   assert.equal(tracking.freshness?.stale, true);
   assert.equal(platform.staleEvidenceCount > 0, true);
-  assert.match(html, /근거가 오래되었을 수 있습니다/);
+  assert.doesNotMatch(html, /근거가 오래되었을 수 있습니다/);
+  assert.match(html, /Executive Pulse/);
 });
 
 test("derived platform claims include traceability metadata", () => {
@@ -155,7 +229,7 @@ test("empty release activation and isolated graph content are hidden", () => {
   assert.doesNotMatch(html, /<h2>활성화 관찰<\/h2>/);
   assert.doesNotMatch(html, /id="release-deployment-intelligence"><\/section>/);
   assert.doesNotMatch(html, /only the EIP node/i);
-  assert.match(html, /target-specific 구현 근거가 확인되지 않았습니다/);
+  assert.doesNotMatch(html, /제안별 구현 근거가 수집되지 않았습니다/);
 });
 
 function stage(timeline: ReturnType<typeof buildTechnologyPlatformLayer>["lifecycleTimelines"][number], name: string) {
@@ -376,3 +450,4 @@ function theme(): ThemeInsight {
     interpretation: "Momentum signal.",
   };
 }
+

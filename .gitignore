@@ -3,6 +3,7 @@ data/
 coverage/
 dist/
 reports/
+output/debug/
 .env
 *.sqlite
 *.sqlite-shm

@@ -13,6 +13,7 @@ test("send:weekly sends dashboard text before the HTML document", async () => {
   const directory = mkdtempSync(join(tmpdir(), "eipreporter-send-weekly-"));
   const reportPath = join(directory, "weekly-2026-06-12.html");
   writeFileSync(reportPath, "<!doctype html>", "utf8");
+  writePassingQuality(reportPath);
   const calls: string[] = [];
 
   try {
@@ -73,6 +74,7 @@ test("send:weekly distinguishes document failure after message success", async (
   const directory = mkdtempSync(join(tmpdir(), "eipreporter-send-failure-"));
   const reportPath = join(directory, "weekly-2026-06-12.html");
   writeFileSync(reportPath, "<!doctype html>", "utf8");
+  writePassingQuality(reportPath);
 
   try {
     await assert.rejects(
@@ -148,4 +150,12 @@ function makeReport(): WeeklyRadarReport {
       ],
     },
   } as unknown as WeeklyRadarReport;
+}
+
+function writePassingQuality(reportPath: string): void {
+  writeFileSync(
+    reportPath.replace(/\.html$/i, ".quality.json"),
+    JSON.stringify({ passed: true, checks: [] }),
+    "utf8",
+  );
 }

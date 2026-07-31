@@ -16,15 +16,15 @@ import type { DiscussionHeatItem } from "../src/types.ts";
 test("parses Ethereum Magicians and Discourse topic JSON URLs", () => {
   assert.equal(
     buildDiscourseTopicJsonUrl("https://ethereum-magicians.org/t/example-topic/123"),
-    "https://ethereum-magicians.org/t/example-topic/123.json",
+    "https://ethereum-magicians.org/t/example-topic/123.json?print=true",
   );
   assert.equal(
     buildDiscourseTopicJsonUrl("https://ethereum-magicians.org/t/123"),
-    "https://ethereum-magicians.org/t/123.json",
+    "https://ethereum-magicians.org/t/123.json?print=true",
   );
   assert.equal(
     buildDiscourseTopicJsonUrl("https://forum.example.test/t/topic-title/456?u=alice#post-2"),
-    "https://forum.example.test/t/topic-title/456.json",
+    "https://forum.example.test/t/topic-title/456.json?print=true",
   );
   assert.equal(buildDiscourseTopicJsonUrl("https://example.test/issues/1"), null);
 });
@@ -43,8 +43,11 @@ test("builds Discourse JSON endpoint candidates from a topic URL", () => {
   assert.deepEqual(
     buildDiscourseTopicJsonUrlCandidates("https://ethereum-magicians.org/t/eip-8133-upgrade-nomenclature/27575?u=alice#post-2"),
     [
+      "https://ethereum-magicians.org/t/eip-8133-upgrade-nomenclature/27575.json?print=true",
       "https://ethereum-magicians.org/t/eip-8133-upgrade-nomenclature/27575.json",
+      "https://ethereum-magicians.org/t/27575.json?print=true",
       "https://ethereum-magicians.org/t/27575.json",
+      "https://ethereum-magicians.org/t/-/27575.json?print=true",
       "https://ethereum-magicians.org/t/-/27575.json",
     ],
   );
@@ -173,8 +176,8 @@ test("enriches discussion item from mocked Discourse fetch", async () => {
   });
 
   assert.deepEqual(requestedUrls, [
+    "https://ethereum-magicians.org/t/erc-4626/1.json?print=true",
     "https://ethereum-magicians.org/t/erc-4626/1.json",
-    "https://ethereum-magicians.org/t/1.json",
   ]);
   assert.equal(result.discussionTitle, "Tokenized Vaults");
   assert.equal(result.discussionReplyCount, 8);
