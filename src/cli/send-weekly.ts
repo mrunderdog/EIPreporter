@@ -52,6 +52,15 @@ export async function sendWeeklyReport(
   }
 }
 
+export async function sendExistingWeeklyReport(
+  config: TelegramNotifierConfig,
+  htmlReportPath: string,
+  dependencies: SendWeeklyDependencies = {},
+  deliveryContext: WeeklyDeliveryContext = {},
+): Promise<{ messageCount: number; fileName: string }> {
+  return sendWeeklyReport(config, reportFromExistingArtifacts(htmlReportPath), htmlReportPath, dependencies, deliveryContext);
+}
+
 function assertQualityReportPassed(htmlReportPath: string): void {
   const qualityPath = htmlReportPath.replace(/\.html$/i, ".quality.json");
   if (qualityPath === htmlReportPath || !existsSync(qualityPath)) {
@@ -72,6 +81,23 @@ function assertQualityReportPassed(htmlReportPath: string): void {
 async function main(): Promise<void> {
   const args = parseArgs(process.argv.slice(2));
   const config = getConfig();
+  if (typeof args["report-path"] === "string" && args.existing === true) {
+    const htmlReportPath = resolve(args["report-path"]);
+    const actionsContext = getGitHubActionsContext();
+    const result = await sendExistingWeeklyReport(
+      {
+        botToken: config.telegramBotToken,
+        chatId: config.telegramChatId,
+      },
+      htmlReportPath,
+      {},
+      { githubActionsRunUrl: actionsContext?.runUrl },
+    );
+    console.log(
+      `Existing weekly dashboard sent to Telegram (${result.messageCount} message(s), document: ${result.fileName}).`,
+    );
+    return;
+  }
   const databasePath = resolveDatabasePath(args);
   const db = openDatabase(databasePath);
 
@@ -104,6 +130,47 @@ async function main(): Promise<void> {
   } finally {
     db.close();
   }
+}
+
+function reportFromExistingArtifacts(htmlReportPath: string): WeeklyRadarReport {
+  const compactPath = htmlReportPath.replace(/\.html$/i, ".compact.json");
+  const qualityPath = htmlReportPath.replace(/\.html$/i, ".quality.json");
+  const quality = JSON.parse(readFileSync(qualityPath, "utf8"));
+  const compact = JSON.parse(readFileSync(compactPath, "utf8"));
+  const snapshot = compact.intelligenceSnapshot;
+  const views = snapshot?.views ?? {};
+  const generatedAt = snapshot?.metadata?.generatedAt ?? quality.generatedAt ?? new Date(0).toISOString();
+  const weeklyTop = views.executivePulse?.weeklyDevelopmentTop3 ?? [];
+  const kgldItems = [
+    ...(views.kgldWatch?.groups?.research_now ?? []),
+    ...(views.kgldWatch?.groups?.monitor ?? []),
+  ];
+  return {
+    generatedAt,
+    trendPeriod: { from: "", to: generatedAt, days: 180 },
+    changePeriod: { from: "", to: generatedAt, days: 7 },
+    ethereumTechRadar: {
+      trendProposalCount: snapshot?.monitoringUniverse?.scope?.monitoredProposalCount ?? 0,
+      themeInsights: weeklyTop.map((item: { nameKo?: string; topicId?: string; proposalIds?: string[]; rawPostCount?: number }, index: number) => ({
+        theme: item.nameKo ?? item.topicId ?? `Signal ${index + 1}`,
+        momentumScore: Math.max(1, 90 - index * 10),
+        proposalCount180d: item.proposalIds?.length ?? 1,
+        recentChangeCount7d: item.rawPostCount ?? 0,
+        dominantSubTrends: [],
+      })),
+      recentChanges: { total: views.dataQuality?.current7dRawEventCount ?? 0 },
+      accountAbstractionRadar: { proposalCount: views.accountAbstraction?.summary?.baselineProposalCount ?? 0, trendInterpretation: views.accountAbstraction?.summary?.recentMeaningfulChange ?? "" },
+    },
+    kgldOpportunityRadar: {
+      candidates: kgldItems.map((item: { proposalId?: string; internalAction?: string; actionType?: string }) => ({
+        proposalId: item.proposalId,
+        title: item.proposalId,
+        recommendedAction: item.actionType === "research_now" ? "review" : "monitor",
+        oneLineSummary: item.internalAction,
+        whyRelevantToKGLD: item.internalAction,
+      })),
+    },
+  } as unknown as WeeklyRadarReport;
 }
 
 function resolveHtmlReportPath(

@@ -8,7 +8,7 @@ import test from "node:test";
 import { insertSnapshot, openDatabase } from "../src/db.ts";
 import { __qualityTestHooks, generateWeeklyDebugJson, generateWeeklyHtml, weeklyDebugJsonPath, writeWeeklyHtmlReport } from "../src/html-report.ts";
 import { buildWeeklyReport } from "../src/report.ts";
-import type { ProposalRecord } from "../src/types.ts";
+import type { ChangeEvent, ProposalRecord, WeeklyRadarReport } from "../src/types.ts";
 
 test("generates and writes the Developer Intelligence HTML report", () => {
   const db = openDatabase(":memory:");
@@ -399,12 +399,145 @@ test("quality check not_applicable serializes as parseable UTF-8 JSON", () => {
   assert.doesNotMatch(json, /\bundefined\b/);
 });
 
+test("subject registry check reports actual missing public IDs", () => {
+  const embeddedApi = {
+    intelligenceSnapshot: {
+      monitoringUniverse: { subjectRegistry: [{ proposalId: "ERC-1" }] },
+      views: {
+        developerAttention: { activity: [{ proposalId: "ERC-1" }] },
+        accountAbstraction: { tracks: [{ baselineProposals: [{ subjectId: "ERC-8286" }] }] },
+        kgldWatch: { groups: { research_now: [{ proposalId: "ERC-8330" }], monitor: [], no_action: [] } },
+      },
+    },
+  };
+
+  assert.deepEqual(__qualityTestHooks.subjectRegistryMissingIdsFromPublicViews(embeddedApi), ["ERC-8286", "ERC-8330"]);
+});
+
+test("cover wording handles 0, 1, and 2 weekly usable signals", () => {
+  const report = { ethereumTechRadar: { historicalInputDiagnostics: { timestampQuality: { weeklyRankingValidity: "valid" } } } } as unknown as WeeklyRadarReport;
+
+  assert.equal(__qualityTestHooks.coverSingularPluralConsistency(report, coverApi(0), "유효 신호 없음"), true);
+  assert.equal(__qualityTestHooks.coverSingularPluralConsistency(report, coverApi(0), "이번 주 주요 개발 주제"), false);
+  assert.equal(__qualityTestHooks.coverSingularPluralConsistency(report, coverApi(1), "단일 신호"), true);
+  assert.equal(__qualityTestHooks.coverSingularPluralConsistency(report, coverApi(1), "Top signals"), false);
+  assert.equal(__qualityTestHooks.coverSingularPluralConsistency(report, coverApi(2), "이번 주 주요 개발 주제"), true);
+});
+
+test("weekly usable event gating preserves raw facts but excludes unknown fallback and low confidence signals", () => {
+  const db = openDatabase(":memory:");
+
+  try {
+    insertSnapshot(db, [makeRecord()]);
+    const report = buildWeeklyReport(db, new Date("2026-06-12T12:00:00.000Z"));
+    assert.ok(report);
+
+    const events = [
+      makeChangeEvent(1, "git-unknown", {
+        changeSemanticType: "unknown",
+        occurredAtSource: "git_commit",
+        timestampConfidence: "high",
+      }),
+      makeChangeEvent(2, "fallback-normal", {
+        changeSemanticType: "normative_specification",
+        occurredAtSource: "fallback_detected_at",
+        timestampConfidence: "low",
+      }),
+      makeChangeEvent(3, "git-normal", {
+        changeSemanticType: "normative_specification",
+        occurredAtSource: "git_commit",
+        timestampConfidence: "high",
+      }),
+      makeChangeEvent(4, "git-low-confidence", {
+        changeSemanticType: "interface_or_api",
+        occurredAtSource: "git_commit",
+        timestampConfidence: "high",
+        confidence: 0.4,
+      } as Partial<ChangeEvent> & { confidence: number }),
+    ];
+    setReportEvents(report, events);
+
+    const html = generateWeeklyHtml(report);
+    const api = JSON.parse(html.match(/<script type="application\/json" id="technology-platform-api">([\s\S]*?)<\/script>/)?.[1] ?? "{}");
+    const snapshot = api.intelligenceSnapshot;
+    const facts = snapshot.facts.developmentEvents;
+    const usableEventIds = snapshot.views.dataQuality.usableEventIds;
+    const expectedUsableId = eventKey(events[2]!);
+
+    assert.deepEqual(usableEventIds, [expectedUsableId]);
+    assert.equal(snapshot.views.dataQuality.current7dUsableEventCount, 1);
+    assert.ok(facts.length >= events.length);
+    assert.ok(facts.some((event: { eventId: string; semanticType: string }) => event.eventId === eventKey(events[0]!) && event.semanticType === "unknown"));
+    assert.ok(facts.some((event: { eventId: string; occurredAtSource: string }) => event.eventId === eventKey(events[1]!) && event.occurredAtSource === "fallback_detected_at"));
+    assert.ok(!usableEventIds.includes(eventKey(events[0]!)));
+    assert.ok(!usableEventIds.includes(eventKey(events[1]!)));
+    assert.ok(!usableEventIds.includes(eventKey(events[3]!)));
+
+    const landscapeIds = new Set(snapshot.views.technologyLandscape.flatMap((domain: { weeklyUsableEventIds?: string[] }) => domain.weeklyUsableEventIds ?? []));
+    const focusIds = new Set(snapshot.views.focusProgress.flatMap((topic: { weeklyUsableEventIds?: string[] }) => topic.weeklyUsableEventIds ?? []));
+    const compactIds = new Set(snapshot.aggregates.weeklyQuality.find((metric: { metricId: string }) => metric.metricId === "weekly.usableEvents") ? usableEventIds : []);
+    assert.deepEqual([...landscapeIds].sort(), usableEventIds);
+    assert.deepEqual([...focusIds].sort(), usableEventIds);
+    assert.deepEqual([...compactIds].sort(), usableEventIds);
+  } finally {
+    db.close();
+  }
+});
+
+test("weekly confidence limit reason uses canonical usable and raw counts when ranking is invalid", () => {
+  const db = openDatabase(":memory:");
+
+  try {
+    insertSnapshot(db, [makeRecord()]);
+    const report = buildWeeklyReport(db, new Date("2026-06-12T12:00:00.000Z"));
+    assert.ok(report);
+
+    const usable = Array.from({ length: 5 }, (_, index) => makeChangeEvent(index + 1, `usable-${index + 1}`, {
+      changeSemanticType: "normative_specification",
+      occurredAtSource: "git_commit",
+      timestampConfidence: "high",
+    }));
+    const unusable = Array.from({ length: 22 }, (_, index) => makeChangeEvent(index + 101, `unusable-${index + 1}`, {
+      changeSemanticType: "unknown",
+      occurredAtSource: "fallback_detected_at",
+      timestampConfidence: "low",
+    }));
+    setReportEvents(report, [...usable, ...unusable]);
+
+    const html = generateWeeklyHtml(report);
+    const visibleHtml = visibleReportHtml(html);
+    const api = JSON.parse(html.match(/<script type="application\/json" id="technology-platform-api">([\s\S]*?)<\/script>/)?.[1] ?? "{}");
+    const dashboard = api.intelligenceSnapshot.views;
+    const expectedReason = "최근 7일 usable event는 5/27건이며, 데이터 품질 기준에 따라 주간 순위는 비활성화했습니다.";
+
+    assert.equal(dashboard.dataQuality.current7dRawEventCount, 27);
+    assert.equal(dashboard.dataQuality.current7dUsableEventCount, 5);
+    assert.equal(dashboard.dataQuality.weeklyRankingValidity, "invalid");
+    assert.equal(dashboard.executivePulse.confidenceLimits.find((item: { label: string }) => item.label === "Weekly specification trend")?.reason, expectedReason);
+    assert.match(visibleHtml, new RegExp(expectedReason));
+    assert.doesNotMatch(visibleHtml, /usable event가 0건입니다/);
+    assert.equal(__qualityTestHooks.weeklyConfidenceLimitCanonical(api, visibleHtml), true);
+  } finally {
+    db.close();
+  }
+});
+
 function visibleReportHtml(html: string): string {
   return html
     .replace(/<style>[\s\S]*?<\/style>/, "")
     .replace(/<script type="application\/json" id="technology-platform-api">[\s\S]*?<\/script>/, "")
     .replace(/<!-- EIPreporter chart data: [\s\S]*? -->/, "")
     .replace(/<script>[\s\S]*?<\/script>/, "");
+}
+
+function coverApi(current7dUsableEventCount: number) {
+  return {
+    intelligenceSnapshot: {
+      views: {
+        dataQuality: { current7dUsableEventCount },
+      },
+    },
+  };
 }
 
 function canonicalQualityFixture(input: {
@@ -473,10 +606,11 @@ function canonicalQualityFixture(input: {
       summary: { implementationEvidence: 0 },
     },
     kgldWatch: {
+      summary: { reviewNow: 1, researchNow: 1, monitor: 1, noAction: 1 },
       groups: {
-        research_now: [{ proposalId: "ERC-4626" }],
-        monitor: [{ proposalId: "EIP-712" }],
-        no_action: [{ proposalId: "ERC-20" }],
+        research_now: [{ proposalId: "ERC-4626", internalAction: "review", nextTrigger: "trigger", sourceUrls: ["https://eips.ethereum.org/EIPS/eip-4626"] }],
+        monitor: [{ proposalId: "EIP-712", internalAction: "monitor", nextTrigger: "trigger", sourceUrls: ["https://eips.ethereum.org/EIPS/eip-712"] }],
+        no_action: [{ proposalId: "ERC-20", internalAction: "none", nextTrigger: "trigger", sourceUrls: ["https://eips.ethereum.org/EIPS/eip-20"] }],
       },
     },
   };
@@ -547,4 +681,61 @@ function makeRecord(): ProposalRecord {
     canonicalUrl: "https://example.test/ERC-4626",
     rawContentHash: "hash",
   };
+}
+
+function makeChangeEvent(id: number, hash: string, overrides: Partial<ChangeEvent>): ChangeEvent {
+  return {
+    id,
+    snapshotId: 1,
+    previousSnapshotId: 1,
+    type: "content_hash_change",
+    proposalId: "ERC-4626",
+    previousStatus: "Final",
+    currentStatus: "Final",
+    previousHash: `previous-${hash}`,
+    currentHash: hash,
+    title: "Tokenized Vaults",
+    sourceRepo: "ethereum/ercs",
+    sourcePath: "ERCS/erc-4626.md",
+    canonicalUrl: "https://example.test/ERC-4626",
+    changedFiles: ["ERCS/erc-4626.md"],
+    changedSections: ["Specification"],
+    diffSummary: "Specification text changed.",
+    diffEvidence: "git diff",
+    detectedAt: "2026-06-10T12:00:00.000Z",
+    occurredAt: "2026-06-10T12:00:00.000Z",
+    ...overrides,
+  } as ChangeEvent;
+}
+
+function setReportEvents(report: WeeklyRadarReport, events: ChangeEvent[]): void {
+  report.ethereumTechRadar.recentChanges = {
+    total: events.length,
+    byEventType: { new_proposal: 0, status_change: 0, final_transition: 0, withdrawn_transition: 0, content_hash_change: events.length },
+    finalTransitions: [],
+    withdrawnTransitions: [],
+    statusChanges: [],
+    newProposals: [],
+    contentHashChanges: events,
+  };
+  const older = makeChangeEvent(99, "older-trend", {
+    changeSemanticType: "normative_specification",
+    occurredAt: "2026-05-01T00:00:00.000Z",
+    detectedAt: "2026-05-01T00:00:00.000Z",
+    occurredAtSource: "git_commit",
+    timestampConfidence: "high",
+  });
+  report.ethereumTechRadar.trendChanges = {
+    total: events.length + 1,
+    byEventType: { new_proposal: 0, status_change: 0, final_transition: 0, withdrawn_transition: 0, content_hash_change: events.length + 1 },
+    finalTransitions: [],
+    withdrawnTransitions: [],
+    statusChanges: [],
+    newProposals: [],
+    contentHashChanges: [...events, older],
+  };
+}
+
+function eventKey(event: ChangeEvent): string {
+  return `${event.proposalId}:${event.type}:${event.occurredAt ?? event.detectedAt}:${event.currentHash ?? ""}`;
 }

@@ -1,6 +1,6 @@
 import { parseArgs, resolveDatabasePath } from "../config.ts";
 import { openDatabase } from "../db.ts";
-import { writeWeeklyHtmlReport } from "../html-report.ts";
+import { validateWeeklyCollectionPreflight, writeWeeklyHtmlReport } from "../html-report.ts";
 import { buildWeeklyReport, buildWeeklyReportWithDiscussionActivity, buildWeeklyReportWithDiscussionPosts } from "../report.ts";
 
 async function main(): Promise<void> {
@@ -26,6 +26,7 @@ async function main(): Promise<void> {
     if (!report) {
       throw new Error("스냅샷이 없습니다. 먼저 `npm run collect`를 실행하세요.");
     }
+    if (args["skip-preflight"] !== true) validateWeeklyCollectionPreflight(report);
     console.log(writeWeeklyHtmlReport(report, outputDirectory, { debug: args.debug === true }));
   } finally {
     db.close();

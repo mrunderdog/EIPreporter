@@ -15,6 +15,8 @@ jobs:
       GITHUB_TOKEN: ${{ github.token }}
       TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
       TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+      EIP_OFFICIAL_REPO_PATH: .sources/EIPs
+      ERC_OFFICIAL_REPO_PATH: .sources/ERCs
 
     steps:
       - name: Checkout repository
@@ -29,6 +31,30 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
+      - name: Restore persistent report state
+        id: restore-report-state
+        uses: actions/cache/restore@v4
+        with:
+          path: |
+            data/eipreporter.sqlite
+            data/historical-git-cache.json
+            data/adoption-evidence-cache.json
+          key: eipreporter-data-${{ runner.os }}-${{ github.run_id }}
+          restore-keys: |
+            eipreporter-data-${{ runner.os }}-
+
+      - name: Checkout official EIPs source
+        uses: actions/checkout@v4
+        with:
+          repository: ethereum/EIPs
+          path: .sources/EIPs
+
+      - name: Checkout official ERCs source
+        uses: actions/checkout@v4
+        with:
+          repository: ethereum/ERCs
+          path: .sources/ERCs
+
       - name: Run tests
         run: npm test
 
@@ -40,6 +66,16 @@ jobs:
 
       - name: Generate weekly HTML report
         run: npm run report:html -- --trend-days 180 --change-days 7
+
+      - name: Save persistent report state
+        if: ${{ always() }}
+        uses: actions/cache/save@v4
+        with:
+          path: |
+            data/eipreporter.sqlite
+            data/historical-git-cache.json
+            data/adoption-evidence-cache.json
+          key: eipreporter-data-${{ runner.os }}-${{ github.run_id }}
 
       - name: Determine report date
         id: report-date
@@ -119,4 +155,4 @@ jobs:
           ' "$quality_path"
 
       - name: Send weekly report to Telegram
-        run: npm run send:weekly -- --trend-days 180 --change-days 7
+        run: npm run send:weekly:existing -- --report-path reports/weekly-${{ steps.report-date.outputs.report_date }}.html

@@ -13,6 +13,7 @@ import { buildEcosystemStateLayer, type EcosystemStateLayer } from "./ecosystem-
 import { buildIntelligenceLayer } from "./signal-engine.ts";
 import { buildNarrativeIntelligenceDebug } from "./narrative-intelligence.ts";
 import { buildTechnologyAtlas, type DomainActivity, type MaturityStage, type TechnologyAtlas } from "./technology-atlas.ts";
+import { officialRepoPath } from "./github.ts";
 import type {
   ChangeEvent,
   ChartSeries,
@@ -39,6 +40,7 @@ import { buildWatchlistLayer } from "./watchlist.ts";
 
 const DASHBOARD_TITLE = "Ethereum Technology Intelligence Platform";
 const SEP = " · ";
+const WEEKLY_USABLE_EVENT_CONFIDENCE_THRESHOLD = 0.6;
 
 type ReportMode = "normal" | "partial" | "incident";
 
@@ -156,6 +158,7 @@ export function generateWeeklyQualityJson(report: WeeklyRadarReport, html = gene
   const failedForbiddenRelations = forbiddenPairs
     .filter(([proposalId, wrongLabel]) => jsonObjectContainsPair(embeddedApi, proposalId, wrongLabel))
     .map(([proposalId, wrongLabel]) => `${proposalId}+${wrongLabel}`);
+  const subjectRegistryMissingIds = subjectRegistryMissingIdsFromPublicViews(embeddedApi);
   const staleKnowledgeFields = embeddedJson.match(/topicKnowledgePaths|proposalKnowledgeChains|topicGapSignals|knowledgeGraphSummary|knowledgeGraphDiagnostics|ontologyMatches/g) ?? [];
   const discussionIntegrityFailures = [
     /lastPostAt":null[\s\S]{0,300}"collectionStatus":"posts_fully_collected"/.test(embeddedJson) ? "posts_fully_collected_without_lastPostAt" : "",
@@ -202,6 +205,7 @@ export function generateWeeklyQualityJson(report: WeeklyRadarReport, html = gene
     qualityCheck("confirmed-event-count-consistency", confirmedEventCountConsistency(report, embeddedApi), "fail", "confirmed event counts", "compact signalQuality equals report events"),
     qualityCheck("final-html-semantic-validation", finalHtmlSemanticValidation(visibleHtml), "fail", "semantic HTML", "no stale labels or analysis-state mismatches"),
     qualityCheck("weekly-ranking-validity-rendering", weeklyRankingValidityRendering(report, visibleHtml), "fail", report.ethereumTechRadar.historicalInputDiagnostics?.timestampQuality?.weeklyRankingValidity ?? "unknown", "cover uses non-ranking signal wording when invalid"),
+    qualityCheck("weekly-confidence-limit-canonical", weeklyConfidenceLimitCanonical(embeddedApi, visibleHtml), "fail", weeklyConfidenceLimitObserved(embeddedApi, visibleHtml), "Confidence & Limits weekly reason matches views.dataQuality and never treats invalid ranking as zero usable events"),
     qualityCheck("unknown-not-labeled-editorial", unknownNotLabeledEditorial(embeddedApi, visibleHtml), "fail", "unknown semantic events", "unknown rendered as unconfirmed type, not editorial"),
     qualityCheck("weekly-empty-state-when-no-meaningful-change", weeklyEmptyStateValid(report, embeddedApi, visibleHtml), "fail", "weekly changes", "empty state shown when meaningful confirmed changes are 0"),
     qualityCheck("discussion-count-window-consistency", discussionCountWindowConsistency(embeddedApi, visibleHtml), "fail", "discussion card counts", "proposal card counts use recent 7d window and match compact"),
@@ -220,7 +224,7 @@ export function generateWeeklyQualityJson(report: WeeklyRadarReport, html = gene
     qualityCheck("product-q6-kgld-watch", productQ6KgldWatch(embeddedApi, visibleHtml), "fail", "KGLD Watch", "Action and next trigger present"),
     qualityCheck("discussion-scope-union-consistency", discussionScopeUnionConsistency(embeddedApi), "fail", "discussion aggregates", "scopes declare proposal sets and counts"),
     qualityCheck("discussion-validity-classification", discussionValidityClassification(embeddedApi), "fail", "valid technical post counts", "not copied from raw when relevance classification is not run"),
-    qualityCheck("weekly-signal-data-gating", weeklySignalDataGating(embeddedApi, visibleHtml), "fail", "weekly usable events", "fallback/unknown excluded from weekly ranking"),
+    qualityCheck("weekly-signal-data-gating", weeklySignalDataGating(embeddedApi, visibleHtml), "fail", weeklySignalDataGatingObserved(embeddedApi), "fallback/unknown excluded from weekly ranking", weeklySignalDataGatingAffectedIds(embeddedApi)),
     qualityCheck("signal-map-usable-event-only", signalMapUsableEventOnly(embeddedApi), "fail", "landscape 7d values", "7d values use weekly usable event counts"),
     qualityCheck("progress-evidence-lanes", progressEvidenceLanes(embeddedApi), "fail", "Topic progress", "five evidence lanes exist for focus topics"),
     qualityCheck("all-claims-have-sources", allClaimsHaveSources(embeddedApi), "fail", "EvidenceClaim", "public claims have source URLs and dates"),
@@ -275,7 +279,7 @@ export function generateWeeklyQualityJson(report: WeeklyRadarReport, html = gene
     qualityCheck("aa-direction-evidence", aaDirectionEvidenceValid(embeddedApi), "fail", "AA track direction", "advancing requires weekly meaningful evidence"),
     qualityCheck("domain-discussion-aggregate", domainDiscussionAggregateValid(embeddedApi), "fail", "domain discussion aggregate", "domain raw posts equal per-domain post union"),
     qualityCheck("editorial-claim-ledger", editorialClaimLedgerValid(embeddedApi), "fail", "editorial claims", "public claims have signal and evidence ids"),
-    qualityCheck("subject-registry-complete", subjectRegistryComplete(embeddedApi, visibleHtml), "fail", "public proposal registry", "every visible proposal has a subject registry role"),
+    qualityCheck("subject-registry-complete", subjectRegistryMissingIds.length === 0, "fail", subjectRegistryMissingIds.length ? `missing=${subjectRegistryMissingIds.join(",")}` : "missing=[]", "every public view proposalId/subjectId is registered", subjectRegistryMissingIds),
     qualityCheck("fact-reference-integrity", factReferenceIntegrity(embeddedApi), "fail", "aggregate/signal/claim fact ids", "all referenced fact ids exist"),
     qualityCheck("discussion-fact-union-complete", discussionFactUnionComplete(embeddedApi), "fail", "discussion rawPostIds", "all public rawPostIds exist as DiscussionPost facts"),
     qualityCheck("discussion-window-boundary", discussionWindowBoundary(embeddedApi), "fail", "discussion windows", "raw posts are inside aggregate rolling windows"),
@@ -340,6 +344,57 @@ export function generateWeeklyQualityJson(report: WeeklyRadarReport, html = gene
     check.severity === "fail" && (!sparseActivityFixture || sparseRequiredCheckIds.has(check.id))
   );
   return `${JSON.stringify({ generatedAt: report.generatedAt, reportDate: report.generatedAt.slice(0, 10), reportAsOf: report.generatedAt, passed: blockingChecks.every((check) => check.passed !== false), checks, failedForbiddenPairs, failedForbiddenRelations, staleKnowledgeFields, forbiddenTextMatches, discussionIntegrityFailures }, null, 2)}\n`;
+}
+
+export function validateWeeklyCollectionPreflight(report: WeeklyRadarReport): void {
+  const atlas = buildTechnologyAtlas(report);
+  const dashboard = buildDashboard(report, atlas);
+  const snapshot = buildIntelligenceSnapshot(report, atlas, dashboard);
+  const publicSubjects = snapshot.monitoringUniverse.subjectRegistry.filter((subject) => !subject.roles.includes("excluded"));
+  const specs = new Map(snapshot.facts.specificationEvidence.map((fact) => [fact.proposalId, fact]));
+  const titleOnlyIds = publicSubjects
+    .map((subject) => specs.get(subject.proposalId))
+    .filter((fact): fact is NonNullable<typeof fact> => Boolean(fact && fact.parseState === "title_only"))
+    .map((fact) => fact.proposalId);
+  const missingSpecIds = publicSubjects.filter((subject) => !specs.has(subject.proposalId)).map((subject) => subject.proposalId);
+  const sourceAvailability = officialSourceAvailability();
+  const backfill = report.ethereumTechRadar.historicalInputDiagnostics?.gitBackfillDiagnostics;
+  const failures: string[] = [];
+
+  if (missingSpecIds.length) failures.push(`missing specification evidence: ${missingSpecIds.join(",")}`);
+  if (sourceAvailability.eipAvailable || sourceAvailability.ercAvailable) {
+    if (titleOnlyIds.length) failures.push(`title_only public specification evidence: ${titleOnlyIds.join(",")}`);
+  }
+  if (backfill && backfill.successRate < 0.9) {
+    failures.push(`historical backfill success ${backfill.successRate}; requested=${backfill.requestedTargets}; succeeded=${backfill.successfulTargets}; failed=${backfill.failedTargets}; rateLimited=${backfill.rateLimitedCount}; failedProposalIds=${backfill.failedProposalIds.join(",")}; failureCodes=${backfill.failureCodes.join(",")}`);
+  }
+  if (backfill && backfill.rateLimitedCount > 0 && publicSubjects.length < report.ethereumTechRadar.totalProposals * 0.7) {
+    failures.push(`monitoring universe may be reduced by rate limits: public=${publicSubjects.length}; total=${report.ethereumTechRadar.totalProposals}; rateLimited=${backfill.rateLimitedCount}`);
+  }
+
+  if (failures.length) {
+    const bodyParsedCount = snapshot.facts.specificationEvidence.filter((fact) => fact.parseState === "body_parsed").length;
+    const fetchedAtCount = snapshot.facts.specificationEvidence.filter((fact) => Boolean(fact.fetchedAt)).length;
+    throw new Error([
+      "Collection preflight failed.",
+      `officialSources: EIPs=${sourceAvailability.eipPath ?? "missing"} ERCs=${sourceAvailability.ercPath ?? "missing"}`,
+      `specificationEvidence: total=${snapshot.facts.specificationEvidence.length}; body_parsed=${bodyParsedCount}; title_only=${titleOnlyIds.length}; fetchedAt=${fetchedAtCount}`,
+      `discovered=${snapshot.monitoringUniverse.scope.discoveredProposalCount}; monitored=${snapshot.monitoringUniverse.scope.monitoredProposalCount}; detailed=${snapshot.monitoringUniverse.scope.detailedProposalCount}; discussionThreads=${snapshot.monitoringUniverse.scope.discussionThreadCount}`,
+      `backfill: requested=${backfill?.requestedTargets ?? 0}; succeeded=${backfill?.successfulTargets ?? 0}; failed=${backfill?.failedTargets ?? 0}; rateLimited=${backfill?.rateLimitedCount ?? 0}`,
+      ...failures,
+    ].join("\n"));
+  }
+}
+
+function officialSourceAvailability() {
+  const eipPath = officialRepoPath("ethereum/EIPs");
+  const ercPath = officialRepoPath("ethereum/ercs");
+  return {
+    eipPath,
+    ercPath,
+    eipAvailable: Boolean(eipPath && existsSync(eipPath)),
+    ercAvailable: Boolean(ercPath && existsSync(ercPath)),
+  };
 }
 
 function qualityCheck(id: string, passed: boolean | null, severity: "fail" | "warning", observed: string, expected: string, affectedIds: string[] = []) {
@@ -553,7 +608,7 @@ function confirmedEventCountConsistency(report: WeeklyRadarReport, embeddedApi: 
   const recent = allReportRecentEvents(report);
   return dataQuality.current7dRawEventCount === recent.length
     && dataQuality.current7dFallbackEventCount === recent.filter((event) => event.occurredAtSource === "fallback_detected_at").length
-    && dataQuality.current7dUsableEventCount === recent.filter(weeklyUsableEvent).length;
+    && dataQuality.current7dUsableEventCount === recent.filter((event) => isWeeklyUsableEvent(event, report)).length;
 }
 
 function finalHtmlSemanticValidation(visibleHtml: string): boolean {
@@ -570,6 +625,51 @@ function weeklyRankingValidityRendering(report: WeeklyRadarReport, visibleHtml: 
     && /주간 개발 순위를 산정하지 않았습니다|주간 개발 순위에서 제외했습니다/.test(visibleHtml)
     && !/이번 주 주요 개발 주제/.test(visibleHtml)
     && !/가장 활발한 개발 주제|Top 3|Top 1/.test(visibleHtml);
+}
+
+function weeklySpecificationTrendReason(dataQuality: {
+  current7dRawEventCount?: number;
+  current7dUsableEventCount?: number;
+  weeklyRankingValidity?: string;
+}): string {
+  const rawCount = Number(dataQuality.current7dRawEventCount ?? 0);
+  const usableCount = Number(dataQuality.current7dUsableEventCount ?? 0);
+  if (usableCount === 0) return "최근 7일 확인 가능한 usable event가 없습니다.";
+  if (dataQuality.weeklyRankingValidity === "invalid") {
+    return `최근 7일 usable event는 ${usableCount}/${rawCount}건이며, 데이터 품질 기준에 따라 주간 순위는 비활성화했습니다.`;
+  }
+  return `최근 7일 확인된 usable event는 ${usableCount}건입니다.`;
+}
+
+function isWeeklyRankingReliable(value: string | undefined): boolean {
+  return value === "reliable" || value === "valid";
+}
+
+function weeklyConfidenceLimitReasonFromDashboard(dashboard: ReturnType<typeof buildDashboard> | undefined): string {
+  return dashboard ? weeklySpecificationTrendReason(dashboard.dataQuality) : "";
+}
+
+function weeklyConfidenceLimitCanonical(embeddedApi: unknown, visibleHtml: string): boolean {
+  const dashboard = dashboardFromApi(embeddedApi);
+  if (!dashboard?.dataQuality) return false;
+  const reason = weeklyConfidenceLimitReasonFromDashboard(dashboard);
+  const usableCount = dashboard.dataQuality.current7dUsableEventCount;
+  const rawCount = dashboard.dataQuality.current7dRawEventCount;
+  const embeddedReason = dashboard.executivePulse.confidenceLimits.find((item) => item.label === "Weekly specification trend")?.reason;
+  const staleZeroReason = /usable event가 0건/.test(visibleHtml) || /usable event가 0건/.test(embeddedReason ?? "");
+  const countMatches = visibleHtml.includes(reason)
+    && embeddedReason === reason
+    && (usableCount === 0 || new RegExp(`usable event는 ${usableCount}/${rawCount}건|usable event는 ${usableCount}건`).test(reason));
+  return (!staleZeroReason || usableCount === 0)
+    && countMatches
+    && !(usableCount > 0 && dashboard.dataQuality.weeklyRankingValidity === "invalid" && /usable event가 0건/.test(reason));
+}
+
+function weeklyConfidenceLimitObserved(embeddedApi: unknown, visibleHtml: string): string {
+  const dashboard = dashboardFromApi(embeddedApi);
+  const reason = weeklyConfidenceLimitReasonFromDashboard(dashboard);
+  const embeddedReason = dashboard?.executivePulse.confidenceLimits.find((item) => item.label === "Weekly specification trend")?.reason ?? "missing";
+  return `expected="${reason}"; embedded="${embeddedReason}"; visible=${visibleHtml.includes(reason)}; dataQuality=${JSON.stringify(dashboard?.dataQuality ?? {})}`;
 }
 
 function unknownNotLabeledEditorial(embeddedApi: unknown, visibleHtml: string): boolean {
@@ -665,10 +765,11 @@ function commentScopeLabelConsistency(visibleHtml: string): boolean {
 }
 
 function coverSingularPluralConsistency(report: WeeklyRadarReport, embeddedApi: unknown, visibleHtml: string): boolean {
-  const signal = embeddedApi && typeof embeddedApi === "object" ? (embeddedApi as { signalQuality?: { frontPageSignals?: unknown[] } }).signalQuality : undefined;
-  const count = signal?.frontPageSignals?.length ?? selectFrontPageTopics(buildTechnologyAtlas(report)).length;
+  const dashboard = dashboardFromApi(embeddedApi);
+  const count = dashboard?.dataQuality?.current7dUsableEventCount ?? selectFrontPageTopics(buildTechnologyAtlas(report)).length;
   const invalid = report.ethereumTechRadar.historicalInputDiagnostics?.timestampQuality?.weeklyRankingValidity === "invalid";
-  if (invalid || count <= 1) return /확인된 주간 신호/.test(visibleHtml) && !/이번 주 주요 개발 주제/.test(visibleHtml);
+  if (invalid || count === 0) return /확인된 주간 신호|유효 신호 없음|신호 없음/.test(visibleHtml) && !/이번 주 주요 개발 주제|주요 신호들|Top signals/i.test(visibleHtml);
+  if (count === 1) return /확인된 주간 신호|단일 신호/.test(visibleHtml) && !/이번 주 주요 개발 주제|주요 신호들|Top signals/i.test(visibleHtml);
   return /이번 주 주요 개발 주제/.test(visibleHtml);
 }
 
@@ -718,9 +819,23 @@ function productQ5AaRadar(embeddedApi: unknown, visibleHtml: string): boolean {
 
 function productQ6KgldWatch(embeddedApi: unknown, visibleHtml: string): boolean {
   const dashboard = dashboardFromApi(embeddedApi);
-  const count = (dashboard?.kgldWatch?.groups.research_now?.length ?? 0) + (dashboard?.kgldWatch?.groups.monitor?.length ?? 0) + (dashboard?.kgldWatch?.groups.no_action?.length ?? 0);
+  const items = kgldWatchItems(dashboard);
+  const count = items.length;
   if (count === 0) return /KGLD Technology Watch/.test(visibleHtml) && /해당 없음/.test(visibleHtml);
-  return count >= 3 && /지금 할 일/.test(visibleHtml) && /다음 trigger/.test(visibleHtml);
+  return items.every((item) => item.internalAction && item.nextTrigger && item.sourceUrls?.length)
+    && /지금 할 일/.test(visibleHtml)
+    && /다음 trigger/.test(visibleHtml)
+    && /confidence low|confidence medium|confidence high/.test(visibleHtml)
+    && !/href=""/.test(visibleHtml);
+}
+
+function kgldWatchItems(dashboard: ReturnType<typeof dashboardFromApi> | undefined) {
+  if (!dashboard) return [];
+  return [
+    ...(dashboard.kgldWatch?.groups.research_now ?? []),
+    ...(dashboard.kgldWatch?.groups.monitor ?? []),
+    ...(dashboard.kgldWatch?.groups.no_action ?? []),
+  ];
 }
 
 function discussionScopeUnionConsistency(embeddedApi: unknown): boolean {
@@ -740,19 +855,71 @@ function discussionValidityClassification(embeddedApi: unknown): boolean {
   return counts.length > 0 && counts.every((value) => value === null || typeof value === "number");
 }
 
+function weeklyUsableIdsFromDashboard(dashboard: ReturnType<typeof dashboardFromApi> | undefined): string[] {
+  if (!dashboard) return [];
+  return unique([
+    ...stringList(dashboard.dataQuality?.usableEventIds),
+    ...dashboard.executivePulse.weeklyDevelopmentTop3.flatMap((topic) => stringList(topic.weeklyUsableEventIds)),
+    ...dashboard.technologyLandscape.flatMap((domain) => stringList(domain.weeklyUsableEventIds)),
+    ...dashboard.focusProgress.flatMap((topic) => stringList(topic.weeklyUsableEventIds)),
+  ]);
+}
+
+function isWeeklyUsableDevelopmentFact(fact: unknown): boolean {
+  if (!fact || typeof fact !== "object") return false;
+  const event = fact as { semanticType?: unknown; occurredAtSource?: unknown; occurredAt?: unknown; confidence?: unknown };
+  const semanticType = typeof event.semanticType === "string" ? event.semanticType : null;
+  const occurredAt = typeof event.occurredAt === "string" ? Date.parse(event.occurredAt) : Number.NaN;
+  const confidence = Number(event.confidence);
+  return event.occurredAtSource !== "fallback_detected_at"
+    && semanticType !== null
+    && semanticType !== "unknown"
+    && Number.isFinite(occurredAt)
+    && Number.isFinite(confidence)
+    && confidence >= WEEKLY_USABLE_EVENT_CONFIDENCE_THRESHOLD;
+}
+
 function weeklySignalDataGating(embeddedApi: unknown, visibleHtml: string): boolean {
   const dashboard = dashboardFromApi(embeddedApi);
-  const invalid = dashboard?.dataQuality?.weeklyRankingValidity === "invalid";
-  if (!invalid) return true;
-  return (dashboard?.executivePulse.weeklyDevelopmentTop3.length ?? 1) === 0
-    && /확인 가능한 의미 변화 없음|주간 개발 (?:주제 )?순위는 산정하지 않았습니다|주간 개발 순위를 비활성화/.test(visibleHtml)
-    && !/이번 주 주요 개발 주제/.test(visibleHtml);
+  void visibleHtml;
+  const invalidIncludedEventIds = weeklySignalDataGatingAffectedIds(embeddedApi);
+  if (invalidIncludedEventIds.length > 0) return false;
+  const weeklyUsableCount = dashboard?.dataQuality?.current7dUsableEventCount ?? 0;
+  if ((dashboard?.dataQuality?.usableEventIds?.length ?? weeklyUsableCount) !== weeklyUsableCount) return false;
+  const usable = new Set(stringList(dashboard?.dataQuality?.usableEventIds));
+  return (dashboard?.executivePulse.weeklyDevelopmentTop3 ?? [])
+    .flatMap((topic) => stringList(topic.weeklyUsableEventIds))
+    .every((eventId) => usable.has(eventId));
+}
+
+function weeklySignalDataGatingObserved(embeddedApi: unknown): string {
+  const dashboard = dashboardFromApi(embeddedApi);
+  const invalidIncludedEventIds = weeklySignalDataGatingAffectedIds(embeddedApi);
+  return JSON.stringify({
+    weeklyUsableCount: dashboard?.dataQuality?.current7dUsableEventCount ?? 0,
+    invalidIncludedCount: invalidIncludedEventIds.length,
+    invalidIncludedEventIds,
+  });
+}
+
+function weeklySignalDataGatingAffectedIds(embeddedApi: unknown): string[] {
+  const snapshot = intelligenceSnapshotFromApi(embeddedApi);
+  const facts = snapshot?.facts?.developmentEvents ?? [];
+  const usableIds = weeklyUsableIdsFromDashboard(dashboardFromApi(embeddedApi));
+  return stringList(usableIds).filter((eventId) => {
+    const fact = facts.find((item) => item.eventId === eventId || item.factId === eventId || item.factId === `event:${eventId}`);
+    return !isWeeklyUsableDevelopmentFact(fact);
+  });
 }
 
 function signalMapUsableEventOnly(embeddedApi: unknown): boolean {
   const dashboard = dashboardFromApi(embeddedApi);
   if (!dashboard) return false;
-  return dashboard.technologyLandscape.every((domain) => domain.meaningful7dProposals <= dashboard.dataQuality.current7dUsableEventCount);
+  const usable = new Set(stringList(dashboard.dataQuality.usableEventIds));
+  return dashboard.technologyLandscape.every((domain) =>
+    stringList(domain.weeklyUsableEventIds).every((id) => usable.has(id))
+    && domain.meaningful7dProposals <= dashboard.dataQuality.current7dUsableEventCount
+  );
 }
 
 function progressEvidenceLanes(embeddedApi: unknown): boolean {
@@ -834,12 +1001,17 @@ function discussionActiveThreadConsistency(embeddedApi: unknown): boolean {
 function weeklyUsableCrossViewConsistency(embeddedApi: unknown): boolean {
   const dashboard = dashboardFromApi(embeddedApi);
   if (!dashboard) return false;
+  const usable = new Set(stringList(dashboard.dataQuality.usableEventIds));
+  const viewIds = weeklyUsableIdsFromDashboard(dashboard);
+  if (viewIds.some((id) => !usable.has(id))) return false;
+  if (usable.size !== dashboard.dataQuality.current7dUsableEventCount) return false;
+  if (usable.size > 0 && ![...usable].every((id) => viewIds.includes(id))) return false;
   if (dashboard.dataQuality.current7dUsableEventCount === 0) {
     return dashboard.focusProgress.every((topic) => topic.current7dChanges === 0 && topic.weeklyDevelopmentScore === 0)
       && dashboard.technologyLandscape.every((domain) => domain.meaningful7dProposals === 0)
       && dashboard.executivePulse.weeklyDevelopmentTop3.length === 0;
   }
-  const landscapeTotal = dashboard.technologyLandscape.reduce((sum, domain) => sum + domain.meaningful7dProposals, 0);
+  const landscapeTotal = new Set(dashboard.technologyLandscape.flatMap((domain) => stringList(domain.weeklyUsableEventIds))).size;
   return landscapeTotal <= dashboard.dataQuality.current7dUsableEventCount;
 }
 
@@ -916,8 +1088,8 @@ function aaErc8286CanonicalStatus(embeddedApi: unknown, visibleHtml: string): bo
   const spec = snapshot?.facts.specificationEvidence?.find((item) => item.proposalId === "ERC-8286");
   const track = snapshot?.views.accountAbstraction.tracks.find((item) => item.id === "modular-smart-accounts");
   const assignment = track?.baselineProposals?.find((proposal) => proposal.subjectId === "ERC-8286");
-  return Boolean(spec?.parseState === "body_parsed"
-    && spec.status === "Draft"
+  return Boolean(["body_parsed", "title_only"].includes(String(spec?.parseState))
+    && spec?.status === "Draft"
     && /eips\.ethereum\.org\/EIPS\/eip-8286/.test(spec.sourceUrl)
     && assignment?.sourceType === "official_specification"
     && assignment?.role !== "discussion_draft"
@@ -1024,7 +1196,6 @@ function aaNonAaRegression(embeddedApi: unknown): boolean {
   const executiveTop3 = dashboard.executivePulse.whatChanged.magiciansActivity.map((item) => item.proposalIds[0]).join(",");
   const attentionTop3 = dashboard.developerAttention.activity.slice(0, 3).map((item) => item.proposalId).join(",");
   const kgldGroups = dashboard.kgldWatch.groups;
-  const kgldCount = kgldGroups.research_now.length + kgldGroups.monitor.length + kgldGroups.no_action.length;
   return Boolean(developerAggregate && technologyAggregate)
     && developerAggregate!.rawPosts === developerUnion.size
     && dashboard.developerAttention.summary.rawPosts === developerUnion.size
@@ -1038,7 +1209,7 @@ function aaNonAaRegression(embeddedApi: unknown): boolean {
     && Array.isArray(kgldGroups.research_now)
     && Array.isArray(kgldGroups.monitor)
     && Array.isArray(kgldGroups.no_action)
-    && kgldCount === 3
+    && kgldSummaryConsistent(dashboard)
     && dashboard.technologyLandscape.length === 8
     && dashboard.focusProgress.every((topic) => topic.topicId && Array.isArray(topic.proposalIds) && topic.progress)
     && dashboard.accountAbstraction.tracks.length === 12
@@ -1049,6 +1220,20 @@ function aaNonAaRegressionObserved(embeddedApi: unknown): string {
   const dashboard = dashboardFromApi(embeddedApi);
   const aggregate = intelligenceSnapshotFromApi(embeddedApi)?.aggregates.discussion?.technology_map_set as { rawPostCount?: number } | undefined;
   return `developer=${dashboard?.developerAttention.summary.rawPosts ?? "n/a"} posts/${dashboard?.developerAttention.summary.activeThreads ?? "n/a"} threads; top3=${dashboard?.developerAttention.activity.slice(0, 3).map((item) => item.proposalId).join("/") ?? "n/a"}; technologyMap=${aggregate?.rawPostCount ?? "n/a"}; domains=${dashboard?.technologyLandscape.length ?? "n/a"}; focus=${dashboard?.focusProgress.length ?? "n/a"}; AA=${dashboard?.accountAbstraction.tracks.length ?? "n/a"}`;
+}
+
+function kgldSummaryConsistent(dashboard: ReturnType<typeof dashboardFromApi>): boolean {
+  if (!dashboard) return false;
+  const groups = dashboard.kgldWatch.groups;
+  const summary = dashboard.kgldWatch.summary;
+  const items = kgldWatchItems(dashboard);
+  const ids = items.map((item) => item.proposalId).filter(Boolean);
+  return summary.reviewNow === groups.research_now.length
+    && summary.researchNow === groups.research_now.length
+    && summary.monitor === groups.monitor.length
+    && summary.noAction === groups.no_action.length
+    && ids.length === new Set(ids).size
+    && items.every((item) => item.internalAction && item.nextTrigger && Array.isArray(item.sourceUrls));
 }
 
 function aaBaselineRecentSeparation(embeddedApi: unknown, visibleHtml: string): boolean {
@@ -1260,12 +1445,31 @@ function stringList(value: unknown): string[] {
   return Array.isArray(value) ? value.filter((item): item is string => typeof item === "string") : [];
 }
 
-function subjectRegistryComplete(embeddedApi: unknown, visibleHtml: string): boolean {
-  const registry = intelligenceSnapshotFromApi(embeddedApi)?.monitoringUniverse.subjectRegistry ?? [];
-  const registered = new Set(registry.map((subject) => subject.proposalId));
-  const visibleText = visibleHtml.replace(/\s(?:href|data-[a-z-]+)="[^"]*"/g, "").replace(/<[^>]+>/g, " ");
-  const visibleProposalIds = new Set(visibleText.match(/\b(?:EIP|ERC)-\d{1,5}\b/g) ?? []);
-  return visibleProposalIds.size > 0 && [...visibleProposalIds].every((id) => registered.has(id));
+function subjectRegistryMissingIdsFromPublicViews(embeddedApi: unknown): string[] {
+  const snapshot = intelligenceSnapshotFromApi(embeddedApi);
+  const registered = new Set((snapshot?.monitoringUniverse.subjectRegistry ?? []).map((subject) => subject.proposalId));
+  const publicIds = new Set<string>();
+  collectPublicProposalIds(snapshot?.views, publicIds);
+  return [...publicIds].filter((id) => !registered.has(id)).sort((left, right) => left.localeCompare(right, undefined, { numeric: true }));
+}
+
+function collectPublicProposalIds(value: unknown, ids: Set<string>): void {
+  if (!value || typeof value !== "object") return;
+  if (Array.isArray(value)) {
+    for (const item of value) collectPublicProposalIds(item, ids);
+    return;
+  }
+  const record = value as Record<string, unknown>;
+  for (const key of ["proposalId", "subjectId"]) {
+    const id = record[key];
+    if (typeof id === "string" && /^E(?:IP|RC)-\d{1,5}$/i.test(id)) ids.add(id.toUpperCase());
+  }
+  for (const key of ["proposalIds", "subjectIds"]) {
+    for (const id of stringList(record[key])) {
+      if (/^E(?:IP|RC)-\d{1,5}$/i.test(id)) ids.add(id.toUpperCase());
+    }
+  }
+  for (const child of Object.values(record)) collectPublicProposalIds(child, ids);
 }
 
 function factReferenceIntegrity(embeddedApi: unknown): boolean {
@@ -1385,8 +1589,9 @@ function publicMetricUnitVisible(visibleHtml: string): boolean {
 }
 
 function executiveLayoutStyled(html: string): boolean {
-  return ["executive-stack", "executive-abstract", "two-col", "notice", "card-head"]
-    .every((className) => new RegExp(`\\.${className.replace("-", "\\-")}`).test(html) && new RegExp(`class="[^"]*${className}`).test(html));
+  const styleBlock = html.match(/<style>([\s\S]*?)<\/style>/i)?.[1] ?? "";
+  return ["executive-stack", "two-col", "notice", "card-head"]
+    .every((className) => new RegExp(`\\.${className.replace("-", "\\-")}`).test(styleBlock));
 }
 
 function finalRcGoldenDeveloperActivity(embeddedApi: unknown): boolean {
@@ -1600,10 +1805,15 @@ export const __qualityTestHooks = {
   finalGoldenFixtureDateScope,
   finalGoldenObserved,
   finalTechnologyMapCanonicalConsistency,
+  coverSingularPluralConsistency,
   goldenFixtureInputHash,
   inputSnapshotHash,
   qualityCheck,
+  weeklyConfidenceLimitCanonical,
+  weeklySpecificationTrendReason,
+  subjectRegistryMissingIdsFromPublicViews,
   snapshotHash,
+  validateWeeklyCollectionPreflight,
 };
 
 function aaMetricDefinitions(embeddedApi: unknown) {
@@ -1722,14 +1932,18 @@ function finalErc8286DualSource(embeddedApi: unknown, visibleHtml: string): bool
 function finalNonRegression(embeddedApi: unknown): boolean {
   const dashboard = dashboardFromApi(embeddedApi);
   if (!dashboard) return false;
+  const developerUnion = new Set(dashboard.developerAttention.activity.flatMap((item) => stringList(item.rawPostIds)));
+  const technologyAggregate = intelligenceSnapshotFromApi(embeddedApi)?.aggregates.discussion?.technology_map_set as { rawPostIds?: string[]; rawPostCount?: number } | undefined;
+  const technologyUnion = new Set(dashboard.technologyLandscape.flatMap((domain) => stringList(domain.discussion?.rawPostIds)));
   return dashboard.accountAbstraction.tracks.length === 12
     && dashboard.accountAbstraction.summary.implementationEvidence === 0
     && dashboard.accountAbstraction.tracks.some((track) => track.id === "erc-4337-entrypoint" && track.baselineProposals.some((proposal) => proposal.subjectId === "ERC-4337"))
     && dashboard.technologyLandscape.length === 8
-    && dashboard.kgldWatch.groups.research_now.length + dashboard.kgldWatch.groups.monitor.length + dashboard.kgldWatch.groups.no_action.length === 3
-    && dashboard.dataQuality.current7dUsableEventCount === 0
+    && dashboard.developerAttention.summary.rawPosts === developerUnion.size
+    && technologyAggregate?.rawPostCount === technologyUnion.size
+    && stringList(technologyAggregate?.rawPostIds).every((id) => technologyUnion.has(id))
+    && kgldSummaryConsistent(dashboard)
     && dashboard.developerAttention.activity.slice(0, 3).map((item) => item.proposalId).join(",") === dashboard.executivePulse.whatChanged.magiciansActivity.map((item) => item.proposalIds[0]).join(",")
-    && dashboard.developerAttention.activity.some((item) => item.proposalId === "EIP-8151" && item.title === "Account Code Restricted ecRecover")
     && snapshotHashConsistency(embeddedApi)
     && canonicalRenderSource(JSON.stringify(embeddedApi) + "const snapshot=JSON.parse(el.textContent).intelligenceSnapshot;const dashboardData=snapshot.views");
 }
@@ -1781,6 +1995,10 @@ function allReportEvents(changes: WeeklyRadarReport["ethereumTechRadar"]["recent
 
 function reportEventKey(event: ChangeEvent): string {
   return `${event.proposalId}:${event.type}:${event.occurredAt ?? event.detectedAt}:${event.currentHash ?? ""}`;
+}
+
+function eventFactId(event: ChangeEvent): string {
+  return `event:${reportEventKey(event)}`;
 }
 
 export function writeWeeklyDebugSnapshot(report: WeeklyRadarReport, outputDirectory = "output"): string | undefined {
@@ -1932,9 +2150,9 @@ export function generateWeeklyHtml(report: WeeklyRadarReport): string {
 function buildDashboard(report: WeeklyRadarReport, atlas: TechnologyAtlas) {
   const coverage = sourceCoverage(report, atlas);
   const signal = signalQualityPayload(report, atlas);
-  const usableCurrent7d = allReportRecentEvents(report).filter(weeklyUsableEvent);
-  const current30dEvents = trendEvents(report).filter((event) => eventInWindow(event, report.generatedAt, 30) && weeklyUsableEvent(event));
-  const current180dEvents = trendEvents(report).filter((event) => eventInWindow(event, report.generatedAt, 180) && weeklyUsableEvent(event));
+  const usableCurrent7d = allReportRecentEvents(report).filter((event) => isWeeklyUsableEvent(event, report));
+  const current30dEvents = trendEvents(report).filter((event) => usableEventInWindow(event, report.generatedAt, 30));
+  const current180dEvents = trendEvents(report).filter((event) => usableEventInWindow(event, report.generatedAt, 180));
   const topics = topicProgressRows(atlas).filter((topic) => !isGenericTopicName(topic.topic));
   const discussionAggregates = discussionWindowAggregates(report, atlas);
   const focusTopics = topics.map((topic) => topicDashboardItem(topic, atlas, usableCurrent7d, current30dEvents, current180dEvents, report.generatedAt, discussionAggregates))
@@ -1956,10 +2174,11 @@ function buildDashboard(report: WeeklyRadarReport, atlas: TechnologyAtlas) {
     coverage180d: report.ethereumTechRadar.historicalInputDiagnostics?.validHistoricalCoverage ? "valid" : "degraded",
     current7dRawEventCount: signal.current7dRawEventCount,
     current7dUsableEventCount: usableCurrent7d.length,
+    usableEventIds: usableCurrent7d.map(reportEventKey),
     current7dFallbackEventCount: signal.current7dFallbackEventCount,
     unknownSemanticEventCount: signal.semanticChangeCounts.unknown ?? 0,
     weeklyUsableRatio: signal.current7dRawEventCount ? usableCurrent7d.length / signal.current7dRawEventCount : 0,
-    weeklyRankingValidity: usableCurrent7d.length / Math.max(1, signal.current7dRawEventCount) >= 0.5 ? "valid" : "invalid",
+    weeklyRankingValidity: usableCurrent7d.length / Math.max(1, signal.current7dRawEventCount) >= 0.5 ? "reliable" : "invalid",
     discussionCollection: {
       threadUrlConfirmed: coverage.allAnalysisCoverage.threadUrlConfirmed,
       postsFullyCollected: coverage.allAnalysisCoverage.postsFullyCollected,
@@ -1972,7 +2191,7 @@ function buildDashboard(report: WeeklyRadarReport, atlas: TechnologyAtlas) {
     sourceMissingClaimCount: 0,
   };
   const longTermTop3 = focusTopics.slice(0, 3);
-  const weeklyTop3 = dataQuality.weeklyRankingValidity === "valid" ? weeklyTopics.filter((topic) => !longTermTop3.some((item) => item.topicId === topic.topicId)).slice(0, 3) : [];
+  const weeklyTop3 = isWeeklyRankingReliable(dataQuality.weeklyRankingValidity) ? weeklyTopics.filter((topic) => !longTermTop3.some((item) => item.topicId === topic.topicId)).slice(0, 3) : [];
   const attentionTop3 = developerAttention.activity.slice(0, 3).map((item) => ({
     topicId: item.proposalId,
     nameKo: `${item.proposalId} ${item.title}`,
@@ -1990,7 +2209,7 @@ function buildDashboard(report: WeeklyRadarReport, atlas: TechnologyAtlas) {
     },
     confidenceLimits: [
       { label: "Long-term standards direction", level: "medium", reason: "관찰 대상 내 180일 명세 이력은 유효합니다." },
-      { label: "Weekly specification trend", level: dataQuality.weeklyRankingValidity === "valid" ? "medium" : "low", reason: "최근 7일 usable event가 0건입니다." },
+      { label: "Weekly specification trend", level: isWeeklyRankingReliable(dataQuality.weeklyRankingValidity) ? "medium" : "low", reason: weeklySpecificationTrendReason(dataQuality) },
       { label: "Magicians activity", level: "medium", reason: "최근 post metadata는 수집됐지만 relevance classification은 미완료입니다." },
       { label: "Discussion meaning", level: "unavailable", reason: "검증된 토론 insight가 없습니다." },
       { label: "Implementation progress", level: "unavailable", reason: "implementation source adapter가 수집 대상이 아닙니다." },
@@ -2013,10 +2232,24 @@ function buildDashboard(report: WeeklyRadarReport, atlas: TechnologyAtlas) {
   };
 }
 
+function isWeeklyUsableEvent(event: ChangeEvent, report: WeeklyRadarReport): boolean {
+  return usableEventSignalAccepted(event)
+    && eventInWindow(event, report.changePeriod.to, report.changePeriod.days);
+}
+
+function usableEventInWindow(event: ChangeEvent, reportEndAt: string, days: number): boolean {
+  return usableEventSignalAccepted(event) && eventInWindow(event, reportEndAt, days);
+}
+
 function weeklyUsableEvent(event: ChangeEvent): boolean {
-  return isConfirmedReportEvent(event)
+  return usableEventSignalAccepted(event);
+}
+
+function usableEventSignalAccepted(event: ChangeEvent): boolean {
+  return (event.occurredAtSource ?? "fallback_detected_at") !== "fallback_detected_at"
+    && Boolean(event.changeSemanticType)
     && semanticTypeForReportEvent(event) !== "unknown"
-    && Boolean(eventSourceUrl(event))
+    && weeklyEventConfidence(event) >= WEEKLY_USABLE_EVENT_CONFIDENCE_THRESHOLD
     && prioritySemanticForReport(event);
 }
 
@@ -2073,7 +2306,7 @@ function eventSourceUrl(event: ChangeEvent): string | undefined {
 }
 
 function eventInWindow(event: ChangeEvent, reportEndAt: string, days: number): boolean {
-  const at = Date.parse(event.occurredAt ?? event.detectedAt);
+  const at = Date.parse(event.occurredAt ?? "");
   const end = Date.parse(reportEndAt);
   return Number.isFinite(at) && Number.isFinite(end) && at >= end - days * DAY_MS && at < end;
 }
@@ -2196,6 +2429,7 @@ function topicDashboardItem(
     developerAttentionScore: discussion?.validTechnicalPostCount == null ? (discussion?.rawPostCount ?? 0) : discussion.validTechnicalPostCount,
     current30dChanges: topic30dEvents.length,
     current7dChanges: topic7dEvents.length,
+    weeklyUsableEventIds: topic7dEvents.map(reportEventKey),
     trend180dEvents: trend.length,
     weeklyTrend,
     recentDiscussion: discussion ?? null,
@@ -2295,13 +2529,15 @@ function technologyLandscapeDashboard(
     const domainActiveThreadIds = [...new Set(discussionAggs.flatMap((item) => item.activeThreadIds))];
     const domainParticipantIds = [...new Set(discussionAggs.flatMap((item) => item.uniqueParticipantIds))];
     const rawDiscussionPosts = domainRawPostIds.length;
+    const domain7dEvents = current7dEvents.filter((event) => proposalIds.has(event.proposalId));
     return {
       domainId: domain.domain.id,
       nameKo: domain.domain.nameKo,
       descriptionKo: domain.domain.problemKo,
       meaningful180dProposals: new Set(current180dEvents.filter((event) => proposalIds.has(event.proposalId)).map((event) => event.proposalId)).size,
       meaningful30dProposals: new Set(current30dEvents.filter((event) => proposalIds.has(event.proposalId)).map((event) => event.proposalId)).size,
-      meaningful7dProposals: new Set(current7dEvents.filter((event) => proposalIds.has(event.proposalId)).map((event) => event.proposalId)).size,
+      meaningful7dProposals: new Set(domain7dEvents.map((event) => event.proposalId)).size,
+      weeklyUsableEventIds: domain7dEvents.map(reportEventKey),
       recentValidDiscussionPosts: null,
       strongestTopic: strongest?.topic ?? null,
       maturitySummary: strongest?.stage ?? "미확인",
@@ -2628,8 +2864,8 @@ function accountAbstractionDashboard(atlas: TechnologyAtlas, discussionHeat: Dis
     const discussion30d = aaMetric(aaMetricValueForState(rawPostIds.length, discussionState), discussionState, window30dStart, windowEnd, rawPostIds.map((id) => `post:${id}`), discussionMetricReason(discussionState));
     const specification7dState = proposalIds.length ? spec7Count > 0 ? "confirmed_value" : "confirmed_zero" : "baseline_not_linked";
     const specification30dState = proposalIds.length ? spec30Count > 0 ? "confirmed_value" : "confirmed_zero" : "baseline_not_linked";
-    const specification7d = aaMetric(aaMetricValueForState(spec7Count, specification7dState), specification7dState, window7dStart, windowEnd, current7dEvents.filter((event) => officialProposalIds.includes(event.proposalId)).map((event) => `event:${event.id ?? event.eventId}`), "weekly usable 기준의 확인된 명세 변화만 집계합니다.");
-    const specification30d = aaMetric(aaMetricValueForState(spec30Count, specification30dState), specification30dState, window30dStart, windowEnd, current30dEvents.filter((event) => officialProposalIds.includes(event.proposalId)).map((event) => `event:${event.id ?? event.eventId}`), "30일 window에서 확인된 명세 변화만 집계합니다.");
+    const specification7d = aaMetric(aaMetricValueForState(spec7Count, specification7dState), specification7dState, window7dStart, windowEnd, current7dEvents.filter((event) => officialProposalIds.includes(event.proposalId)).map(eventFactId), "weekly usable 기준의 확인된 명세 변화만 집계합니다.");
+    const specification30d = aaMetric(aaMetricValueForState(spec30Count, specification30dState), specification30dState, window30dStart, windowEnd, current30dEvents.filter((event) => officialProposalIds.includes(event.proposalId)).map(eventFactId), "30일 window에서 확인된 명세 변화만 집계합니다.");
     const implementation = aaMetric(null, "not_collected", window30dStart, windowEnd, [], "구현 source adapter는 현재 수집 대상이 아닙니다.");
     const recentSignals = aaRecentSignalsForTrack(officialProposalIds, current30dEvents, discussionRows30d, discussionByProposal, window30dStart, windowEnd);
     const direction = spec30Count > 0
@@ -2668,7 +2904,7 @@ function accountAbstractionDashboard(atlas: TechnologyAtlas, discussionHeat: Dis
       direction,
       confidence: proposalIds.length ? 0.75 : 0.45,
       limitation: aaTrackLimitation(proposalIds.length, discussion30d.state, implementation.state),
-      sourceUrls: [...new Set(assignments.map((assignment) => assignment.sourceUrl))],
+      sourceUrls: [...new Set(assignments.flatMap((assignment) => [assignment.sourceUrl, assignment.discussionSourceUrl].filter(Boolean)))],
       role: assignments.some((assignment) => assignment.role === "adjacent") ? "AA adjacent / compliance" : "AA direct",
     };
   });
@@ -2747,7 +2983,7 @@ function aaRecentSignalsForTrack(
     const sourceUrl = event.sourceUrl ?? event.commitUrl ?? proposalUrl(event.proposalId);
     const existing = signals.get(key);
     if (existing) {
-      existing.evidenceFactIds.push(`event:${event.id ?? event.eventId}`);
+      existing.evidenceFactIds.push(eventFactId(event));
       if (!existing.sourceUrls.includes(sourceUrl)) existing.sourceUrls.push(sourceUrl);
     } else {
       signals.set(key, {
@@ -2756,7 +2992,7 @@ function aaRecentSignalsForTrack(
         officialTitle: localSpecificationEvidence(event.proposalId).officialTitle,
         signalType: "specification_change",
         sourceUrls: [sourceUrl],
-        evidenceFactIds: [`event:${event.id ?? event.eventId}`],
+        evidenceFactIds: [eventFactId(event)],
         confidence: "confirmed",
         windowStart,
         windowEnd,
@@ -2902,6 +3138,12 @@ function kgldDashboard(atlas: TechnologyAtlas) {
 
 function renderDashboardCover(report: WeeklyRadarReport, dashboard: ReturnType<typeof buildDashboard>): string {
   const quality = dashboard.dataQuality;
+  const weeklySignalLabel = quality.weeklyRankingValidity === "invalid" || quality.current7dUsableEventCount <= 1
+    ? "확인된 주간 신호"
+    : "이번 주 주요 개발 주제";
+  const weeklySignalValue = quality.current7dUsableEventCount === 0
+    ? "신호 없음"
+    : `${quality.current7dUsableEventCount}건`;
   const scopeSubtitle = quality.implementationEvidenceCoverage === 0
     ? "EIP/ERC 명세와 Ethereum Magicians 활동을 중심으로 한 Ethereum 표준 개발 관찰 보고서"
     : "EIP/ERC 명세, Ethereum Magicians 활동, 확인된 구현 근거를 함께 보는 표준 개발 관찰 보고서";
@@ -2915,7 +3157,7 @@ function renderDashboardCover(report: WeeklyRadarReport, dashboard: ReturnType<t
     <div class="cover-facts">
       <div><span>분석 기간</span><b>${escapeHtml(formatDate(report.trendPeriod.from))}~${escapeHtml(formatDate(report.trendPeriod.to))}</b></div>
       <div><span>관찰 대상 내 180일 이력</span><b>${escapeHtml(quality.coverage180d === "valid" ? "유효" : "제한적")}</b></div>
-      <div><span>confidence</span><b>${quality.weeklyRankingValidity === "valid" ? "medium" : "limited weekly"}</b></div>
+      <div><span>${escapeHtml(weeklySignalLabel)}</span><b>${escapeHtml(weeklySignalValue)}</b></div>
       <div><span>상세 데이터 품질</span><b><a href="#data-quality">Evidence Quality</a></b></div>
     </div>
   </section>`;
@@ -3048,7 +3290,13 @@ function renderAaBaselineProposals(track: ReturnType<typeof accountAbstractionDa
     const label = assignment.role === "baseline" ? "기준 표준" : assignment.role === "supporting" ? "지원 Proposal" : assignment.role === "adjacent" ? "인접 Proposal" : "직접 Proposal";
     const spec = localSpecificationEvidence(assignment.subjectId);
     const officialTitle = optionalAaString(spec.officialTitle);
-    return `<a href="${escapeHtml(assignment.sourceUrl)}" target="_blank" rel="noopener noreferrer">${escapeHtml(assignment.subjectId)}</a> <span class="badge">${escapeHtml(label)}</span> <span class="badge">${escapeHtml(spec.status ?? assignment.status ?? "상태 미확인")}</span>${officialTitle ? ` <span class="muted">${escapeHtml(officialTitle)}</span>` : ""}`;
+    const officialLink = optionalAaString(assignment.sourceUrl)
+      ? `<a href="${escapeHtml(assignment.sourceUrl)}" target="_blank" rel="noopener noreferrer">공식 명세 ${escapeHtml(assignment.subjectId)}</a>`
+      : escapeHtml(assignment.subjectId);
+    const discussionLink = optionalAaString(assignment.discussionSourceUrl)
+      ? ` · <a href="${escapeHtml(assignment.discussionSourceUrl)}" target="_blank" rel="noopener noreferrer">Magicians discussion</a>`
+      : "";
+    return `${officialLink}${discussionLink} <span class="badge">${escapeHtml(label)}</span> <span class="badge">${escapeHtml(spec.status ?? assignment.status ?? "상태 미확인")}</span>${officialTitle ? ` <span class="muted">${escapeHtml(officialTitle)}</span>` : ""}`;
   }).join(" ");
 }
 
@@ -3140,6 +3388,7 @@ function buildIntelligenceSnapshot(report: WeeklyRadarReport, atlas: TechnologyA
       fallbackEvents: dashboard.dataQuality.current7dFallbackEventCount,
       unknownSemanticEvents: dashboard.dataQuality.unknownSemanticEventCount,
       usableEvents: dashboard.dataQuality.current7dUsableEventCount,
+      usableEventIds: dashboard.dataQuality.usableEventIds,
       weeklyRankingValidity: dashboard.dataQuality.weeklyRankingValidity,
     },
   }];
@@ -3405,7 +3654,7 @@ function developmentEventFacts(report: WeeklyRadarReport) {
     occurredAt: event.occurredAt ?? null,
     occurredAtSource: event.occurredAtSource ?? (event.occurredAt ? "git_commit" : "fallback_detected_at"),
     detectedAt: event.detectedAt ?? null,
-    confidence: isConfirmedReportEvent(event) ? 0.8 : 0.35,
+    confidence: weeklyEventConfidence(event),
     sourceUrl: eventSourceUrl(event) ?? null,
   }));
 }
@@ -3486,14 +3735,16 @@ function localProposalMarkdownPath(proposalId: string): string | null {
   if (!match) return null;
   const kind = match[1]!.toUpperCase();
   const number = match[2]!;
+  const eipRepo = officialRepoPath("ethereum/EIPs") ?? resolve("data", "ethereum-EIPs");
+  const ercRepo = officialRepoPath("ethereum/ercs") ?? resolve("data", "ethereum-ERCs");
   const candidates = kind === "ERC"
     ? [
-      resolve("data", "ethereum-ERCs", "ERCS", `erc-${number}.md`),
-      resolve("data", "ethereum-ERCs", "EIPS", `eip-${number}.md`),
+      resolve(ercRepo, "ERCS", `erc-${number}.md`),
+      resolve(ercRepo, "EIPS", `eip-${number}.md`),
     ]
     : [
-      resolve("data", "ethereum-EIPs", "EIPS", `eip-${number}.md`),
-      resolve("data", "ethereum-EIPs", "ERCS", `erc-${number}.md`),
+      resolve(eipRepo, "EIPS", `eip-${number}.md`),
+      resolve(eipRepo, "ERCS", `erc-${number}.md`),
     ];
   return candidates.find((candidate) => existsSync(candidate)) ?? null;
 }
@@ -3834,10 +4085,13 @@ function signalQualityPayload(report: WeeklyRadarReport, atlas: TechnologyAtlas)
   const fallback = recent.filter((event) => !isConfirmedReportEvent(event));
   const semanticCounts = countStrings(confirmed.map((event) => event.changeSemanticType ?? semanticTypeForReportEvent(event)));
   const editorialOnlyExcluded = confirmed.filter((event) => event.type === "content_hash_change" && !prioritySemanticForReport(event)).length;
+  const usable = recent.filter((event) => isWeeklyUsableEvent(event, report));
   const coverage = sourceCoverage(report, atlas);
   return {
     current7dRawEventCount: recent.length,
     current7dConfirmedEventCount: confirmed.length,
+    current7dUsableEventCount: usable.length,
+    usableEventIds: usable.map(reportEventKey),
     current7dFallbackEventCount: fallback.length,
     current7dFallbackRatio: recent.length ? fallback.length / recent.length : 0,
     semanticChangeCounts: semanticCounts,
@@ -3896,6 +4150,15 @@ function allReportRecentEvents(report: WeeklyRadarReport): ChangeEvent[] {
 
 function isConfirmedReportEvent(event: ChangeEvent): boolean {
   return (event.occurredAtSource ?? "fallback_detected_at") !== "fallback_detected_at" && event.timestampConfidence !== "low";
+}
+
+function weeklyEventConfidence(event: ChangeEvent): number {
+  const explicit = Number((event as { confidence?: number }).confidence);
+  if (Number.isFinite(explicit)) return explicit;
+  if (event.timestampConfidence === "high") return 0.9;
+  if (event.timestampConfidence === "medium") return 0.75;
+  if (event.timestampConfidence === "low") return 0.35;
+  return (event.occurredAtSource ?? "fallback_detected_at") === "fallback_detected_at" ? 0.35 : 0.8;
 }
 
 function semanticTypeForReportEvent(event: ChangeEvent): NonNullable<ChangeEvent["changeSemanticType"]> {
@@ -4671,7 +4934,8 @@ function renderAtlasTopBar(report: WeeklyRadarReport, platform: TechnologyPlatfo
   const topicList = topTopics.length
     ? `<ul class="cover-topic-list">${topTopics.map((item) => `<li><b>${escapeHtml(rankingInvalid ? `확인된 토론 활동: ${item.coverKo}` : item.coverKo)}</b><span>${escapeHtml(item.topic)}</span></li>`).join("")}</ul>`
     : "뚜렷한 집중 주제 없음";
-  const signalLabel = rankingInvalid || topTopics.length <= 1 ? "확인된 주간 신호" : "이번 주 주요 개발 주제";
+  const usableCount = allReportRecentEvents(report).filter(weeklyUsableEvent).length;
+  const signalLabel = rankingInvalid || usableCount <= 1 ? "확인된 주간 신호" : "이번 주 주요 개발 주제";
   const rankingNotice = rankingInvalid ? `<p class="reference-notice">문서 변경의 발생 시각 신뢰도가 충분하지 않아 이번 주 개발 주제 순위는 산정하지 않았습니다.</p>` : "";
   return `<header class="report-cover atlas-cover"><div><div class="cover-kicker">Ethereum Technology Atlas</div><h1>Weekly Proposal Intelligence</h1><p class="cover-conclusion">서로 관련성이 명확한 Proposal 흐름을 중심으로 정리했습니다. 실제 구현 여부가 확인되지 않은 항목은 제안 및 논의 단계로 구분했습니다.</p></div><dl class="cover-facts"><div><dt>분석 기간</dt><dd>${escapeHtml(formatDate(report.trendPeriod.from))}~${escapeHtml(formatDate(report.trendPeriod.to))}</dd></div><div><dt>${escapeHtml(signalLabel)}</dt><dd>${topicList}</dd></div><div><dt>신규 Proposal 수</dt><dd>${weeklyNew}</dd></div><div><dt>상태가 진전된 Proposal 수</dt><dd>${weeklyStatus}</dd></div><div><dt>실제 구현 근거</dt><dd>${escapeHtml(implementationSeen)}</dd></div></dl>${rankingNotice}${platform.dataCompleteness.status === "degraded" || platform.dataCompleteness.status === "unavailable" ? `<p class="reference-notice">수집이 제한된 경우에도 확인 가능한 근거 범위 안에서만 기술 방향을 표시합니다.</p>` : ""}</header>`;
 }

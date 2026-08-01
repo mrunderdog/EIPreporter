@@ -1,4 +1,7 @@
 import assert from "node:assert/strict";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import test from "node:test";
 import {
   fetchDefaultBranch,
@@ -16,8 +19,12 @@ const SOURCE: RepositorySource = {
 test("fetches and uses the repository default branch with a User-Agent", async (t) => {
   const urls: string[] = [];
   const originalFetch = globalThis.fetch;
+  const originalPath = process.env.EIP_OFFICIAL_REPO_PATH;
+  process.env.EIP_OFFICIAL_REPO_PATH = join(tmpdir(), "missing-eip-source");
   t.after(() => {
     globalThis.fetch = originalFetch;
+    if (originalPath === undefined) delete process.env.EIP_OFFICIAL_REPO_PATH;
+    else process.env.EIP_OFFICIAL_REPO_PATH = originalPath;
   });
 
   globalThis.fetch = async (input, init) => {
@@ -48,6 +55,30 @@ test("fetches and uses the repository default branch with a User-Agent", async (
     "https://raw.githubusercontent.com/ethereum/EIPs/stable/EIPS/eip-1.md",
   ]);
   assert.equal(documents[0]?.branch, "stable");
+});
+
+test("uses local official source checkout before GitHub API", async (t) => {
+  const directory = mkdtempSync(join(tmpdir(), "eipreporter-official-source-"));
+  const original = process.env.EIP_OFFICIAL_REPO_PATH;
+  const originalFetch = globalThis.fetch;
+  t.after(() => {
+    if (original === undefined) delete process.env.EIP_OFFICIAL_REPO_PATH;
+    else process.env.EIP_OFFICIAL_REPO_PATH = original;
+    globalThis.fetch = originalFetch;
+    rmSync(directory, { recursive: true, force: true });
+  });
+  mkdirSync(join(directory, "EIPS"), { recursive: true });
+  writeFileSync(join(directory, "EIPS", "eip-8286.md"), "---\neip: 8286\ntitle: Modular Accounts for Frame Transactions\nstatus: Draft\n---\n\n## Abstract\nLocal body.\n", "utf8");
+  process.env.EIP_OFFICIAL_REPO_PATH = directory;
+  globalThis.fetch = async () => {
+    throw new Error("GitHub API should not be called when local source exists");
+  };
+
+  const documents = await fetchMarkdownDocuments(SOURCE);
+
+  assert.equal(documents.length, 1);
+  assert.equal(documents[0]?.path, "EIPS/eip-8286.md");
+  assert.match(documents[0]?.markdown ?? "", /Local body/);
 });
 
 test("does not require a GitHub token", async (t) => {

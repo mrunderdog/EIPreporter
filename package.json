@@ -13,6 +13,7 @@
     "report:html": "node --experimental-strip-types src/cli/html-report.ts",
     "send:test": "node --experimental-strip-types src/cli/send-test.ts",
     "send:weekly": "node --experimental-strip-types src/cli/send-weekly.ts",
+    "send:weekly:existing": "node --experimental-strip-types src/cli/send-weekly.ts --existing",
     "test": "node --experimental-strip-types --test tests/*.test.ts",
     "typecheck": "tsc --noEmit"
   },

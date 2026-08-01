@@ -1,3 +1,6 @@
+import { execFileSync } from "node:child_process";
+import { existsSync, readFileSync, readdirSync, statSync } from "node:fs";
+import { resolve } from "node:path";
 import type { ProposalKind, SourceRepo } from "./types.ts";
 
 export type GitHubTreeItem = {
@@ -35,6 +38,9 @@ export async function fetchMarkdownDocuments(
   source: RepositorySource,
   token?: string,
 ): Promise<Array<{ path: string; branch: string; markdown: string }>> {
+  const local = fetchLocalMarkdownDocuments(source);
+  if (local.length > 0) return local;
+
   const branch = await fetchDefaultBranch(source, token);
   const tree = await fetchJson<{ tree: GitHubTreeItem[]; truncated: boolean }>(
     `https://api.github.com/repos/${source.owner}/${source.repo}/git/trees/${encodeURIComponent(branch)}?recursive=1`,
@@ -59,6 +65,51 @@ export async function fetchMarkdownDocuments(
     }));
 
   return documents;
+}
+
+export function officialRepoPath(source: RepositorySource | SourceRepo): string | undefined {
+  const sourceRepo = typeof source === "string" ? source : source.sourceRepo;
+  const envPath = sourceRepo === "ethereum/EIPs" ? process.env.EIP_OFFICIAL_REPO_PATH : process.env.ERC_OFFICIAL_REPO_PATH;
+  if (envPath !== undefined) return envPath && existsSync(envPath) ? resolve(envPath) : undefined;
+  const fallback = sourceRepo === "ethereum/EIPs" ? resolve("data", "ethereum-EIPs") : resolve("data", "ethereum-ERCs");
+  return existsSync(fallback) ? fallback : undefined;
+}
+
+function fetchLocalMarkdownDocuments(source: RepositorySource): Array<{ path: string; branch: string; markdown: string }> {
+  const repoPath = officialRepoPath(source);
+  if (!repoPath) return [];
+  const branch = localGitBranch(repoPath);
+  return walkFiles(repoPath)
+    .map((path) => path.replace(/\\/g, "/"))
+    .filter((path) => isProposalMarkdownPath(source.kind, path))
+    .map((path) => ({
+      path,
+      branch,
+      markdown: readFileSync(resolve(repoPath, path), "utf8"),
+    }));
+}
+
+function localGitBranch(repoPath: string): string {
+  try {
+    return execFileSync("git", ["-c", `safe.directory=${repoPath}`, "-C", repoPath, "rev-parse", "--abbrev-ref", "HEAD"], { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] }).trim() || "HEAD";
+  } catch {
+    return "HEAD";
+  }
+}
+
+function walkFiles(root: string, relative = ""): string[] {
+  const directory = resolve(root, relative);
+  const entries = readdirSync(directory);
+  const files: string[] = [];
+  for (const entry of entries) {
+    if (entry === ".git") continue;
+    const child = relative ? `${relative}/${entry}` : entry;
+    const full = resolve(root, child);
+    const stat = statSync(full);
+    if (stat.isDirectory()) files.push(...walkFiles(root, child));
+    else if (stat.isFile()) files.push(child);
+  }
+  return files;
 }
 
 export function isProposalMarkdownPath(kind: ProposalKind, path: string): boolean {

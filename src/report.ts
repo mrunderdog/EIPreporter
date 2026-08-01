@@ -14,6 +14,7 @@ import { KGLD_KEYWORDS, scoreKgldOpportunity } from "./scoring.ts";
 import { buildIntelligenceLayer } from "./signal-engine.ts";
 import { buildThemeGraph } from "./theme-graph.ts";
 import { buildKnowledgeGraphLayer } from "./knowledge-graph.ts";
+import { officialRepoPath } from "./github.ts";
 import {
   analyzeProposal,
   buildAccountAbstractionRadar,
@@ -834,6 +835,9 @@ function githubRepo(record: ProposalRecord): string | undefined {
 }
 
 function localRepoPath(record: ProposalRecord): string | undefined {
+  const sourceRepo = record.sourceRepo === "ethereum/ercs" ? "ethereum/ercs" : record.sourceRepo;
+  const repoPath = officialRepoPath(sourceRepo);
+  if (repoPath) return repoPath;
   if (record.sourceRepo === "ethereum/EIPs") return resolve("data", "ethereum-EIPs");
   if (record.sourceRepo === "ethereum/ercs") return resolve("data", "ethereum-ERCs");
   return undefined;

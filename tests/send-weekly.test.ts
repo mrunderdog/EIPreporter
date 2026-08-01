@@ -5,6 +5,7 @@ import { join } from "node:path";
 import test from "node:test";
 import {
   formatWeeklyDeliveryMessage,
+  sendExistingWeeklyReport,
   sendWeeklyReport,
 } from "../src/cli/send-weekly.ts";
 import type { WeeklyRadarReport } from "../src/types.ts";
@@ -117,6 +118,49 @@ test("send:weekly keeps the dashboard summary outside GitHub Actions", () => {
 
   assert.match(message, /^Ethereum Developer Momentum Dashboard/);
   assert.doesNotMatch(message, /GitHub Actions에서 자동 생성/);
+});
+
+test("send:weekly:existing sends the validated HTML without regenerating", async () => {
+  const directory = mkdtempSync(join(tmpdir(), "eipreporter-send-existing-"));
+  const reportPath = join(directory, "weekly-2026-07-31.html");
+  writeFileSync(reportPath, "<!doctype html>", "utf8");
+  writePassingQuality(reportPath);
+  writeFileSync(
+    reportPath.replace(/\.html$/i, ".compact.json"),
+    JSON.stringify({
+      intelligenceSnapshot: {
+        metadata: { generatedAt: "2026-07-31T00:00:00.000Z" },
+        monitoringUniverse: { scope: { monitoredProposalCount: 1 } },
+        views: {
+          dataQuality: { current7dRawEventCount: 1 },
+          executivePulse: { weeklyDevelopmentTop3: [{ nameKo: "단일 신호", proposalIds: ["ERC-1"], rawPostCount: 1 }] },
+          accountAbstraction: { summary: { baselineProposalCount: 12, recentMeaningfulChange: "AA Track 12" } },
+          kgldWatch: { groups: { research_now: [{ proposalId: "ERC-8330", internalAction: "review", actionType: "research_now" }], monitor: [], no_action: [] } },
+        },
+      },
+    }),
+    "utf8",
+  );
+  const sentPaths: string[] = [];
+
+  try {
+    const result = await sendExistingWeeklyReport(
+      { botToken: "token", chatId: "chat" },
+      reportPath,
+      {
+        sendMessage: async () => 1,
+        sendDocument: async (_config, filePath) => {
+          sentPaths.push(filePath);
+          return { fileName: "weekly-2026-07-31.html" };
+        },
+      },
+    );
+
+    assert.deepEqual(sentPaths, [reportPath]);
+    assert.equal(result.fileName, "weekly-2026-07-31.html");
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
 });
 
 function makeReport(): WeeklyRadarReport {
