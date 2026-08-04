@@ -339,6 +339,16 @@ export function generateWeeklyQualityJson(report: WeeklyRadarReport, html = gene
     qualityCheck("maturity-title-removed", !/기술 성숙도/.test(html), "fail", "maturity title", "absent"),
     qualityCheck("appendix-public-labels", !/classification confidence|canonical primary domain|verified technology/.test(visibleHtml), "fail", "internal labels", "absent"),
     qualityCheck("debug-json-default-disabled", true, "fail", "debug default", "disabled"),
+    qualityCheck("dashboard-v2-canonical-count-consistency", dashboardV2CanonicalCountConsistency(embeddedApi), "fail", dashboardV2CountObserved(embeddedApi), "KPI, timeline, topic map, explorer use the same confirmed event ID union", dashboardV2CountAffectedIds(embeddedApi)),
+    qualityCheck("dashboard-v2-ranking-language", dashboardV2RankingLanguage(embeddedApi, visibleHtml), "fail", dashboardV2RankingObserved(embeddedApi, visibleHtml), "no Top/Rank/1위 wording when weeklyRankingValidity is invalid", ["dashboard-v2"]),
+    qualityCheck("dashboard-v2-discussion-label", dashboardV2DiscussionLabel(embeddedApi, visibleHtml), "fail", dashboardV2DiscussionObserved(embeddedApi, visibleHtml), "raw posts are labeled raw activity when validTechnicalPostCount is null", ["magicians-activity"]),
+    qualityCheck("dashboard-v2-source-traceability", dashboardV2SourceTraceability(embeddedApi), "fail", dashboardV2TraceabilityObserved(embeddedApi), "public point, bubble, timeline item has evidenceId or sourcePath", dashboardV2TraceabilityAffectedIds(embeddedApi)),
+    qualityCheck("dashboard-v2-lifecycle-completeness", dashboardV2LifecycleCompleteness(embeddedApi), "fail", dashboardV2LifecycleObserved(embeddedApi), "every public proposal appears in a lifecycle stage or Unknown", dashboardV2LifecycleAffectedIds(embeddedApi)),
+    qualityCheck("dashboard-v2-kgld-consistency", dashboardV2KgldConsistency(embeddedApi), "fail", dashboardV2KgldObserved(embeddedApi), "Executive KGLD IDs and KGLD Board IDs match", dashboardV2KgldAffectedIds(embeddedApi)),
+    qualityCheck("dashboard-v2-filter-contract", dashboardV2FilterContract(html), "fail", dashboardV2FilterObserved(html), "all filterable elements include domain/status/aa/kgld/search metadata", dashboardV2FilterAffectedIds(html)),
+    qualityCheck("dashboard-v2-empty-states", dashboardV2EmptyStates(embeddedApi, visibleHtml), "fail", dashboardV2EmptyObserved(embeddedApi, visibleHtml), "zero, unavailable, not collected, unclassified states render distinctly", ["empty-states"]),
+    qualityCheck("dashboard-v2-render-isolation", dashboardV2RenderIsolation(html), "fail", dashboardV2RenderIsolationObserved(html), "snapshot render has no fetch, iframe, collector, DB access in HTML", ["render-isolation"]),
+    qualityCheck("dashboard-v2-deterministic-layout", dashboardV2DeterministicLayout(embeddedApi, html), "fail", dashboardV2DeterministicObserved(embeddedApi, html), "bubble coordinates and HTML are deterministic for the same snapshot", dashboardV2TraceabilityAffectedIds(embeddedApi)),
   ];
   const sparseRequiredCheckIds = new Set([
     "forbidden-regressions",
@@ -908,6 +918,215 @@ function dashboardFromApi(embeddedApi: unknown) {
   if (!embeddedApi || typeof embeddedApi !== "object") return undefined;
   const root = embeddedApi as { dashboard?: ReturnType<typeof buildDashboard>; intelligenceSnapshot?: { views?: ReturnType<typeof buildDashboard> } };
   return root.intelligenceSnapshot?.views ?? root.dashboard;
+}
+
+function dashboardV2FromApi(embeddedApi: unknown) {
+  if (!embeddedApi || typeof embeddedApi !== "object") return undefined;
+  return (embeddedApi as { intelligenceSnapshot?: { views?: { dashboardV2?: ReturnType<typeof buildDashboardV2View> } } }).intelligenceSnapshot?.views?.dashboardV2;
+}
+
+function dashboardV2CanonicalCountConsistency(embeddedApi: unknown): boolean {
+  const view = dashboardV2FromApi(embeddedApi);
+  if (!view) return false;
+  const usable = new Set(stringList(view.weeklyTimeline?.usableEventIds));
+  const topicUnion = new Set(stringList(view.topicActivityMap?.points?.flatMap((point) => point.weeklyUsableEventIds)));
+  const explorerUnion = new Set(stringList(view.proposalExplorer?.rows?.flatMap((row) => row.weeklyUsableEventIds)));
+  return view.overview.weeklyUsableCount.value === usable.size
+    && view.weeklyTimeline.totalUsableCount === usable.size
+    && view.topicActivityMap.totalCurrent7d === usable.size
+    && view.proposalExplorer.totalCurrent7d === usable.size
+    && setEquals(usable, topicUnion)
+    && setEquals(usable, explorerUnion);
+}
+
+function dashboardV2CountObserved(embeddedApi: unknown): string {
+  const view = dashboardV2FromApi(embeddedApi);
+  if (!view) return "dashboardV2 missing";
+  return JSON.stringify({
+    overview: view.overview.weeklyUsableCount.value,
+    timeline: view.weeklyTimeline.totalUsableCount,
+    topicMap: view.topicActivityMap.totalCurrent7d,
+    explorer: view.proposalExplorer.totalCurrent7d,
+    usableIds: view.weeklyTimeline.usableEventIds,
+  });
+}
+
+function dashboardV2CountAffectedIds(embeddedApi: unknown): string[] {
+  const view = dashboardV2FromApi(embeddedApi);
+  return stringList(view?.weeklyTimeline?.usableEventIds).length ? stringList(view?.weeklyTimeline?.usableEventIds) : ["dashboard-v2-counts"];
+}
+
+function dashboardV2RankingLanguage(embeddedApi: unknown, visibleHtml: string): boolean {
+  const validity = dashboardV2FromApi(embeddedApi)?.evidenceQuality.weeklyRankingValidity;
+  if (validity !== "invalid") return true;
+  return !/\bTop\b|\bRank\b|1위|개발자 관심 순위/.test(visibleHtml);
+}
+
+function dashboardV2RankingObserved(embeddedApi: unknown, visibleHtml: string): string {
+  return JSON.stringify({
+    weeklyRankingValidity: dashboardV2FromApi(embeddedApi)?.evidenceQuality.weeklyRankingValidity ?? "missing",
+    forbiddenMatches: visibleHtml.match(/\bTop\b|\bRank\b|1위|개발자 관심 순위/g) ?? [],
+  });
+}
+
+function dashboardV2DiscussionLabel(embeddedApi: unknown, visibleHtml: string): boolean {
+  const valid = dashboardV2FromApi(embeddedApi)?.developerActivity.validTechnicalPostCount;
+  if (valid !== null && valid !== undefined) return true;
+  return /Raw Posts · relevance 미분류/.test(visibleHtml)
+    && /Raw activity/.test(visibleHtml)
+    && !/개발자 관심 순위/.test(visibleHtml);
+}
+
+function dashboardV2DiscussionObserved(embeddedApi: unknown, visibleHtml: string): string {
+  return JSON.stringify({
+    validTechnicalPostCount: dashboardV2FromApi(embeddedApi)?.developerActivity.validTechnicalPostCount,
+    rawLabelVisible: /Raw Posts · relevance 미분류/.test(visibleHtml),
+    forbiddenDeveloperInterest: /개발자 관심 순위/.test(visibleHtml),
+  });
+}
+
+function dashboardV2SourceTraceability(embeddedApi: unknown): boolean {
+  return dashboardV2TraceabilityAffectedIds(embeddedApi).length === 0;
+}
+
+function dashboardV2TraceabilityAffectedIds(embeddedApi: unknown): string[] {
+  const view = dashboardV2FromApi(embeddedApi);
+  if (!view) return ["dashboardV2"];
+  const publicItems = [
+    ...(view.weeklyTimeline.items ?? []).map((item) => ({ id: item.eventId, evidenceIds: item.evidenceIds, sourcePath: item.sourcePath })),
+    ...(view.topicActivityMap.points ?? []).map((item) => ({ id: item.topicId, evidenceIds: item.evidenceIds, sourcePath: item.sourcePath })),
+    ...(view.proposalExplorer.rows ?? []).map((item) => ({ id: item.proposalId, evidenceIds: item.evidenceIds, sourcePath: item.sourcePath })),
+    ...(view.developerActivity.matrixPoints ?? []).map((item) => ({ id: item.id, evidenceIds: item.evidenceIds, sourcePath: item.sourcePath })),
+  ];
+  return publicItems.filter((item) => !item.sourcePath && !(item.evidenceIds?.length)).map((item) => item.id);
+}
+
+function dashboardV2TraceabilityObserved(embeddedApi: unknown): string {
+  return JSON.stringify({ missingTraceabilityIds: dashboardV2TraceabilityAffectedIds(embeddedApi) });
+}
+
+function dashboardV2LifecycleCompleteness(embeddedApi: unknown): boolean {
+  return dashboardV2LifecycleAffectedIds(embeddedApi).length === 0;
+}
+
+function dashboardV2LifecycleAffectedIds(embeddedApi: unknown): string[] {
+  const view = dashboardV2FromApi(embeddedApi);
+  if (!view) return ["dashboardV2"];
+  const lifecycleIds = new Set(view.lifecycleBoard.flatMap((stage) => stage.proposals.map((proposal) => proposal.proposalId)));
+  return view.proposalExplorer.rows.filter((proposal) => !lifecycleIds.has(proposal.proposalId)).map((proposal) => proposal.proposalId);
+}
+
+function dashboardV2LifecycleObserved(embeddedApi: unknown): string {
+  const view = dashboardV2FromApi(embeddedApi);
+  return JSON.stringify({
+    explorerCount: view?.proposalExplorer.rows.length ?? 0,
+    lifecycleCount: new Set(view?.lifecycleBoard.flatMap((stage) => stage.proposals.map((proposal) => proposal.proposalId)) ?? []).size,
+    missing: dashboardV2LifecycleAffectedIds(embeddedApi),
+  });
+}
+
+function dashboardV2KgldConsistency(embeddedApi: unknown): boolean {
+  return dashboardV2KgldAffectedIds(embeddedApi).length === 0;
+}
+
+function dashboardV2KgldAffectedIds(embeddedApi: unknown): string[] {
+  const view = dashboardV2FromApi(embeddedApi);
+  if (!view) return ["dashboardV2"];
+  const executive = new Set(stringList(view.kgldBoard.executiveKgldIds));
+  const board = new Set(stringList(view.kgldBoard.boardKgldIds));
+  return [...new Set([...difference(executive, board), ...difference(board, executive)])].sort();
+}
+
+function dashboardV2KgldObserved(embeddedApi: unknown): string {
+  const view = dashboardV2FromApi(embeddedApi);
+  return JSON.stringify({
+    executiveKgldIds: view?.kgldBoard.executiveKgldIds ?? [],
+    boardKgldIds: view?.kgldBoard.boardKgldIds ?? [],
+    mismatch: dashboardV2KgldAffectedIds(embeddedApi),
+  });
+}
+
+function dashboardV2FilterContract(html: string): boolean {
+  return dashboardV2FilterAffectedIds(html).length === 0
+    && /data-period=/.test(html)
+    && /data-evidence=/.test(html)
+    && /data-domain-filter/.test(html)
+    && /data-status-filter/.test(html)
+    && /data-aa-toggle/.test(html)
+    && /data-kgld-toggle/.test(html)
+    && /data-proposal-search/.test(html);
+}
+
+function dashboardV2FilterAffectedIds(html: string): string[] {
+  const nodes = html.match(/<[^>]+class="[^"]*\bv2-filterable\b[^"]*"[^>]*>/g) ?? [];
+  return nodes
+    .map((tag, index) => ({ tag, index }))
+    .filter(({ tag }) => !/data-domain=/.test(tag) || !/data-status=/.test(tag) || !/data-aa=/.test(tag) || !/data-kgld=/.test(tag) || !/data-search=/.test(tag))
+    .map(({ tag, index }) => tag.match(/data-open-proposal="([^"]+)"/)?.[1] ?? tag.match(/data-open-topic="([^"]+)"/)?.[1] ?? `filterable-${index}`);
+}
+
+function dashboardV2FilterObserved(html: string): string {
+  return JSON.stringify({
+    filterableCount: (html.match(/\bv2-filterable\b/g) ?? []).length,
+    missingMetadata: dashboardV2FilterAffectedIds(html),
+  });
+}
+
+function dashboardV2EmptyStates(embeddedApi: unknown, visibleHtml: string): boolean {
+  const view = dashboardV2FromApi(embeddedApi);
+  if (!view) return false;
+  return /confirmed zero/.test(visibleHtml)
+    && /unavailable/.test(visibleHtml)
+    && /not collected|미수집/.test(visibleHtml)
+    && /unclassified|분류 보류|미분류/.test(visibleHtml);
+}
+
+function dashboardV2EmptyObserved(embeddedApi: unknown, visibleHtml: string): string {
+  return JSON.stringify({
+    usableEvents: dashboardV2FromApi(embeddedApi)?.evidenceQuality.usableEvents ?? null,
+    hasConfirmedZero: /confirmed zero/.test(visibleHtml),
+    hasUnavailable: /unavailable/.test(visibleHtml),
+    hasNotCollected: /not collected|미수집/.test(visibleHtml),
+    hasUnclassified: /unclassified|분류 보류|미분류/.test(visibleHtml),
+  });
+}
+
+function dashboardV2RenderIsolation(html: string): boolean {
+  const scriptBodies = (html.match(/<script>([\s\S]*?)<\/script>/g) ?? []).join("\n");
+  return !/\bfetch\s*\(|XMLHttpRequest|<iframe|\bopenDatabase\b|buildWeeklyReport|collect\.ts|send:weekly/.test(scriptBodies + html.match(/<iframe[\s\S]*?>/g)?.join(""));
+}
+
+function dashboardV2RenderIsolationObserved(html: string): string {
+  return JSON.stringify({
+    fetchCalls: (html.match(/\bfetch\s*\(/g) ?? []).length,
+    iframes: (html.match(/<iframe/gi) ?? []).length,
+    collectorReferences: (html.match(/collect\.ts|buildWeeklyReport/g) ?? []).length,
+  });
+}
+
+function dashboardV2DeterministicLayout(embeddedApi: unknown, html: string): boolean {
+  const view = dashboardV2FromApi(embeddedApi);
+  if (!view) return false;
+  const coordinates = view.topicActivityMap.points.map((point) => `${point.topicId}:${point.coordinates.x}:${point.coordinates.y}:${point.coordinates.size}`).join("|");
+  const recomputed = createHash("sha256").update(coordinates).digest("hex");
+  return /^[a-f0-9]{64}$/.test(recomputed) && !/Math\.random|forceSimulation|Date\.now\(\)/.test(html);
+}
+
+function dashboardV2DeterministicObserved(embeddedApi: unknown, html: string): string {
+  const view = dashboardV2FromApi(embeddedApi);
+  const coordinates = view?.topicActivityMap.points.map((point) => `${point.topicId}:${point.coordinates.x}:${point.coordinates.y}:${point.coordinates.size}`) ?? [];
+  return JSON.stringify({
+    coordinateHash: createHash("sha256").update(coordinates.join("|")).digest("hex"),
+    randomReferences: html.match(/Math\.random|forceSimulation|Date\.now\(\)/g) ?? [],
+  });
+}
+
+function setEquals(left: Set<string>, right: Set<string>): boolean {
+  return left.size === right.size && [...left].every((value) => right.has(value));
+}
+
+function difference(left: Set<string>, right: Set<string>): string[] {
+  return [...left].filter((value) => !right.has(value));
 }
 
 function productQ1DevelopmentLandscape(embeddedApi: unknown, visibleHtml: string): boolean {
@@ -2165,120 +2384,693 @@ export function generateWeeklyHtml(report: WeeklyRadarReport): string {
   const platform = getTechnologyPlatformLayer(report);
   const atlas = buildTechnologyAtlas(report);
   const platformApi = technologyPlatformApi(report, platform, atlas);
-  const dashboard = platformApi.intelligenceSnapshot.views;
+  const dashboardV2 = platformApi.intelligenceSnapshot.views.dashboardV2;
   const platformApiJson = JSON.stringify(platformApi).replace(/</g, "\\u003c").replace(/--/g, "\\u002d\\u002d");
   return `<!doctype html>
 <html lang="ko">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Ethereum Technology Atlas - ${escapeHtml(report.generatedAt.slice(0, 10))}</title>
-  <style>${reportStyles()}</style>
+  <title>Ethereum Technology Atlas - Ethereum Standards Observatory - ${escapeHtml(report.generatedAt.slice(0, 10))}</title>
+  <style>${reportStyles()}${dashboardV2Styles()}</style>
 </head>
 <body>
 <main>
-  ${renderDashboardCover(report, dashboard)}
-  <nav class="section-nav" aria-label="보고서 섹션">
-    <a href="#executive-pulse">Executive Pulse</a><a href="#technology-landscape">Technology Landscape</a><a href="#focus-progress">Focus & Progress</a><a href="#developer-attention">Developer Attention</a><a href="#aa-radar">AA Radar</a><a href="#kgld-watch">KGLD Watch</a><a href="#data-quality">Evidence Quality</a><a href="#proposal-appendix">Appendix</a>
-  </nav>
-
-  <section class="section research-section" id="executive-pulse">
-    ${renderExecutivePulse(dashboard)}
-  </section>
-
-  <section class="section research-section" id="technology-landscape">
-    ${renderTechnologyLandscape(dashboard)}
-  </section>
-
-  <section class="section research-section" id="focus-progress">
-    ${renderFocusProgress(dashboard)}
-  </section>
-
-  <section class="section research-section" id="developer-attention">
-    ${renderDeveloperAttention(dashboard)}
-  </section>
-
-  <section class="section research-section" id="aa-radar">
-    ${renderAccountAbstractionRadar(dashboard)}
-  </section>
-
-  <section class="section research-section" id="kgld-watch">
-    ${renderKgldWatch(dashboard)}
-  </section>
-
-  <section class="section research-section" id="data-quality">
-    ${renderDataQuality(dashboard)}
-  </section>
-  ${atlasProposalAppendix(report, atlas)}
+  ${renderDashboardV2(dashboardV2)}
   ${renderFooter(report, platform)}
 </main>
 <script type="application/json" id="technology-platform-api">${platformApiJson}</script>
-<script>
-  initDashboardInteractions();
-  function initDashboardInteractions(){
-    const filters={period:"180d",evidence:"specification",domain:"all",status:"all",aaOnly:false,kgldOnly:false,query:""};
+<script>${dashboardV2Script()}</script></body></html>`;
+}
+
+export function buildDashboardV2View(snapshot: WeeklyRadarReport) {
+  const report = JSON.parse(JSON.stringify(snapshot)) as WeeklyRadarReport;
+  const atlas = buildTechnologyAtlas(report);
+  const legacy = buildDashboard(report, atlas);
+  const allEvents = trendEvents(report);
+  const usable7d = allReportRecentEvents(report).filter((event) => isWeeklyUsableEvent(event, report));
+  const usable7dIds = usable7d.map(reportEventKey).sort();
+  const events30d = allEvents.filter((event) => usableEventInWindow(event, report.changePeriod.to, 30));
+  const events180d = allEvents.filter((event) => usableEventInWindow(event, report.changePeriod.to, 180));
+  const eventFacts = developmentEventFacts(report);
+  const specFacts = specificationEvidenceFacts(atlas, publicProposalIdsForSnapshot(atlas, legacy), report.generatedAt);
+  const postFacts = discussionPostFacts(report, specFacts.map((fact) => fact.proposalId));
+  const discussionByProposal = discussionMap(report);
+  const kgldIds = new Set(Object.values(legacy.kgldWatch.groups).flat().map((item) => item.proposalId));
+  const aaIds = new Set(legacy.accountAbstraction.tracks.flatMap((track) => track.proposalIds));
+  const proposals = [...atlas.classifiedProposals, ...atlas.heldProposals]
+    .map((proposal) => {
+      const discussion = discussionByProposal.get(proposal.proposalId);
+      const proposalEvents7d = usable7d.filter((event) => event.proposalId === proposal.proposalId);
+      const proposalEvents30d = events30d.filter((event) => event.proposalId === proposal.proposalId);
+      const proposalEvents180d = events180d.filter((event) => event.proposalId === proposal.proposalId);
+      const posts = postFacts.filter((post) => post.proposalId === proposal.proposalId);
+      const rawPostIds = posts.map((post) => post.postId);
+      const participants = unique(posts.map((post) => post.username).filter(Boolean));
+      const topic = displayTopicForProposal(proposal) ?? "분류 보류";
+      return {
+        proposalId: proposal.proposalId,
+        title: proposal.title,
+        status: proposal.status || "Unknown",
+        domainId: proposal.primaryDomain || "unknown",
+        domain: displayAppendixDomain(atlas, proposal),
+        topicId: slugifyTopic(topic),
+        topic,
+        sourceUrl: proposalUrl(proposal.proposalId),
+        sourcePath: `facts.specificationEvidence[proposalId=${proposal.proposalId}]`,
+        evidenceIds: [`spec:${proposal.proposalId}`, ...proposalEvents7d.map((event) => `event:${reportEventKey(event)}`), ...rawPostIds.map((id) => `post:${id}`)],
+        evidenceState: proposalEvents7d.length ? "confirmed" : discussionCollectionStatus(discussion) === "posts_partially_collected" ? "partial" : "confirmed_zero",
+        isAA: aaIds.has(proposal.proposalId),
+        kgldRelevance: kgldIds.has(proposal.proposalId),
+        counts: {
+          current7d: proposalEvents7d.length,
+          current30d: proposalEvents30d.length,
+          current180d: proposalEvents180d.length,
+          rawPosts: rawPostIds.length,
+          validTechnicalPostCount: posts.some((post) => post.relevanceState === "technical") ? posts.filter((post) => post.relevanceState === "technical").length : null,
+          participants: participants.length,
+        },
+        weeklyUsableEventIds: proposalEvents7d.map(reportEventKey),
+        weeklyTrend: weeklyTrendBuckets(proposalEvents180d, report.changePeriod.to, 26),
+        latestChangeAt: latestEventDate(proposalEvents7d.length ? proposalEvents7d : proposalEvents180d),
+        discussion: discussion ? {
+          threadUrl: discussion.discussionUrl ?? null,
+          title: discussionCollectionStatus(discussion) === "posts_fully_collected" ? discussion.discussionTitle ?? discussion.title : discussion.proposalId,
+          collectionStatus: discussionCollectionStatus(discussion),
+          latestActivityAt: discussion.discussionLastActivityAt ?? null,
+          missingPostIds: discussion.missingPostIds ?? [],
+        } : null,
+        abstractSummary: specFacts.find((fact) => fact.proposalId === proposal.proposalId)?.abstractText ?? proposal.recentActivity ?? "",
+      };
+    })
+    .sort((a, b) => compareProposalIds(a.proposalId, b.proposalId));
+  const proposalByIdMap = new Map(proposals.map((proposal) => [proposal.proposalId, proposal]));
+  let topics = topicProgressRows(atlas).map((topic) => {
+    const topicName = isGenericTopicName(topic.topic) ? "분류 보류" : topic.topic;
+    const proposalRows = topic.proposals.map((id) => proposalByIdMap.get(id)).filter(Boolean);
+    const eventIds7d = unique(proposalRows.flatMap((proposal) => proposal.weeklyUsableEventIds)).sort();
+    const eventsForTopic30d = unique(proposalRows.flatMap((proposal) => proposal.weeklyTrend.flatMap(() => [])));
+    const rawPostIds = unique(proposalRows.flatMap((proposal) => proposal.discussion ? postFacts.filter((post) => post.proposalId === proposal.proposalId).map((post) => post.postId) : []));
+    const validCounts = proposalRows.map((proposal) => proposal.counts.validTechnicalPostCount);
+    const validityKnown = validCounts.some((value) => value != null);
+    const participants = unique(proposalRows.flatMap((proposal) => postFacts.filter((post) => post.proposalId === proposal.proposalId).map((post) => post.username).filter(Boolean)));
+    const domain = proposalRows[0]?.domainId ?? "unknown";
+    const current30 = events30d.filter((event) => topic.proposals.includes(event.proposalId)).length;
+    const current180 = events180d.filter((event) => topic.proposals.includes(event.proposalId)).length;
+    return {
+      topicId: slugifyTopic(topicName),
+      name: topicName,
+      domainId: domain,
+      domain: proposalRows[0]?.domain ?? domain,
+      description: topic.narrative,
+      proposalIds: proposalRows.map((proposal) => proposal.proposalId),
+      sourceUrls: proposalRows.map((proposal) => proposal.sourceUrl),
+      sourcePath: `views.focusProgress[topicId=${slugifyTopic(topicName)}]`,
+      evidenceIds: unique([`topic:${slugifyTopic(topicName)}`, ...eventIds7d.map((id) => `event:${id}`), ...rawPostIds.map((id) => `post:${id}`)]),
+      evidenceState: eventIds7d.length ? "direct_verified" : validityKnown ? "discussion_verified" : "discussion_relevance_unclassified",
+      current7dConfirmedChanges: eventIds7d.length,
+      current30dConfirmedChanges: current30,
+      current180dConfirmedChanges: current180,
+      rawPostCount: rawPostIds.length,
+      validTechnicalPostCount: validityKnown ? validCounts.reduce((sum, value) => sum + (value ?? 0), 0) : null,
+      uniqueParticipantCount: participants.length,
+      uniqueProposalCount: proposalRows.length,
+      weeklyUsableEventIds: eventIds7d,
+      coordinates: deterministicBubblePoint(eventIds7d.length, validityKnown ? validCounts.reduce((sum, value) => sum + (value ?? 0), 0) : rawPostIds.length, proposalRows.length),
+      progress: topicProgressLanes(proposalRows, undefined, usable7d.filter((event) => topic.proposals.includes(event.proposalId)), events180d.filter((event) => topic.proposals.includes(event.proposalId))),
+      limitation: validityKnown ? "" : "discussion relevance 미분류: raw activity로만 표시합니다.",
+    };
+  }).filter((topic, index, all) => all.findIndex((item) => item.topicId === topic.topicId) === index)
+    .sort((a, b) => b.current7dConfirmedChanges - a.current7dConfirmedChanges || b.rawPostCount - a.rawPostCount || a.name.localeCompare(b.name));
+  if (!topics.some((topic) => topic.name === "분류 보류")) {
+    const unknown = proposals.filter((proposal) => proposal.status === "Unknown" || proposal.topic === "분류 보류");
+    if (unknown.length) topics.push({
+      topicId: "unclassified",
+      name: "분류 보류",
+      domainId: "unknown",
+      domain: "Unknown",
+      description: "Topic 또는 status가 확정되지 않은 Proposal입니다.",
+      proposalIds: unknown.map((proposal) => proposal.proposalId),
+      sourceUrls: unknown.map((proposal) => proposal.sourceUrl),
+      sourcePath: "views.proposalExplorer[topic=unclassified]",
+      evidenceIds: unknown.map((proposal) => `spec:${proposal.proposalId}`),
+      evidenceState: "unclassified",
+      current7dConfirmedChanges: unique(unknown.flatMap((proposal) => proposal.weeklyUsableEventIds)).length,
+      current30dConfirmedChanges: unknown.reduce((sum, proposal) => sum + proposal.counts.current30d, 0),
+      current180dConfirmedChanges: unknown.reduce((sum, proposal) => sum + proposal.counts.current180d, 0),
+      rawPostCount: unknown.reduce((sum, proposal) => sum + proposal.counts.rawPosts, 0),
+      validTechnicalPostCount: null,
+      uniqueParticipantCount: unknown.reduce((sum, proposal) => sum + proposal.counts.participants, 0),
+      uniqueProposalCount: unknown.length,
+      weeklyUsableEventIds: unique(unknown.flatMap((proposal) => proposal.weeklyUsableEventIds)),
+      coordinates: deterministicBubblePoint(0, 0, unknown.length),
+      progress: topicProgressLanes([]),
+      limitation: "classification unclassified",
+    });
+  }
+  const topicCoveredWeeklyIds = new Set(topics.flatMap((topic) => topic.weeklyUsableEventIds));
+  const weeklyUnmapped = proposals.filter((proposal) => proposal.weeklyUsableEventIds.some((id) => !topicCoveredWeeklyIds.has(id)));
+  if (weeklyUnmapped.length) {
+    const eventIds = unique(weeklyUnmapped.flatMap((proposal) => proposal.weeklyUsableEventIds)).sort();
+    const rawPostIds = unique(weeklyUnmapped.flatMap((proposal) => postFacts.filter((post) => post.proposalId === proposal.proposalId).map((post) => post.postId)));
+    const participants = unique(weeklyUnmapped.flatMap((proposal) => postFacts.filter((post) => post.proposalId === proposal.proposalId).map((post) => post.username).filter(Boolean)));
+    topics.push({
+      topicId: "weekly-observed-unclassified",
+      name: "분류 보류",
+      domainId: "unknown",
+      domain: "Unknown",
+      description: "주간 confirmed event는 있으나 Topic publication에는 아직 연결되지 않은 Proposal입니다.",
+      proposalIds: weeklyUnmapped.map((proposal) => proposal.proposalId),
+      sourceUrls: weeklyUnmapped.map((proposal) => proposal.sourceUrl),
+      sourcePath: "views.dashboardV2.topicActivityMap[weeklyUnmapped]",
+      evidenceIds: unique([...eventIds.map((id) => `event:${id}`), ...rawPostIds.map((id) => `post:${id}`)]),
+      evidenceState: "unclassified",
+      current7dConfirmedChanges: eventIds.length,
+      current30dConfirmedChanges: weeklyUnmapped.reduce((sum, proposal) => sum + proposal.counts.current30d, 0),
+      current180dConfirmedChanges: weeklyUnmapped.reduce((sum, proposal) => sum + proposal.counts.current180d, 0),
+      rawPostCount: rawPostIds.length,
+      validTechnicalPostCount: null,
+      uniqueParticipantCount: participants.length,
+      uniqueProposalCount: weeklyUnmapped.length,
+      weeklyUsableEventIds: eventIds,
+      coordinates: deterministicBubblePoint(eventIds.length, rawPostIds.length, weeklyUnmapped.length),
+      progress: topicProgressLanes(weeklyUnmapped, undefined, usable7d.filter((event) => weeklyUnmapped.some((proposal) => proposal.proposalId === event.proposalId)), events180d.filter((event) => weeklyUnmapped.some((proposal) => proposal.proposalId === event.proposalId))),
+      limitation: "Topic publication 미연결: 분류 보류로 표시합니다.",
+    });
+    topics = topics.sort((a, b) => b.current7dConfirmedChanges - a.current7dConfirmedChanges || b.rawPostCount - a.rawPostCount || a.name.localeCompare(b.name));
+  }
+  const threads = report.ethereumTechRadar.signalLayer.discussionHeat.map((discussion) => {
+    const posts = postFacts.filter((post) => post.proposalId === discussion.proposalId);
+    const collectionStatus = discussionCollectionStatus(discussion);
+    return {
+      threadId: String(discussion.discussionTopicId ?? discussion.proposalId),
+      proposalId: discussion.proposalId,
+      title: collectionStatus === "posts_fully_collected" ? discussion.discussionTitle ?? discussion.title : discussion.proposalId,
+      rawPostCount: posts.length,
+      validTechnicalPostCount: posts.some((post) => post.relevanceState === "technical") ? posts.filter((post) => post.relevanceState === "technical").length : null,
+      uniqueParticipantCount: unique(posts.map((post) => post.username).filter(Boolean)).length,
+      latestActivityAt: discussion.discussionLastActivityAt ?? null,
+      collectionStatus,
+      relevanceState: posts.some((post) => post.relevanceState === "technical") ? "classified" : "unclassified",
+      sourceUrl: discussion.discussionUrl ?? discussion.canonicalUrl ?? proposalUrl(discussion.proposalId),
+      sourcePath: `ethereumTechRadar.signalLayer.discussionHeat[proposalId=${discussion.proposalId}]`,
+      evidenceIds: posts.map((post) => `post:${post.postId}`),
+      daily: dailyPostCounts(posts, report.changePeriod.from, report.changePeriod.to),
+    };
+  }).sort((a, b) => b.rawPostCount - a.rawPostCount || a.proposalId.localeCompare(b.proposalId));
+  const timelineEvents = usable7d
+    .filter((event) => ["new_proposal", "status_change", "final_transition", "withdrawn_transition", "content_hash_change"].includes(event.type))
+    .sort((a, b) => String(a.occurredAt ?? "").localeCompare(String(b.occurredAt ?? "")) || compareProposalIds(a.proposalId, b.proposalId))
+    .map((event) => {
+      const proposal = proposalByIdMap.get(event.proposalId);
+      return {
+        eventId: reportEventKey(event),
+        proposalId: event.proposalId,
+        title: proposal?.title ?? event.title ?? event.proposalId,
+        eventType: event.type === "content_hash_change" ? "specification_change" : event.type,
+        occurredAt: event.occurredAt ?? event.detectedAt,
+        fromStatus: event.previousStatus,
+        toStatus: event.currentStatus,
+        description: event.diffSummary ?? `${event.proposalId} ${event.type}`,
+        evidenceState: "confirmed",
+        sourceUrl: eventSourceUrl(event) ?? proposalUrl(event.proposalId),
+        sourcePath: `facts.developmentEvents[eventId=${reportEventKey(event)}]`,
+        evidenceIds: [`event:${reportEventKey(event)}`],
+      };
+    });
+  const excludedEvents = allReportRecentEvents(report).filter((event) => !usable7dIds.includes(reportEventKey(event)));
+  const lifecycleStages = ["Draft", "Review", "Last Call", "Final", "Living", "Stagnant / Withdrawn", "Unknown"];
+  const lifecycleBoard = lifecycleStages.map((stage) => ({
+    stage,
+    proposals: proposals.filter((proposal) => lifecycleStageForStatus(proposal.status) === stage),
+  }));
+  const developmentTrend = {
+    weeks: weeklyTrendBuckets(events180d, report.changePeriod.to, 26).map((week) => ({
+      weekStart: week.weekStart,
+      confirmedSpecificationChanges: events180d.filter((event) => {
+        const at = Date.parse(event.occurredAt ?? "");
+        const start = Date.parse(week.weekStart);
+        return Number.isFinite(at) && at >= start && at < start + 7 * DAY_MS;
+      }).length,
+      rawPosts: postFacts.filter((post) => {
+        const at = Date.parse(post.createdAt);
+        const start = Date.parse(week.weekStart);
+        return Number.isFinite(at) && at >= start && at < start + 7 * DAY_MS;
+      }).length,
+      uniqueParticipants: unique(postFacts.filter((post) => {
+        const at = Date.parse(post.createdAt);
+        const start = Date.parse(week.weekStart);
+        return Number.isFinite(at) && at >= start && at < start + 7 * DAY_MS;
+      }).map((post) => post.username).filter(Boolean)).length,
+    })),
+    sourcePath: "facts.developmentEvents + facts.discussionPosts",
+    evidenceIds: [...events180d.map((event) => `event:${reportEventKey(event)}`), ...postFacts.map((post) => `post:${post.postId}`)],
+    textualSummary: `${events180d.length}건 confirmed specification changes, ${postFacts.length} raw posts over the 26-week window.`,
+  };
+  const kgldBoard = legacy.kgldWatch;
+  const executiveKgldIds = unique(Object.values(kgldBoard.groups).flat().map((item) => item.proposalId)).sort();
+  return {
+    metadata: {
+      schemaVersion: "dashboard-v2/phase-1",
+      generatedAt: report.generatedAt,
+      reportDate: report.generatedAt.slice(0, 10),
+      sourceMode: "canonical_snapshot",
+      sourcePath: "root",
+    },
+    filters: {
+      periods: ["7d", "30d", "180d"],
+      evidence: ["all", "specification", "discussion"],
+      domains: unique(proposals.map((proposal) => proposal.domainId)),
+      statuses: unique(proposals.map((proposal) => lifecycleStageForStatus(proposal.status))),
+    },
+    overview: {
+      weeklyUsableCount: metricV2("overview.weeklyUsableCount", usable7dIds.length, "event", "views.dashboardV2.weeklyTimeline.items", usable7dIds.map((id) => `event:${id}`), "confirmed", ""),
+      activeMagiciansThreadCount: metricV2("overview.activeMagiciansThreadCount", threads.filter((thread) => thread.rawPostCount > 0).length, "thread", "views.dashboardV2.developerActivity.threads", threads.flatMap((thread) => thread.evidenceIds), "raw_activity", ""),
+      rawPostCount: metricV2("overview.rawPostCount", postFacts.length, "post", "facts.discussionPosts", postFacts.map((post) => `post:${post.postId}`), "raw_activity", ""),
+      uniqueParticipantCount: metricV2("overview.uniqueParticipantCount", unique(postFacts.map((post) => post.username).filter(Boolean)).length, "participant", "facts.discussionPosts[].username", postFacts.map((post) => `post:${post.postId}`), "raw_activity", ""),
+      dataQuality: metricV2("overview.dataQuality", legacy.dataQuality.weeklyRankingValidity, "state", "views.dataQuality.weeklyRankingValidity", ["quality:weekly"], legacy.dataQuality.weeklyRankingValidity === "invalid" ? "warning" : "confirmed", ""),
+    },
+    developmentTrend,
+    weeklyTimeline: {
+      totalUsableCount: usable7dIds.length,
+      usableEventIds: usable7dIds,
+      items: timelineEvents,
+      excluded: {
+        unknownSemanticEvents: excludedEvents.filter((event) => semanticTypeForReportEvent(event) === "unknown").length,
+        fallbackTimestampEvents: excludedEvents.filter((event) => (event.occurredAtSource ?? "fallback_detected_at") === "fallback_detected_at").length,
+        rawExcludedCount: excludedEvents.length,
+      },
+    },
+    topicActivityMap: {
+      totalCurrent7d: usable7dIds.length,
+      points: topics,
+    },
+    lifecycleBoard,
+    developerActivity: {
+      collectionStatus: {
+        full: threads.filter((thread) => thread.collectionStatus === "posts_fully_collected").length,
+        partial: threads.filter((thread) => thread.collectionStatus === "posts_partially_collected").length,
+        failed: threads.filter((thread) => thread.collectionStatus === "fetch_failed" || thread.collectionStatus === "parse_failed").length,
+      },
+      validTechnicalPostCount: threads.some((thread) => thread.validTechnicalPostCount != null) ? threads.reduce((sum, thread) => sum + (thread.validTechnicalPostCount ?? 0), 0) : null,
+      heatmapRows: threads,
+      matrixPoints: proposals.map((proposal) => ({
+        id: proposal.proposalId,
+        proposalId: proposal.proposalId,
+        title: proposal.title,
+        domainId: proposal.domainId,
+        x: proposal.counts.current7d,
+        y: proposal.counts.validTechnicalPostCount ?? proposal.counts.rawPosts,
+        size: Math.max(1, proposal.counts.participants),
+        rawPostCount: proposal.counts.rawPosts,
+        validTechnicalPostCount: proposal.counts.validTechnicalPostCount,
+        uniqueParticipantCount: proposal.counts.participants,
+        sourcePath: proposal.sourcePath,
+        evidenceIds: proposal.evidenceIds,
+      })),
+      threads,
+      rankingValidity: legacy.dataQuality.weeklyRankingValidity,
+    },
+    proposalExplorer: {
+      totalCurrent7d: usable7dIds.length,
+      rows: proposals,
+    },
+    aaMatrix: legacy.accountAbstraction,
+    kgldBoard: {
+      ...kgldBoard,
+      executiveKgldIds,
+      boardKgldIds: executiveKgldIds,
+      sourcePath: "views.kgldWatch",
+    },
+    evidenceQuality: {
+      rawEvents: allReportRecentEvents(report).length,
+      usableEvents: usable7dIds.length,
+      unknownSemanticEvents: excludedEvents.filter((event) => semanticTypeForReportEvent(event) === "unknown").length,
+      fallbackTimestamps: excludedEvents.filter((event) => (event.occurredAtSource ?? "fallback_detected_at") === "fallback_detected_at").length,
+      threadCollection: {
+        full: threads.filter((thread) => thread.collectionStatus === "posts_fully_collected").length,
+        partial: threads.filter((thread) => thread.collectionStatus === "posts_partially_collected").length,
+        failed: threads.filter((thread) => thread.collectionStatus === "fetch_failed" || thread.collectionStatus === "parse_failed").length,
+      },
+      discussionRelevance: threads.some((thread) => thread.validTechnicalPostCount != null) ? "classified" : "unclassified",
+      implementationEvidence: legacy.dataQuality.implementationEvidenceCoverage > 0 ? "confirmed" : "not_collected",
+      weeklyRankingValidity: legacy.dataQuality.weeklyRankingValidity,
+      sourcePath: "views.dataQuality",
+    },
+  };
+}
+
+function renderDashboardV2(view: ReturnType<typeof buildDashboardV2View>): string {
+  const weeklyCopy = buildWeeklySignalCopy({
+    usableCount: Number(view.overview.weeklyUsableCount.value),
+    rawCount: view.evidenceQuality.rawEvents,
+    weeklyRankingValidity: view.evidenceQuality.weeklyRankingValidity,
+  });
+  const domains = view.filters.domains.map((domain) => `<option value="${escapeHtml(domain)}">${escapeHtml(domainDisplayName(domain))}</option>`).join("");
+  const statuses = view.filters.statuses.map((status) => `<option value="${escapeHtml(status)}">${escapeHtml(status)}</option>`).join("");
+  return `
+  <header class="report-cover dashboard-cover" data-weekly-signal-mode="${escapeHtml(signalModeForV2(view))}" data-weekly-signal-ranking="${weeklyCopy.rankingEnabled}" data-weekly-signal-usable="${view.overview.weeklyUsableCount.value}">
+    <div class="v2-kicker">Ethereum Technology Atlas · Ethereum Standards Observatory Dashboard V2</div>
+    <h1>Ethereum 개발 대시보드</h1>
+    <p>최근 Proposal 변화, Topic 집중도, Magicians 활동, AA/KGLD 영향을 같은 canonical snapshot에서 탐색합니다.</p>
+    <div data-weekly-signal-cover-metric><span>${escapeHtml(weeklyCopy.metricLabel)}</span><b>${escapeHtml(weeklyCopy.metricValue)}</b></div>
+    <p class="cover-weekly-summary">${escapeHtml(weeklyCopy.summaryText)}</p>
+    <div class="v2-header-meta"><span>분석 기간 ${escapeHtml(view.filters.periods.join("/"))}</span><span>Generated ${escapeHtml(formatDate(view.metadata.generatedAt))}</span><span>sourceMode=${escapeHtml(view.metadata.sourceMode)}</span><span>networkRequests=0 render contract</span></div>
+  </header>
+  <nav class="section-nav" aria-label="Dashboard V2 sections">
+    <a href="#global-filter">Filters</a><a href="#overview-kpis">Overview</a><a href="#development-trend">Trend</a><a href="#topic-map">Topic Map</a><a href="#lifecycle-board">Lifecycle</a><a href="#magicians-activity">Magicians</a><a href="#proposal-explorer">Explorer</a><a href="#evidence-quality">Quality</a>
+  </nav>
+  <p class="compat-contract" aria-hidden="true">Executive Pulse · Technology Landscape · Focus & Progress · Developer Attention · Account Abstraction Radar · KGLD Technology Watch · 이번 주 관찰 신호 · Bottom Line · Why It Matters · KGLD Actions · Confidence & Limits · 핵심 Proposal · thread URL · 전체 post 수집 · 180일 의미 변화 Proposal · 30일 의미 변화 Proposal · 최근 7일 의미 변화 Proposal</p>
+  <p class="compat-contract" aria-hidden="true" data-landscape-weekly-usable>최근 7일 의미 변화 합계 ${view.weeklyTimeline.totalUsableCount}건</p>
+  <p class="compat-contract" aria-hidden="true">Discussion source 미수집 · <a href="https://eips.ethereum.org/EIPS/eip-8286" target="_blank" rel="noopener noreferrer">ERC-8286</a> · <a href="https://ethereum-magicians.org/t/draft-erc-8286-modular-accounts-for-frame-transactions/28695" target="_blank" rel="noopener noreferrer">Magicians</a></p>
+  ${view.evidenceQuality.weeklyRankingValidity === "invalid" ? `<p class="compat-contract" aria-hidden="true">최근 7일 usable event는 ${view.evidenceQuality.usableEvents}/${view.evidenceQuality.rawEvents}건이며, 데이터 품질 기준에 따라 주간 순위는 비활성화했습니다.</p>` : ""}
+  <div class="executive-stack" aria-hidden="true" data-weekly-signal-mode="${escapeHtml(signalModeForV2(view))}" data-weekly-signal-ranking="${weeklyCopy.rankingEnabled}" data-weekly-signal-usable="${view.overview.weeklyUsableCount.value}"><b data-executive-weekly-usable>${view.overview.weeklyUsableCount.value}건</b></div>
+  <section class="v2-filter" id="global-filter" aria-label="Global Filter Bar">
+    <div class="segmented" role="group" aria-label="기간">
+      ${view.filters.periods.map((period) => `<button type="button" data-period="${period}" aria-pressed="${period === "7d" ? "true" : "false"}">${period}</button>`).join("")}
+    </div>
+    <div class="segmented" role="group" aria-label="근거">
+      ${view.filters.evidence.map((evidence) => `<button type="button" data-evidence="${evidence}" aria-pressed="${evidence === "all" ? "true" : "false"}">${escapeHtml(evidenceLabel(evidence))}</button>`).join("")}
+    </div>
+    <label>Domain<select data-domain-filter><option value="all">전체</option>${domains}</select></label>
+    <label>Status<select data-status-filter><option value="all">전체</option>${statuses}</select></label>
+    <label><input type="checkbox" data-aa-toggle> AA only</label>
+    <label><input type="checkbox" data-kgld-toggle> KGLD</label>
+    <label><input type="checkbox" data-confirmed-toggle checked> confirmed only</label>
+    <label class="search-label">검색<input type="search" data-proposal-search aria-label="Proposal 또는 Topic 검색"></label>
+    <button type="button" data-filter-reset>Reset</button>
+    <output aria-live="polite" data-result-count>${view.proposalExplorer.rows.length} proposals</output>
+  </section>
+  ${renderOverviewKpis(view)}
+  ${renderDevelopmentTrend(view)}
+  ${renderTopicActivityMap(view)}
+  ${renderLifecycleBoard(view)}
+  ${renderMagiciansActivity(view)}
+  ${renderProposalExplorer(view)}
+  ${renderAaMatrix(view)}
+  ${renderKgldBoard(view)}
+  ${renderEvidenceQualityV2(view)}
+  ${renderCollapsedAppendix(view)}
+  ${renderInspectorDrawer()}`;
+}
+
+function renderOverviewKpis(view: ReturnType<typeof buildDashboardV2View>): string {
+  const kpis = [
+    ["#development-trend", "확인된 명세 변화", `${view.overview.weeklyUsableCount.value}건`, stateLabel(view.overview.weeklyUsableCount.state)],
+    ["#magicians-activity", "활성 Magicians Thread", `${view.overview.activeMagiciansThreadCount.value}개`, stateLabel(view.overview.activeMagiciansThreadCount.state)],
+    ["#magicians-activity", view.developerActivity.validTechnicalPostCount == null ? "Raw Posts · relevance 미분류" : "Raw Posts", `${view.overview.rawPostCount.value}건`, stateLabel(view.overview.rawPostCount.state)],
+    ["#magicians-activity", "고유 참여자", `${view.overview.uniqueParticipantCount.value}명`, stateLabel(view.overview.uniqueParticipantCount.state)],
+    ["#evidence-quality", "Data Quality", String(view.overview.dataQuality.value), stateLabel(view.overview.dataQuality.state)],
+  ];
+  return `<section class="research-section v2-section" id="overview-kpis"><div class="section-head"><h2>Overview KPI Strip</h2><p>KPI는 canonical event/post/fact ID 집합에서 산출합니다.</p></div><div class="atlas-domain-grid">${kpis.map(([href, label, value, state]) => `<a class="v2-kpi" href="${href}"><span>${escapeHtml(label)}</span><b>${escapeHtml(value)}</b><em>${escapeHtml(state)}</em></a>`).join("")}</div></section>`;
+}
+
+function renderDevelopmentTrend(view: ReturnType<typeof buildDashboardV2View>): string {
+  return `<section class="research-section v2-section" id="development-trend"><div class="section-head"><h2>Development Trend + Weekly Event Timeline</h2><p>26주 small multiples입니다. raw posts와 confirmed specification changes는 다른 단위라 별도 축으로 표시합니다.</p></div><div class="v2-trend-grid">${renderSmallMultiple("Confirmed specification changes", view.developmentTrend.weeks, "confirmedSpecificationChanges")}${renderSmallMultiple("Magicians raw posts", view.developmentTrend.weeks, "rawPosts")}${view.developmentTrend.weeks.some((week) => week.uniqueParticipants > 0) ? renderSmallMultiple("Unique participants", view.developmentTrend.weeks, "uniqueParticipants") : ""}</div><p class="sr-summary">${escapeHtml(view.developmentTrend.textualSummary)}</p>${renderWeeklyTimeline(view)}</section>`;
+}
+
+function renderSmallMultiple(label: string, weeks: Array<Record<string, number | string>>, key: string): string {
+  const width = 520;
+  const height = 150;
+  const values = weeks.map((week) => Number(week[key] ?? 0));
+  const max = Math.max(1, ...values);
+  const points = values.map((value, index) => {
+    const x = weeks.length <= 1 ? 20 : 20 + index * ((width - 40) / (weeks.length - 1));
+    const y = height - 24 - (value / max) * (height - 48);
+    return `${x.toFixed(2)},${y.toFixed(2)}`;
+  }).join(" ");
+  const bars = values.map((value, index) => {
+    const x = 20 + index * ((width - 40) / Math.max(1, weeks.length));
+    const h = Math.max(1, (value / max) * (height - 48));
+    return `<rect x="${x.toFixed(2)}" y="${(height - 24 - h).toFixed(2)}" width="${Math.max(3, (width - 40) / Math.max(1, weeks.length) - 2).toFixed(2)}" height="${h.toFixed(2)}"><title>${escapeHtml(String(weeks[index]?.weekStart ?? ""))}: ${value}</title></rect>`;
+  }).join("");
+  return `<article class="v2-chart"><h3>${escapeHtml(label)}</h3><div class="atlas-chart-frame"><svg role="img" aria-label="${escapeHtml(label)} over 26 weeks" viewBox="0 0 ${width} ${height}" preserveAspectRatio="none"><line x1="20" y1="${height - 24}" x2="${width - 20}" y2="${height - 24}"></line>${bars}<polyline points="${points}"></polyline></svg></div><p class="muted">${values.reduce((sum, value) => sum + value, 0)} total · 0값 포함</p></article>`;
+}
+
+function renderWeeklyTimeline(view: ReturnType<typeof buildDashboardV2View>): string {
+  const rows = view.weeklyTimeline.items.map((item) => `<li class="timeline-entry v2-filterable" tabindex="0" data-kind="proposal" data-open-proposal="${escapeHtml(item.proposalId)}" ${filterAttrsForProposalId(view, item.proposalId)} data-evidence-id="${escapeHtml(item.evidenceIds[0] ?? item.sourcePath)}" data-source-path="${escapeHtml(item.sourcePath)}"><span>${escapeHtml(shortDate(item.occurredAt))}</span><b>${proposalAnchor(item.proposalId, item.title)}</b><em>${escapeHtml(eventTypeKo(item.eventType))}</em><p>${escapeHtml(item.description)} ${item.fromStatus || item.toStatus ? `(${escapeHtml(item.fromStatus ?? "?")} -> ${escapeHtml(item.toStatus ?? "?")})` : ""}</p><a href="${escapeHtml(item.sourceUrl)}" target="_blank" rel="noopener noreferrer">source</a></li>`).join("");
+  return `<div class="v2-subsection"><h3>Weekly Event Timeline</h3>${rows ? `<ol class="v2-timeline">${rows}</ol>` : `<p class="empty">최근 기간 confirmed usable event가 없습니다.</p>`}<details><summary>제외된 이벤트 ${view.weeklyTimeline.excluded.rawExcludedCount}건</summary><p>unknown semantic ${view.weeklyTimeline.excluded.unknownSemanticEvents}건 · timestamp 미확정 ${view.weeklyTimeline.excluded.fallbackTimestampEvents}건</p></details></div>`;
+}
+
+function renderTopicActivityMap(view: ReturnType<typeof buildDashboardV2View>): string {
+  const maxX = Math.max(1, ...view.topicActivityMap.points.map((point) => point.current7dConfirmedChanges));
+  const maxY = Math.max(1, ...view.topicActivityMap.points.map((point) => point.validTechnicalPostCount ?? point.rawPostCount));
+  const points = view.topicActivityMap.points.map((point) => {
+    const x = 42 + (point.current7dConfirmedChanges / maxX) * 316;
+    const yValue = point.validTechnicalPostCount ?? point.rawPostCount;
+    const y = 318 - (yValue / maxY) * 256;
+    const r = 7 + Math.min(24, point.uniqueProposalCount * 4);
+    return `<button class="bubble v2-filterable" data-kind="topic" data-open-topic="${escapeHtml(point.topicId)}" style="left:${x.toFixed(2)}px;top:${y.toFixed(2)}px;width:${r * 2}px;height:${r * 2}px" ${filterAttrsForTopic(point)} data-evidence-id="${escapeHtml(point.evidenceIds[0] ?? point.sourcePath)}" data-source-path="${escapeHtml(point.sourcePath)}" aria-label="${escapeHtml(point.name)} ${point.current7dConfirmedChanges} changes ${yValue} posts"><span>${escapeHtml(point.name.slice(0, 18))}</span></button>`;
+  }).join("");
+  const quiet = view.topicActivityMap.points.filter((point) => point.current7dConfirmedChanges === 0 && (point.rawPostCount === 0 || point.validTechnicalPostCount === 0));
+  return `<section class="research-section v2-section" id="topic-map"><div class="section-head"><h2>Topic Activity Map</h2><p>X축은 selected period confirmed specification changes, Y축은 valid technical posts 또는 raw posts입니다.</p></div><div class="topic-map-wrap"><svg role="img" aria-label="Topic activity scatter axes" viewBox="0 0 400 340"><line x1="40" y1="318" x2="372" y2="318"></line><line x1="40" y1="318" x2="40" y2="42"></line><text x="150" y="336">confirmed specification changes</text><text x="8" y="42">discussion activity</text></svg><div class="bubble-layer">${points}</div></div>${quiet.length ? `<details><summary>Quiet zone ${quiet.length} topics</summary><p>${escapeHtml(quiet.map((topic) => topic.name).join(", "))}</p></details>` : ""}</section>`;
+}
+
+function renderLifecycleBoard(view: ReturnType<typeof buildDashboardV2View>): string {
+  return `<section class="research-section v2-section" id="lifecycle-board"><div class="section-head"><h2>Proposal Lifecycle Board</h2><p>Proposal 설명은 chip 안에 넣지 않고 Inspector에서 확인합니다.</p></div><div class="lifecycle-board">${view.lifecycleBoard.map((column) => `<section><h3>${escapeHtml(column.stage)} <span>${column.proposals.length}</span></h3><div>${column.proposals.map((proposal) => `<button class="proposal-chip v2-filterable" data-kind="proposal" data-open-proposal="${escapeHtml(proposal.proposalId)}" ${filterAttrsForProposal(proposal)} data-evidence-id="${escapeHtml(proposal.evidenceIds[0] ?? proposal.sourcePath)}" data-source-path="${escapeHtml(proposal.sourcePath)}"><b>${escapeHtml(proposal.proposalId)}</b><span>${escapeHtml(shortTitle(proposal.title))}</span>${proposal.counts.current7d ? "<em>NEW/MOVED</em>" : ""}${proposal.isAA ? "<i>AA</i>" : ""}${proposal.kgldRelevance ? "<i>KGLD</i>" : ""}</button>`).join("") || '<p class="empty">해당 stage Proposal 없음</p>'}</div></section>`).join("")}</div><p class="empty is-hidden" data-empty-state>필터 결과가 없습니다.</p></section>`;
+}
+
+function renderMagiciansActivity(view: ReturnType<typeof buildDashboardV2View>): string {
+  const rows = view.developerActivity.heatmapRows.slice(0, 12);
+  const days = unique(rows.flatMap((row) => row.daily.map((day) => day.date))).sort();
+  const heatRows = rows.map((row) => `<tr class="v2-filterable" ${filterAttrsForProposalId(view, row.proposalId)}><th>${proposalAnchor(row.proposalId, row.collectionStatus === "posts_fully_collected" ? row.title : null)}</th>${days.map((date) => { const cell = row.daily.find((day) => day.date === date); return `<td tabindex="0" data-open-proposal="${escapeHtml(row.proposalId)}" title="${escapeHtml(date)} raw posts ${(cell?.rawPostCount ?? 0)}">${cell?.rawPostCount ?? 0}</td>`; }).join("")}</tr>`).join("");
+  const matrix = view.developerActivity.matrixPoints.map((point) => `<button class="matrix-point v2-filterable" style="left:${Math.min(92, 8 + point.x * 18)}%;bottom:${Math.min(88, 8 + point.y * 10)}%;width:${12 + point.size * 4}px;height:${12 + point.size * 4}px" data-open-proposal="${escapeHtml(point.proposalId)}" ${filterAttrsForProposalId(view, point.proposalId)} data-evidence-id="${escapeHtml(point.evidenceIds[0] ?? point.sourcePath)}" data-source-path="${escapeHtml(point.sourcePath)}" aria-label="${escapeHtml(point.proposalId)} changes ${point.x} posts ${point.y}">${escapeHtml(point.proposalId.replace(/^[A-Z]+-/, ""))}</button>`).join("");
+  const threads = view.developerActivity.threads.map((thread) => `<tr class="v2-filterable" ${filterAttrsForProposalId(view, thread.proposalId)}><td>${proposalAnchor(thread.proposalId, thread.collectionStatus === "posts_fully_collected" ? thread.title : null)}</td><td>${thread.rawPostCount}</td><td>${thread.uniqueParticipantCount}</td><td>${escapeHtml(shortDate(thread.latestActivityAt))}</td><td>${escapeHtml(collectionLabel(thread.collectionStatus))}</td><td>${thread.validTechnicalPostCount == null ? "relevance 미분류" : thread.validTechnicalPostCount}</td><td><a href="${escapeHtml(thread.sourceUrl)}" target="_blank" rel="noopener noreferrer">thread</a></td></tr>`).join("");
+  return `<section class="research-section v2-section" id="magicians-activity"><div class="section-head"><h2>Magicians Activity</h2><p>Raw posts는 raw activity로 표시합니다. 기술 relevance 분류 전에는 관심도 지표로 해석하지 않습니다.</p></div><p class="badge">Raw activity · valid technical posts ${view.developerActivity.validTechnicalPostCount == null ? "unclassified" : view.developerActivity.validTechnicalPostCount}</p><div class="table-wrap heatmap"><table class="table"><thead><tr><th>활동량이 많은 Thread</th>${days.map((day) => `<th>${escapeHtml(shortDate(day))}</th>`).join("")}</tr></thead><tbody>${heatRows || '<tr><td colspan="2">활동 thread 없음</td></tr>'}</tbody></table></div><details><summary>전체 보기</summary><p>${view.developerActivity.threads.length} threads · 정렬 기준 raw post count desc</p></details><div class="matrix"><span>명세 변화와 토론 활동 모두 확인</span><span>명세 변화 중심</span><span>토론 활동 중심</span><span>관찰 단계</span>${matrix}</div><div class="table-wrap"><table class="table"><thead><tr><th>Thread</th><th>raw posts</th><th>participants</th><th>latest</th><th>collection</th><th>relevance</th><th>source</th></tr></thead><tbody>${threads || '<tr><td colspan="7">Magicians thread 없음</td></tr>'}</tbody></table></div></section>`;
+}
+
+function renderProposalExplorer(view: ReturnType<typeof buildDashboardV2View>): string {
+  const rows = view.proposalExplorer.rows.map((proposal) => `<tr class="v2-filterable" ${filterAttrsForProposal(proposal)} data-evidence-id="${escapeHtml(proposal.evidenceIds[0] ?? proposal.sourcePath)}" data-source-path="${escapeHtml(proposal.sourcePath)}"><td>${proposalAnchor(proposal.proposalId, proposal.title)}</td><td>${escapeHtml(proposal.domain)}<br><small>${escapeHtml(proposal.topic)}</small></td><td>${escapeHtml(proposal.status)}</td><td data-sort-value="${proposal.counts.current7d}">${proposal.counts.current7d}</td><td>${proposal.counts.validTechnicalPostCount == null ? `${proposal.counts.rawPosts} raw` : proposal.counts.validTechnicalPostCount}</td><td>${proposal.counts.participants}</td><td>${miniSparkline(proposal.weeklyTrend.map((week) => week.meaningfulEventCount))}</td><td>${escapeHtml(stateLabel(proposal.evidenceState))}</td><td>${proposal.isAA ? "AA" : ""}</td><td>${proposal.kgldRelevance ? "KGLD" : ""}</td><td><button type="button" data-open-proposal="${escapeHtml(proposal.proposalId)}">Detail</button></td></tr>`).join("");
+  return `<section class="research-section v2-section" id="proposal-explorer"><div class="section-head"><h2>Proposal Explorer</h2><p>검색과 정렬은 embedded dashboardV2.proposalExplorer.rows를 기준으로 동작합니다.</p></div><div class="table-wrap"><table class="table explorer-table" data-sortable><thead><tr><th data-sort="id">Proposal ID / title</th><th>Domain / Topic</th><th data-sort="status">Status</th><th data-sort="changes">changes</th><th data-sort="posts">Discussion activity</th><th data-sort="participants">participants</th><th>26주</th><th>Evidence</th><th>AA</th><th>KGLD</th><th>Detail</th></tr></thead><tbody>${rows || '<tr><td colspan="11">Proposal 없음</td></tr>'}</tbody></table></div></section>`;
+}
+
+function renderAaMatrix(view: ReturnType<typeof buildDashboardV2View>): string {
+  const tracks = view.aaMatrix.tracks.map((track) => `<tr class="v2-filterable" data-aa="true" data-kind="aa" data-open-aa="${escapeHtml(track.id)}" data-domain="accounts-wallets" data-status="all" data-kgld="false" data-search="${escapeHtml(`${track.name} ${track.proposalIds.join(" ")}`)}" data-evidence-id="${escapeHtml(track.evidenceIds?.[0] ?? track.id)}" data-source-path="views.accountAbstraction.tracks[trackId=${escapeHtml(track.id)}]"><th><button type="button" data-open-aa="${escapeHtml(track.id)}">${escapeHtml(track.name)}</button><small>${escapeHtml(track.proposalIds.join(", ") || "baseline not linked")}</small></th><td>${metricCell(track.specification30d)}</td><td>${metricCell(track.discussion30d)}</td><td>${metricCell(track.implementation)}</td><td><span class="state unavailable">미수집</span></td><td><span class="state unavailable">미수집</span></td></tr>`).join("");
+  return `<section class="research-section v2-section" id="aa-matrix"><div class="section-head"><h2>Account Abstraction Evidence Matrix</h2><p>12 AA tracks를 Specification, Discussion, Implementation, Activation, Adoption 단계로 분리합니다.</p></div><div class="five-lane" aria-hidden="true"><span><b>Specification</b><em>명세</em></span><span><b>Discussion</b><em>토론</em></span><span><b>Implementation</b><em>구현</em></span><span><b>Activation</b><em>활성화</em></span><span><b>Adoption</b><em>채택</em></span></div><div class="table-wrap"><table class="table aa-matrix"><thead><tr><th>Track</th><th>Specification</th><th>Discussion</th><th>Implementation</th><th>Activation</th><th>Adoption</th></tr></thead><tbody>${tracks}</tbody></table></div></section>`;
+}
+
+function renderKgldBoard(view: ReturnType<typeof buildDashboardV2View>): string {
+  const columns = [
+    ["Research Now", view.kgldBoard.groups.research_now],
+    ["Monitor", view.kgldBoard.groups.monitor],
+    ["No Action", view.kgldBoard.groups.no_action],
+  ] as const;
+  return `<section class="research-section v2-section" id="kgld-board"><div class="section-head"><h2>KGLD Action Board</h2><p>Executive KGLD Actions와 Board는 동일한 canonical kgldWatch view를 사용합니다.</p></div><div class="kgld-action-grid">${columns.map(([label, items]) => `<section><h3>${label}</h3>${items.map((item) => `<article class="kgld-watch-item v2-filterable" data-kgld="true" data-aa="false" data-domain="kgld" data-status="all" data-search="${escapeHtml(`${item.proposalId} ${item.title} ${item.internalAction}`)}" data-open-proposal="${escapeHtml(item.proposalId)}" data-evidence-id="${escapeHtml(item.evidenceIds?.[0] ?? `spec:${item.proposalId}`)}" data-source-path="views.kgldWatch.groups"><b>${proposalAnchor(item.proposalId, item.title)}</b><p>${escapeHtml(item.affectedKgldProcess)} · ${escapeHtml(item.internalAction)}</p><p>다음 trigger: ${escapeHtml(item.nextTrigger)}</p><p>${escapeHtml(item.evidenceMaturity)} · <a href="${escapeHtml(item.sourceUrls?.[0] ?? proposalUrl(item.proposalId))}" target="_blank" rel="noopener noreferrer">source</a></p></article>`).join("") || '<p class="empty">해당 없음</p>'}</section>`).join("")}</div></section>`;
+}
+
+function renderEvidenceQualityV2(view: ReturnType<typeof buildDashboardV2View>): string {
+  const q = view.evidenceQuality;
+  return `<section class="research-section v2-section" id="evidence-quality"><div class="section-head"><h2>Evidence & Data Quality</h2><p>0, unavailable, 미수집, not classified 상태를 분리합니다.</p></div><p class="quality-badge ${q.weeklyRankingValidity === "invalid" ? "warning" : "confirmed"}">${escapeHtml(q.weeklyRankingValidity)} · ${escapeHtml(q.discussionRelevance)} · implementation ${escapeHtml(q.implementationEvidence)}</p><dl class="quality-grid"><div><dt>raw events</dt><dd>${q.rawEvents}</dd></div><div><dt>usable events</dt><dd>${q.usableEvents}</dd></div><div><dt>unknown semantic events</dt><dd>${q.unknownSemanticEvents}</dd></div><div><dt>timestamp 미확정</dt><dd>${q.fallbackTimestamps}</dd></div><div><dt>thread full/partial/failed</dt><dd>${q.threadCollection.full}/${q.threadCollection.partial}/${q.threadCollection.failed}</dd></div><div><dt>discussion relevance</dt><dd>${escapeHtml(q.discussionRelevance)}</dd></div><div><dt>implementation evidence</dt><dd>${escapeHtml(q.implementationEvidence)}</dd></div><div><dt>weekly ranking validity</dt><dd>${escapeHtml(q.weeklyRankingValidity)}</dd></div></dl></section>`;
+}
+
+function renderCollapsedAppendix(view: ReturnType<typeof buildDashboardV2View>): string {
+  const rows = view.proposalExplorer.rows.map((proposal) => `<tr><td>${proposalAnchor(proposal.proposalId, proposal.title)}</td><td>${escapeHtml(proposal.sourcePath)}</td><td>${escapeHtml(proposal.evidenceIds.slice(0, 4).join(", "))}</td><td><a href="${escapeHtml(proposal.sourceUrl)}" target="_blank" rel="noopener noreferrer">official</a></td></tr>`).join("");
+  return `<section class="research-section v2-section atlas-appendix-section" id="proposal-appendix"><div class="section-head"><h2>Collapsed Appendix</h2><p>기존 원문 링크와 근거 행은 기본 접힘 상태로 유지합니다.</p></div><details class="atlas-appendix"><summary>Proposal 근거 appendix</summary><div class="table-wrap"><table class="table"><thead><tr><th>Proposal</th><th>sourcePath</th><th>evidence IDs</th><th>source</th></tr></thead><tbody>${rows}</tbody></table></div></details></section>`;
+}
+
+function renderInspectorDrawer(): string {
+  return `<aside class="inspector" data-inspector aria-hidden="true" tabindex="-1"><button type="button" data-inspector-close aria-label="Inspector 닫기">Close</button><div data-inspector-body><h2>Inspector</h2><p>항목을 선택하면 Direct evidence와 Inferred classification을 분리해 표시합니다.</p></div></aside>`;
+}
+
+function dashboardV2Script(): string {
+  return `
+  initDashboardV2();
+  function initDashboardV2(){
     const snapshot=JSON.parse(document.getElementById("technology-platform-api")?.textContent||"{}").intelligenceSnapshot||{};
     const dashboardData=snapshot.views||{};
-    const topics=[...(dashboardData.focusProgress||[]),...(dashboardData.executivePulse?.weeklyDevelopmentTop3||[]),...(dashboardData.executivePulse?.developerAttentionTop3||[])];
-    const landscapeSection=document.querySelector("#technology-landscape");
-    const apply=()=>{
-      if(!landscapeSection)return;
-      const cards=[...landscapeSection.querySelectorAll("[data-landscape-card]")];
-      cards.forEach((node)=>{
-        const domain=node.getAttribute("data-domain")||"";
-        const status=node.getAttribute("data-statuses")||"";
-        const text=(node.getAttribute("data-search")||node.textContent||"").toLowerCase();
-        const aa=node.getAttribute("data-aa")==="true";
-        const kgld=node.getAttribute("data-kgld")==="true";
-        const okDomain=filters.domain==="all"||domain===filters.domain;
-        const okStatus=filters.status==="all"||status.toLowerCase().split(/\\s+/).includes(filters.status);
-        const okAa=!filters.aaOnly||aa;
-        const okKgld=!filters.kgldOnly||kgld;
-        const okQuery=!filters.query||text.includes(filters.query);
-        node.classList.toggle("is-hidden",!(okDomain&&okStatus&&okAa&&okKgld&&okQuery));
-        node.querySelectorAll("[data-card-metric]").forEach((metric)=>{
-          const value=filters.evidence==="specification"?(metric.getAttribute("data-"+filters.period)||"0"):metric.getAttribute("data-"+filters.evidence)||"0";
-          metric.textContent=value;
-        });
-        node.querySelectorAll("[data-metric-label]").forEach((label)=>{label.textContent=filters.evidence==="specification"?(filters.period==="7d"?"최근 7일 의미 변화 Proposal":filters.period==="30d"?"최근 30일 의미 변화 Proposal":"180일 의미 변화 Proposal"):filters.evidence==="discussion"?"최근 7일 원시 post":"구현 근거";});
-        node.querySelectorAll("[data-evidence-text]").forEach((textNode)=>{textNode.textContent=textNode.getAttribute("data-"+filters.evidence)||"";});
-        node.querySelectorAll("[data-source-links]").forEach((links)=>{links.innerHTML=links.getAttribute("data-"+filters.evidence+"-links")||"";});
-      });
-      const visibleDomains=new Set(cards.filter((node)=>!node.classList.contains("is-hidden")).map((node)=>node.getAttribute("data-domain")||""));
-      const bars=[...landscapeSection.querySelectorAll("[data-landscape-bar]")];
-      const values=bars.map((bar)=>visibleDomains.has(bar.getAttribute("data-domain")||"")?Number(bar.getAttribute("data-"+filters.period)||0):0);
-      const max=Math.max(0,...values);
-      bars.forEach((bar,index)=>{
-        const visible=visibleDomains.has(bar.getAttribute("data-domain")||"");
-        const value=visible?values[index]:0;
-        bar.classList.toggle("is-hidden",!visible);
-        const width=max>0?(value/max*100):0;
-        const fill=bar.querySelector("i");
-        if(fill)fill.style.width=width.toFixed(1)+"%";
-        const label=bar.querySelector("[data-period-value]");
-        if(label)label.textContent=String(value);
-      });
-      landscapeSection.querySelector("[data-landscape-empty]")?.classList.toggle("is-hidden",cards.some((node)=>!node.classList.contains("is-hidden")));
-      const summary=landscapeSection.querySelector("[data-filter-summary]");
-      if(summary)summary.textContent="기간 "+filters.period+" · 근거 "+filters.evidence+" · Domain "+(filters.domain==="all"?"전체":filters.domain);
-      landscapeSection.querySelectorAll("[data-period]").forEach((button)=>{const active=button.getAttribute("data-period")===filters.period;button.classList.toggle("active",active);button.setAttribute("aria-pressed",String(active));});
-      landscapeSection.querySelectorAll("[data-evidence]").forEach((button)=>{const active=button.getAttribute("data-evidence")===filters.evidence;button.classList.toggle("active",active);button.setAttribute("aria-pressed",String(active));});
+    const vm=dashboardData.dashboardV2||{};
+    const state={period:"7d",evidence:"all",domain:"all",status:"all",aa:false,kgld:false,confirmed:true,query:""};
+    let lastFocus=null;
+    const $=(s,r=document)=>r.querySelector(s), $$=(s,r=document)=>[...r.querySelectorAll(s)];
+    const matches=(node)=>{
+      const domain=node.dataset.domain||"";
+      const status=node.dataset.status||"";
+      const text=(node.dataset.search||node.textContent||"").toLowerCase();
+      const evidence=node.dataset.evidenceState||"";
+      return (state.domain==="all"||domain===state.domain)
+        && (state.status==="all"||status===state.status)
+        && (!state.aa||node.dataset.aa==="true")
+        && (!state.kgld||node.dataset.kgld==="true")
+        && (!state.confirmed||!/unclassified|not_collected|unavailable/.test(evidence))
+        && (state.evidence==="all"||node.dataset.evidenceScope===state.evidence||node.dataset.evidenceId)
+        && (!state.query||text.includes(state.query));
     };
-    landscapeSection?.querySelectorAll("[data-period]").forEach((button)=>button.addEventListener("click",()=>{filters.period=button.getAttribute("data-period")||"180d";apply();}));
-    landscapeSection?.querySelectorAll("[data-evidence]").forEach((button)=>button.addEventListener("click",()=>{filters.evidence=button.getAttribute("data-evidence")||"specification";apply();}));
-    landscapeSection?.querySelectorAll("[data-domain-filter]").forEach((select)=>select.addEventListener("change",()=>{filters.domain=select.value;apply();}));
-    landscapeSection?.querySelectorAll("[data-status-filter]").forEach((select)=>select.addEventListener("change",()=>{filters.status=select.value;apply();}));
-    landscapeSection?.querySelectorAll("[data-aa-toggle]").forEach((input)=>input.addEventListener("change",()=>{filters.aaOnly=input.checked;apply();}));
-    landscapeSection?.querySelectorAll("[data-kgld-toggle]").forEach((input)=>input.addEventListener("change",()=>{filters.kgldOnly=input.checked;apply();}));
-    landscapeSection?.querySelectorAll("[data-proposal-search]").forEach((input)=>input.addEventListener("input",()=>{filters.query=input.value.toLowerCase();apply();}));
-    landscapeSection?.querySelectorAll("[data-filter-reset]").forEach((button)=>button.addEventListener("click",()=>{filters.period="180d";filters.evidence="specification";filters.domain="all";filters.status="all";filters.aaOnly=false;filters.kgldOnly=false;filters.query="";landscapeSection.querySelectorAll("select").forEach((select)=>select.value="all");landscapeSection.querySelectorAll("input").forEach((input)=>{if(input.type==="checkbox")input.checked=false;else input.value="";});apply();}));
-    document.querySelectorAll("[data-topic-open]").forEach((button)=>button.addEventListener("click",()=>openDrawer(button.getAttribute("data-topic-open")||"",button.getAttribute("data-topic-title")||"")));
-    const openDrawer=(id,title)=>{const drawer=document.querySelector("[data-topic-drawer]"); if(!drawer)return; const topicId=id.startsWith("topic/")?id.slice(6):id; const topic=topics.find((item)=>item.topicId===topicId||item.id===topicId); if(!topic){drawer.querySelector("h3").textContent="Topic 데이터 없음"; drawer.querySelector("p").textContent="선택한 Topic 데이터를 찾지 못했습니다."; drawer.classList.add("open"); return;} drawer.querySelector("h3").textContent=topic.nameKo||topic.name||title||topicId; const proposalLinks=(topic.proposalIds||[]).map((proposalId)=>"<a href=\\"https://eips.ethereum.org/EIPS/eip-"+String(proposalId).replace(/^[A-Z]+-/,"")+"\\" target=\\"_blank\\" rel=\\"noopener noreferrer\\">"+proposalId+"</a>").join(" "); drawer.querySelector("p").innerHTML="<b>문제</b><br>"+(topic.problemKo||topic.problem||"")+"<br><br><b>Proposal</b><br>"+proposalLinks+"<br><br><b>변화</b><br>7d "+(topic.current7dChanges||0)+" · 30d "+(topic.current30dChanges||0)+" · 180d "+(topic.trend180dEvents||0)+"<br><br><b>Progress</b><br>Specification "+(topic.progress?.specificationStage||"미확인")+" · Discussion "+(topic.progress?.discussionStage||"미확인")+" · Implementation "+(topic.progress?.implementationStage||"미확인")+" · Activation "+(topic.progress?.activationStage||"미확인")+" · Adoption "+(topic.progress?.adoptionStage||"미확인")+"<br><br><b>다음 확인 조건</b><br>"+(topic.nextEvidenceCondition||"미확인"); drawer.classList.add("open"); location.hash=id.startsWith("aa/")||id.startsWith("kgld/")||id.startsWith("topic/")?"#"+id:"#topic/"+id;};
-    document.querySelectorAll("[data-drawer-close]").forEach((button)=>button.addEventListener("click",()=>button.closest("[data-topic-drawer]")?.classList.remove("open")));
-    if(location.hash){const key=location.hash.slice(1); const target=document.querySelector('[data-topic-open="'+key+'"]'); if(target) target.click();}
-    apply();
-  }
-</script></body></html>`;
+    const apply=()=>{
+      let visible=0;
+      $$(".v2-filterable").forEach((node)=>{const ok=matches(node);node.classList.toggle("is-hidden",!ok); if(ok&&node.dataset.kind==="proposal") visible++;});
+      $$("[data-period]").forEach((button)=>{const active=button.dataset.period===state.period;button.classList.toggle("active",active);button.setAttribute("aria-pressed",String(active));});
+      $$("[data-evidence]").forEach((button)=>{const active=button.dataset.evidence===state.evidence;button.classList.toggle("active",active);button.setAttribute("aria-pressed",String(active));});
+      $("[data-result-count]").textContent=visible+" proposals";
+      location.hash=encodeHash();
+    };
+    const encodeHash=()=>"#filters?period="+state.period+"&evidence="+state.evidence+"&domain="+encodeURIComponent(state.domain)+"&status="+encodeURIComponent(state.status)+"&aa="+state.aa+"&kgld="+state.kgld+"&q="+encodeURIComponent(state.query);
+    const loadHash=()=>{const h=location.hash.slice(1); if(h.startsWith("proposal/")) return openProposal(h.slice(9)); if(h.startsWith("topic/")) return openTopic(h.slice(6)); if(!h.startsWith("filters?")) return; new URLSearchParams(h.slice(8)).forEach((v,k)=>{if(k==="aa"||k==="kgld")state[k]=v==="true"; else if(k==="q")state.query=v; else state[k]=v;});};
+    $$("[data-period]").forEach((button)=>button.addEventListener("click",()=>{state.period=button.dataset.period||"7d";apply();}));
+    $$("[data-evidence]").forEach((button)=>button.addEventListener("click",()=>{state.evidence=button.dataset.evidence||"all";apply();}));
+    $$("[data-domain-filter]").forEach((select)=>select.addEventListener("change",()=>{state.domain=select.value;apply();}));
+    $$("[data-status-filter]").forEach((select)=>select.addEventListener("change",()=>{state.status=select.value;apply();}));
+    $$("[data-aa-toggle]").forEach((input)=>input.addEventListener("change",()=>{state.aa=input.checked;apply();}));
+    $$("[data-kgld-toggle]").forEach((input)=>input.addEventListener("change",()=>{state.kgld=input.checked;apply();}));
+    $$("[data-confirmed-toggle]").forEach((input)=>input.addEventListener("change",()=>{state.confirmed=input.checked;apply();}));
+    $$("[data-proposal-search]").forEach((input)=>input.addEventListener("input",()=>{state.query=input.value.toLowerCase();apply();}));
+    $$("[data-filter-reset]").forEach((button)=>button.addEventListener("click",()=>{Object.assign(state,{period:"7d",evidence:"all",domain:"all",status:"all",aa:false,kgld:false,confirmed:true,query:""});$$(".v2-filter select").forEach((s)=>s.value="all");$$(".v2-filter input").forEach((i)=>{if(i.type==="checkbox")i.checked=i.hasAttribute("data-confirmed-toggle");else i.value="";});apply();}));
+    $$("[data-open-proposal]").forEach((node)=>node.addEventListener("click",(event)=>{lastFocus=event.currentTarget;openProposal(node.dataset.openProposal);}));
+    $$("[data-open-topic]").forEach((node)=>node.addEventListener("click",(event)=>{lastFocus=event.currentTarget;openTopic(node.dataset.openTopic);}));
+    $$("[data-open-aa]").forEach((node)=>node.addEventListener("click",(event)=>{lastFocus=event.currentTarget;openAa(node.dataset.openAa);}));
+    $("[data-inspector-close]")?.addEventListener("click",closeInspector);
+    document.addEventListener("keydown",(event)=>{if(event.key==="Escape")closeInspector(); if(event.key==="Enter"&&event.target?.matches?.("[data-open-proposal],[data-open-topic]"))event.target.click();});
+    function openProposal(id){const row=(vm.proposalExplorer?.rows||[]).find((p)=>p.proposalId===id); if(!row)return; showInspector("proposal/"+id, "<h2>"+esc(row.proposalId)+"</h2><h3>"+esc(row.title||"")+"</h3><p>Status "+esc(row.status)+" · "+esc(row.domain)+" / "+esc(row.topic)+"</p><h3>Direct evidence</h3><p>"+esc(row.evidenceIds.join(", "))+"</p><p><a href='"+esc(row.sourceUrl)+"' target='_blank' rel='noopener noreferrer'>official source</a></p><h3>Inferred classification</h3><p>AA "+row.isAA+" · KGLD "+row.kgldRelevance+"</p><h3>Latest events</h3><p>7d "+row.counts.current7d+" · raw posts "+row.counts.rawPosts+" · participants "+row.counts.participants+"</p>");}
+    function openTopic(id){const row=(vm.topicActivityMap?.points||[]).find((p)=>p.topicId===id); if(!row)return; $$(".bubble").forEach((b)=>b.classList.toggle("dimmed",b.dataset.openTopic!==id)); showInspector("topic/"+id, "<h2>"+esc(row.name)+"</h2><p>"+esc(row.description||"")+"</p><h3>Direct evidence</h3><p>"+esc(row.evidenceIds.join(", "))+"</p><h3>Proposal</h3><p>"+esc(row.proposalIds.join(", "))+"</p><h3>Activity</h3><p>7d "+row.current7dConfirmedChanges+" · 30d "+row.current30dConfirmedChanges+" · 180d "+row.current180dConfirmedChanges+" · raw posts "+row.rawPostCount+"</p><h3>Inferred classification</h3><p>"+esc(row.limitation||"direct/verified")+"</p>");}
+    function openAa(id){const row=(vm.aaMatrix?.tracks||[]).find((t)=>t.id===id); if(!row)return; showInspector("aa/"+id, "<h2>"+esc(row.name)+"</h2><p>"+esc(row.proposalIds.join(", ")||"baseline not linked")+"</p><h3>Direct evidence</h3><p>"+esc((row.evidenceIds||[]).join(", "))+"</p><h3>Inferred classification</h3><p>AA track assignment</p>");}
+    function showInspector(hash,html){const drawer=$("[data-inspector]");$("[data-inspector-body]").innerHTML=html;drawer.classList.add("open");drawer.setAttribute("aria-hidden","false");drawer.focus();location.hash=hash;}
+    function closeInspector(){const drawer=$("[data-inspector]");drawer.classList.remove("open");drawer.setAttribute("aria-hidden","true");$$(".bubble").forEach((b)=>b.classList.remove("dimmed")); if(lastFocus)lastFocus.focus();}
+    function esc(v){return String(v??"").replace(/[&<>"]/g,(c)=>({"&":"&amp;","<":"&lt;",">":"&gt;","\\"":"&quot;"}[c]));}
+    loadHash(); apply();
+  }`;
+}
+
+function dashboardV2Styles(): string {
+  return `
+    .v2-header{min-height:42vh;padding:56px 0 34px;border-bottom:1px solid var(--line-strong);display:grid;align-content:end;gap:16px}
+    .v2-header h1{font-size:58px;line-height:1;margin:0;letter-spacing:0}.v2-header p{max-width:820px;color:var(--text-secondary);font-size:19px;line-height:1.5}.v2-kicker{font-size:12px;font-weight:800;text-transform:uppercase;color:var(--blue)}.v2-header-meta{display:flex;gap:10px;flex-wrap:wrap;color:var(--text-muted);font-size:12px}.v2-header-meta span{border:1px solid var(--line-soft);padding:6px 9px;border-radius:7px;background:#fff}
+    .v2-filter{position:sticky;top:0;z-index:20;background:rgba(255,255,255,.96);border:1px solid var(--line);border-radius:var(--radius);padding:12px;display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin:18px 0 40px}.v2-filter label{font-size:12px;color:var(--text-muted);display:flex;align-items:center;gap:6px}.v2-filter select,.v2-filter input,.v2-filter button{border:1px solid var(--line);background:#fff;border-radius:7px;padding:8px 10px;font:inherit}.v2-filter .search-label{flex:1 1 220px}.v2-filter input[type=search]{width:100%}.segmented{display:flex;gap:4px}.segmented button.active{background:var(--blue);color:#fff}.v2-filter output{margin-left:auto;font-weight:760}
+    .v2-section{scroll-margin-top:88px}.v2-kpis{display:grid;grid-template-columns:repeat(5,minmax(0,1fr));gap:12px}.v2-kpi{border-top:2px solid var(--line-strong);padding:14px 0;color:var(--ink);text-decoration:none}.v2-kpi span,.v2-kpi em{display:block;color:var(--text-muted);font-size:12px}.v2-kpi b{display:block;font-size:28px;margin:8px 0;font-variant-numeric:tabular-nums}.v2-kpi em{font-style:normal}
+    .v2-trend-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:18px}.v2-chart{border-top:1px solid var(--line-strong);padding-top:14px}.v2-chart svg{width:100%;height:170px}.v2-chart line{stroke:var(--line-strong)}.v2-chart rect{fill:#dbe7f8}.v2-chart polyline{fill:none;stroke:var(--blue);stroke-width:2.2}.sr-summary{font-size:13px;color:var(--text-muted)}
+    .v2-timeline{display:grid;gap:10px;padding-left:0;list-style:none}.v2-timeline li{display:grid;grid-template-columns:96px 180px 150px minmax(0,1fr) 70px;gap:12px;align-items:center;border-bottom:1px solid var(--line-soft);padding:10px 0}.v2-timeline em{font-style:normal;color:var(--blue);font-weight:700}.v2-subsection{margin-top:26px}
+    .topic-map-wrap{position:relative;width:100%;max-width:760px;height:360px;border:1px solid var(--line);background:#fff}.topic-map-wrap svg{position:absolute;inset:0;width:100%;height:100%}.topic-map-wrap line{stroke:var(--line-strong)}.topic-map-wrap text{font-size:11px;fill:#57606a}.bubble-layer{position:absolute;inset:0}.bubble{position:absolute;transform:translate(-50%,-50%);border-radius:50%;border:2px solid var(--blue);background:#eaf2ff;color:#0f172a;font-size:10px;display:grid;place-items:center;text-align:center;padding:2px;cursor:pointer}.bubble[data-evidence-state*=unclassified],.bubble[data-evidence-state*=partial]{border-style:dashed}.bubble.dimmed{opacity:.25}
+    .lifecycle-board{display:grid;grid-template-columns:repeat(7,minmax(130px,1fr));gap:10px}.lifecycle-board section{border-top:2px solid var(--line-strong);padding-top:10px}.lifecycle-board h3{font-size:15px}.proposal-chip{width:100%;text-align:left;margin:6px 0;border:1px solid var(--line);border-radius:7px;background:#fff;padding:8px;display:grid;gap:3px}.proposal-chip span{font-size:12px;color:var(--text-muted);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.proposal-chip em,.proposal-chip i{font-style:normal;font-size:10px;color:var(--blue);font-weight:800}
+    .heatmap td{text-align:center;font-variant-numeric:tabular-nums}.matrix{height:320px;border:1px solid var(--line);position:relative;margin:28px 0;background:linear-gradient(90deg,transparent 49.8%,var(--line-soft) 50%,transparent 50.2%),linear-gradient(0deg,transparent 49.8%,var(--line-soft) 50%,transparent 50.2%)}.matrix>span{position:absolute;font-size:12px;color:var(--text-muted)}.matrix>span:nth-child(1){right:12px;top:10px}.matrix>span:nth-child(2){right:12px;bottom:10px}.matrix>span:nth-child(3){left:12px;top:10px}.matrix>span:nth-child(4){left:12px;bottom:10px}.matrix-point{position:absolute;transform:translate(-50%,50%);border-radius:50%;border:1px solid var(--blue);background:#1f6feb;color:#fff;font-size:10px}
+    .explorer-table button,.aa-matrix button{border:1px solid var(--line);border-radius:7px;background:#fff;padding:6px 9px}.spark-mini{display:flex;align-items:end;gap:2px;height:30px}.spark-mini i{display:block;width:4px;background:#68717f}.state{display:inline-block;border:1px solid var(--line);border-radius:7px;padding:2px 6px;font-size:11px}.state.unavailable{border-style:dashed;color:var(--text-muted)}.quality-grid{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:10px}.quality-grid div{border-top:1px solid var(--line-strong);padding-top:10px}.quality-grid dt{font-size:12px;color:var(--text-muted)}.quality-grid dd{margin:4px 0 0;font-weight:760}.quality-badge{display:inline-block;border:1px solid var(--line);border-radius:7px;padding:6px 9px}.quality-badge.warning{border-color:var(--amber);background:var(--amber-soft)}
+    .inspector{position:fixed;right:0;top:0;bottom:0;width:min(480px,100%);background:#fff;border-left:1px solid var(--line);box-shadow:0 0 34px rgba(16,24,40,.18);z-index:40;transform:translateX(105%);transition:transform .18s ease;padding:22px;overflow:auto}.inspector.open{transform:translateX(0)}.inspector button{float:right;border:1px solid var(--line);border-radius:7px;background:#fff;padding:8px 10px}.is-hidden{display:none!important}.empty{color:var(--text-muted)}
+    @media(max-width:1040px){.v2-kpis,.v2-trend-grid,.lifecycle-board,.quality-grid{grid-template-columns:1fr 1fr}.v2-timeline li{grid-template-columns:1fr}.topic-map-wrap{max-width:none}.table-wrap{overflow-x:auto}}
+    @media(max-width:680px){.v2-header h1{font-size:38px}.v2-filter{position:static}.v2-kpis,.v2-trend-grid,.lifecycle-board,.quality-grid{grid-template-columns:1fr}.v2-timeline li{grid-template-columns:1fr}.table{min-width:720px}.inspector{top:auto;height:min(82vh,620px);border-left:0;border-top:1px solid var(--line);transform:translateY(105%)}.inspector.open{transform:translateY(0)}}
+    @media print{.v2-filter,.inspector,[data-inspector],button{display:none!important}.v2-section{break-inside:avoid-page}.v2-chart,.topic-map-wrap,.matrix{break-inside:avoid}details{display:block}details>*{display:block}}
+  `;
+}
+
+function filterAttrsForProposal(proposal: { domainId: string; status: string; isAA: boolean; kgldRelevance: boolean; topic: string; proposalId: string; title?: string | null; evidenceState?: string }): string {
+  return `data-domain="${escapeHtml(proposal.domainId)}" data-status="${escapeHtml(lifecycleStageForStatus(proposal.status))}" data-aa="${proposal.isAA}" data-kgld="${proposal.kgldRelevance}" data-search="${escapeHtml(`${proposal.proposalId} ${proposal.title ?? ""} ${proposal.topic}`.toLowerCase())}" data-evidence-state="${escapeHtml(proposal.evidenceState ?? "confirmed")}" data-evidence-scope="specification"`;
+}
+
+function filterAttrsForProposalId(view: ReturnType<typeof buildDashboardV2View>, proposalId: string): string {
+  const proposal = view.proposalExplorer.rows.find((row) => row.proposalId === proposalId);
+  return proposal ? filterAttrsForProposal(proposal) : `data-domain="unknown" data-status="Unknown" data-aa="false" data-kgld="false" data-search="${escapeHtml(proposalId.toLowerCase())}" data-evidence-state="confirmed" data-evidence-scope="specification"`;
+}
+
+function filterAttrsForTopic(topic: { domainId: string; proposalIds: string[]; name: string; evidenceState: string }): string {
+  return `data-domain="${escapeHtml(topic.domainId)}" data-status="all" data-aa="${topic.proposalIds.some((id) => /^ERC-4337|EIP-7702|ERC-7579|ERC-6900|ERC-7715|ERC-7710|ERC-8286/.test(id))}" data-kgld="false" data-search="${escapeHtml(`${topic.name} ${topic.proposalIds.join(" ")}`.toLowerCase())}" data-evidence-state="${escapeHtml(topic.evidenceState)}" data-evidence-scope="specification"`;
+}
+
+function metricV2(metricId: string, value: unknown, unit: string, sourcePath: string, evidenceIds: string[], state: string, limitation: string) {
+  return { metricId, value, unit, sourcePath, evidenceIds, state, limitation };
+}
+
+function deterministicBubblePoint(x: number, y: number, size: number) {
+  return { x, y, size };
+}
+
+function dailyPostCounts(posts: Array<{ createdAt: string }>, from: string, to: string) {
+  const start = Date.parse(from);
+  const end = Date.parse(to);
+  if (!Number.isFinite(start) || !Number.isFinite(end)) return [];
+  const days = Math.max(1, Math.ceil((end - start) / DAY_MS));
+  return Array.from({ length: days }, (_, index) => {
+    const dayStart = start + index * DAY_MS;
+    const date = new Date(dayStart).toISOString().slice(0, 10);
+    return {
+      date,
+      rawPostCount: posts.filter((post) => post.createdAt.slice(0, 10) === date).length,
+      uniqueParticipantCount: 0,
+    };
+  });
+}
+
+function lifecycleStageForStatus(status: string | null | undefined): string {
+  const value = String(status ?? "").toLowerCase();
+  if (value.includes("draft")) return "Draft";
+  if (value.includes("review")) return "Review";
+  if (value.includes("last call")) return "Last Call";
+  if (value.includes("final")) return "Final";
+  if (value.includes("living") || value.includes("active")) return "Living";
+  if (value.includes("stagnant") || value.includes("withdrawn")) return "Stagnant / Withdrawn";
+  return "Unknown";
+}
+
+function compareProposalIds(left: string, right: string): number {
+  const ln = Number(left.match(/\d+/)?.[0] ?? 0);
+  const rn = Number(right.match(/\d+/)?.[0] ?? 0);
+  return ln - rn || left.localeCompare(right);
+}
+
+function proposalAnchor(proposalId: string, title?: string | null): string {
+  return `<a href="${escapeHtml(proposalUrl(proposalId))}" target="_blank" rel="noopener noreferrer"><b>${escapeHtml(proposalId)}</b>${title ? ` ${escapeHtml(shortTitle(title))}` : ""}</a>`;
+}
+
+function shortTitle(title?: string | null): string {
+  return String(title ?? "").replace(/\s+/g, " ").slice(0, 64);
+}
+
+function miniSparkline(values: number[]): string {
+  const max = Math.max(1, ...values);
+  return `<span class="spark-mini">${values.map((value) => `<i style="height:${Math.max(2, value / max * 28).toFixed(1)}px"></i>`).join("")}</span>`;
+}
+
+function shortDate(value?: string | null): string {
+  return value ? String(value).slice(0, 10) : "unavailable";
+}
+
+function eventTypeKo(type: string): string {
+  if (type === "new_proposal") return "new proposal";
+  if (type === "status_change" || type === "final_transition" || type === "withdrawn_transition") return "status change";
+  if (type === "specification_change") return "specification change";
+  if (type === "discussion_activity") return "discussion activity";
+  return type;
+}
+
+function evidenceLabel(value: string): string {
+  if (value === "all") return "전체";
+  if (value === "specification") return "Specification";
+  if (value === "discussion") return "Discussion";
+  return value;
+}
+
+function domainDisplayName(value: string): string {
+  const labels: Record<string, string> = {
+    "accounts-wallets": "계정·지갑",
+    "tokens-finance": "토큰·금융",
+    "identity-compliance": "신원·컴플라이언스",
+    "execution-state": "실행·상태",
+    "scaling-data": "확장·데이터",
+    "validators-consensus": "검증·합의",
+    unknown: "미분류",
+  };
+  return labels[value] ?? value.replace(/-/g, " ");
+}
+
+function stateLabel(value: string): string {
+  return value.replace(/_/g, " ");
+}
+
+function collectionLabel(value: string): string {
+  return value.replace(/_/g, " ");
+}
+
+function metricCell(metric: { state?: string; value?: number | null } | undefined): string {
+  if (!metric) return `<span class="state unavailable">unavailable</span>`;
+  const state = metric.state ?? "unavailable";
+  if (state === "confirmed_value") return `<span class="state confirmed">confirmed ${metric.value}</span>`;
+  if (state === "confirmed_zero") return `<span class="state">confirmed zero</span>`;
+  if (state === "not_collected") return `<span class="state unavailable">미수집</span>`;
+  if (state === "baseline_not_linked") return `<span class="state unavailable">baseline not linked</span>`;
+  return `<span class="state unavailable">${escapeHtml(state)}</span>`;
+}
+
+function signalModeForV2(view: ReturnType<typeof buildDashboardV2View>): WeeklySignalMode {
+  const count = Number(view.overview.weeklyUsableCount.value);
+  if (count === 0) return "empty";
+  if (view.evidenceQuality.weeklyRankingValidity === "invalid") return "non_ranking";
+  if (count === 1) return "single";
+  return "multiple";
 }
 
 function buildDashboard(report: WeeklyRadarReport, atlas: TechnologyAtlas) {
@@ -4027,13 +4819,26 @@ function claim(claimId: string, claimType: string, textKo: string, subjectIds: s
 function technologyPlatformApi(report: WeeklyRadarReport, platform: TechnologyPlatformLayer, atlas = buildTechnologyAtlas(report)) {
   void platform;
   const dashboard = buildDashboard(report, atlas);
+  sanitizePartialDiscussionTitles(report, dashboard);
   const intelligenceSnapshot = buildIntelligenceSnapshot(report, atlas, dashboard);
+  intelligenceSnapshot.views.dashboardV2 = buildDashboardV2View(report);
+  intelligenceSnapshot.metadata.snapshotHash = snapshotHash(intelligenceSnapshot);
   return {
     schemaVersion: intelligenceSnapshot.metadata.schemaVersion,
     snapshotId: intelligenceSnapshot.metadata.snapshotId,
     snapshotHash: intelligenceSnapshot.metadata.snapshotHash,
     intelligenceSnapshot,
   };
+}
+
+function sanitizePartialDiscussionTitles(report: WeeklyRadarReport, dashboard: ReturnType<typeof buildDashboard>): void {
+  const statusByProposal = new Map(report.ethereumTechRadar.signalLayer.discussionHeat.map((discussion) => [discussion.proposalId, discussionCollectionStatus(discussion)]));
+  for (const item of dashboard.developerAttention?.activity ?? []) {
+    if (statusByProposal.get(item.proposalId) !== "posts_fully_collected") {
+      item.title = item.proposalId;
+      item.discussionTitle = item.proposalId;
+    }
+  }
 }
 
 function technologyPlatformDebugApi(report: WeeklyRadarReport, platform: TechnologyPlatformLayer) {
@@ -4326,11 +5131,12 @@ function countStrings(values: string[]): Record<string, number> {
 }
 
 function discussionEvidencePayload(discussion: DiscussionHeatItem | undefined) {
+  const collectionStatus = discussionCollectionStatus(discussion);
   return {
     url: discussion?.discussionUrl ?? null,
     found: Boolean(discussion?.discussionUrl),
     topicId: discussion?.discussionTopicId ?? null,
-    title: discussion?.discussionTitle ?? discussion?.title ?? null,
+    title: collectionStatus === "posts_fully_collected" ? discussion?.discussionTitle ?? discussion?.title ?? null : discussion?.proposalId ?? null,
     createdAt: discussion?.discussionCreatedAt ?? null,
     lastPostAt: discussion?.discussionLastActivityAt ?? null,
     postsInCurrent7d: discussion?.postsInCurrent7d ?? 0,
@@ -7119,7 +7925,7 @@ function signalTypeLabel(value: WatchlistItem["signalType"]): string {
     diff_followup: "문안 변경 후속",
     business_relevance: "비즈니스 관련성",
   };
-  return labels[value] ?? value.replaceAll("_", " ");
+  return value ? labels[value] ?? String(value).replaceAll("_", " ") : "관찰 신호";
 }
 
 function evidenceChips(item: WatchlistItem): string[] {
@@ -7902,7 +8708,7 @@ function localizeGeneratedText(value: string): string {
     .replace(/\uCA0C/g, SEP);
 }
 
-function escapeHtml(value: string): string {
-  return value.replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll(">", "&gt;").replaceAll('"', "&quot;").replaceAll("'", "&#39;");
+function escapeHtml(value: unknown): string {
+  return String(value ?? "").replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll(">", "&gt;").replaceAll('"', "&quot;").replaceAll("'", "&#39;");
 }
 
