@@ -511,6 +511,15 @@ export type HistoricalInputDiagnostics = {
   eventsDetectedThisWeekButOccurredEarlier?: number;
   affectedProposalIds?: string[];
   gitBackfillDiagnostics?: {
+    sourceMode?: "local_git" | "github_api";
+    localHistoryRequested?: number;
+    localHistorySucceeded?: number;
+    localHistoryFailed?: number;
+    apiHistoryRequested?: number;
+    apiHistorySucceeded?: number;
+    apiHistoryFailed?: number;
+    pathCaseFailures?: number;
+    shallowRepositoryDetected?: number;
     requestedTargets: number;
     successfulTargets: number;
     failedTargets: number;

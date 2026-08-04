@@ -22,6 +22,41 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
+      - name: Checkout official EIPs source
+        uses: actions/checkout@v4
+        with:
+          repository: ethereum/EIPs
+          path: .sources/EIPs
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Checkout official ERCs source
+        uses: actions/checkout@v4
+        with:
+          repository: ethereum/ERCs
+          path: .sources/ERCs
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Verify official source history
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          for repo in .sources/EIPs .sources/ERCs; do
+            echo "Repository: $repo"
+            git -C "$repo" rev-parse --is-inside-work-tree
+            shallow="$(git -C "$repo" rev-parse --is-shallow-repository)"
+            echo "isShallow=$shallow"
+            git -C "$repo" rev-list --count HEAD
+            git -C "$repo" log --reverse -1 --format=%cI
+            git -C "$repo" log -1 --format=%cI
+            if [ "$shallow" != "false" ]; then
+              echo "::error::$repo is shallow; full history is required for deterministic local backfill"
+              exit 1
+            fi
+          done
+
       - name: Set up Node.js
         uses: actions/setup-node@v4
         with:
@@ -43,17 +78,8 @@ jobs:
           restore-keys: |
             eipreporter-data-${{ runner.os }}-
 
-      - name: Checkout official EIPs source
-        uses: actions/checkout@v4
-        with:
-          repository: ethereum/EIPs
-          path: .sources/EIPs
-
-      - name: Checkout official ERCs source
-        uses: actions/checkout@v4
-        with:
-          repository: ethereum/ERCs
-          path: .sources/ERCs
+      - name: Run CI source doctor
+        run: npm run ci:doctor
 
       - name: Run tests
         run: npm test
@@ -62,10 +88,11 @@ jobs:
         run: npm run typecheck
 
       - name: Collect EIP and ERC proposals
-        run: npm run collect
+        run: |
+          npm run collect -- --trend-days 180 --change-days 7 --snapshot-out reports/input/weekly-current.snapshot.json --diagnostics-out reports/input/weekly-current.collection.json
 
-      - name: Generate weekly HTML report
-        run: npm run report:html -- --trend-days 180 --change-days 7
+      - name: Run collection preflight
+        run: npm run ci:preflight -- --snapshot reports/input/weekly-current.snapshot.json
 
       - name: Save persistent report state
         if: ${{ always() }}
@@ -76,6 +103,9 @@ jobs:
             data/historical-git-cache.json
             data/adoption-evidence-cache.json
           key: eipreporter-data-${{ runner.os }}-${{ github.run_id }}
+
+      - name: Generate weekly HTML report
+        run: npm run report:html -- --snapshot reports/input/weekly-current.snapshot.json
 
       - name: Determine report date
         id: report-date
@@ -102,6 +132,7 @@ jobs:
             reports/weekly-*.html
             reports/weekly-*.compact.json
             reports/weekly-*.quality.json
+            reports/input/*.json
           if-no-files-found: warn
           retention-days: 30
 

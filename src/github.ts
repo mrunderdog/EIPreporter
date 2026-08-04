@@ -1,6 +1,12 @@
 import { execFileSync } from "node:child_process";
 import { existsSync, readFileSync, readdirSync, statSync } from "node:fs";
 import { resolve } from "node:path";
+import {
+  canonicalProposalRelativePath,
+  officialRepoRoot,
+  repositoryTypeForSourceRepo,
+  safeDirectory,
+} from "./source-resolver.ts";
 import type { ProposalKind, SourceRepo } from "./types.ts";
 
 export type GitHubTreeItem = {
@@ -69,10 +75,7 @@ export async function fetchMarkdownDocuments(
 
 export function officialRepoPath(source: RepositorySource | SourceRepo): string | undefined {
   const sourceRepo = typeof source === "string" ? source : source.sourceRepo;
-  const envPath = sourceRepo === "ethereum/EIPs" ? process.env.EIP_OFFICIAL_REPO_PATH : process.env.ERC_OFFICIAL_REPO_PATH;
-  if (envPath !== undefined) return envPath && existsSync(envPath) ? resolve(envPath) : undefined;
-  const fallback = sourceRepo === "ethereum/EIPs" ? resolve("data", "ethereum-EIPs") : resolve("data", "ethereum-ERCs");
-  return existsSync(fallback) ? fallback : undefined;
+  return officialRepoRoot(repositoryTypeForSourceRepo(sourceRepo));
 }
 
 function fetchLocalMarkdownDocuments(source: RepositorySource): Array<{ path: string; branch: string; markdown: string }> {
@@ -91,7 +94,7 @@ function fetchLocalMarkdownDocuments(source: RepositorySource): Array<{ path: st
 
 function localGitBranch(repoPath: string): string {
   try {
-    return execFileSync("git", ["-c", `safe.directory=${repoPath}`, "-C", repoPath, "rev-parse", "--abbrev-ref", "HEAD"], { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] }).trim() || "HEAD";
+    return execFileSync("git", ["-c", `safe.directory=${safeDirectory(repoPath)}`, "-C", repoPath, "rev-parse", "--abbrev-ref", "HEAD"], { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] }).trim() || "HEAD";
   } catch {
     return "HEAD";
   }
@@ -113,8 +116,11 @@ function walkFiles(root: string, relative = ""): string[] {
 }
 
 export function isProposalMarkdownPath(kind: ProposalKind, path: string): boolean {
-  const prefix = kind === "EIP" ? "eip" : "erc";
-  return new RegExp(`(?:^|/)${prefix}-\\d+\\.md$`, "i").test(path);
+  const normalized = path.replace(/\\/g, "/");
+  const match = /^(EIPS\/eip-(\d+)\.md|ERCS\/erc-(\d+)\.md)$/.exec(normalized);
+  if (!match) return false;
+  const number = match[2] ?? match[3]!;
+  return normalized === canonicalProposalRelativePath(kind, number);
 }
 
 async function fetchJson<T>(url: string, token?: string): Promise<T> {

@@ -14,6 +14,7 @@ import { buildIntelligenceLayer } from "./signal-engine.ts";
 import { buildNarrativeIntelligenceDebug } from "./narrative-intelligence.ts";
 import { buildTechnologyAtlas, type DomainActivity, type MaturityStage, type TechnologyAtlas } from "./technology-atlas.ts";
 import { officialRepoPath } from "./github.ts";
+import { isExactCaseFile, resolveOfficialProposalSource } from "./source-resolver.ts";
 import type {
   ChangeEvent,
   ChartSeries,
@@ -367,6 +368,18 @@ export function validateWeeklyCollectionPreflight(report: WeeklyRadarReport): vo
   }
   if (backfill && backfill.successRate < 0.9) {
     failures.push(`historical backfill success ${backfill.successRate}; requested=${backfill.requestedTargets}; succeeded=${backfill.successfulTargets}; failed=${backfill.failedTargets}; rateLimited=${backfill.rateLimitedCount}; failedProposalIds=${backfill.failedProposalIds.join(",")}; failureCodes=${backfill.failureCodes.join(",")}`);
+  }
+  if (backfill?.sourceMode === "local_git" && (backfill.apiHistoryRequested ?? 0) > 0) {
+    failures.push(`local_git mode must not use GitHub API history fallback: apiHistoryRequested=${backfill.apiHistoryRequested}`);
+  }
+  if (backfill?.sourceMode === "local_git" && backfill.rateLimitedCount > 0) {
+    failures.push(`local_git mode must have zero historical API rate limits: rateLimited=${backfill.rateLimitedCount}`);
+  }
+  if (backfill && (backfill.pathCaseFailures ?? 0) > 0) {
+    failures.push(`official source path case failures: ${backfill.pathCaseFailures}`);
+  }
+  if (backfill && (backfill.shallowRepositoryDetected ?? 0) > 0) {
+    failures.push(`shallow official repositories detected: ${backfill.shallowRepositoryDetected}`);
   }
   if (backfill && backfill.rateLimitedCount > 0 && publicSubjects.length < report.ethereumTechRadar.totalProposals * 0.7) {
     failures.push(`monitoring universe may be reduced by rate limits: public=${publicSubjects.length}; total=${report.ethereumTechRadar.totalProposals}; rateLimited=${backfill.rateLimitedCount}`);
@@ -3731,22 +3744,10 @@ function localSpecificationEvidence(proposalId: string): {
 }
 
 function localProposalMarkdownPath(proposalId: string): string | null {
-  const match = /^(EIP|ERC)-(\d+)$/i.exec(proposalId);
-  if (!match) return null;
-  const kind = match[1]!.toUpperCase();
-  const number = match[2]!;
-  const eipRepo = officialRepoPath("ethereum/EIPs") ?? resolve("data", "ethereum-EIPs");
-  const ercRepo = officialRepoPath("ethereum/ercs") ?? resolve("data", "ethereum-ERCs");
-  const candidates = kind === "ERC"
-    ? [
-      resolve(ercRepo, "ERCS", `erc-${number}.md`),
-      resolve(ercRepo, "EIPS", `eip-${number}.md`),
-    ]
-    : [
-      resolve(eipRepo, "EIPS", `eip-${number}.md`),
-      resolve(eipRepo, "ERCS", `erc-${number}.md`),
-    ];
-  return candidates.find((candidate) => existsSync(candidate)) ?? null;
+  const source = resolveOfficialProposalSource(proposalId);
+  if (!source) return null;
+  if (!isExactCaseFile(source.repositoryRoot, source.relativePath)) return null;
+  return resolve(source.repositoryRoot, source.relativePath);
 }
 
 function parseSimpleFrontmatter(markdown: string): Record<string, string> {

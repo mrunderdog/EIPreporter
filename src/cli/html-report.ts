@@ -1,12 +1,27 @@
+import { createHash } from "node:crypto";
+import { readFileSync } from "node:fs";
 import { parseArgs, resolveDatabasePath } from "../config.ts";
 import { openDatabase } from "../db.ts";
 import { validateWeeklyCollectionPreflight, writeWeeklyHtmlReport } from "../html-report.ts";
 import { buildWeeklyReport, buildWeeklyReportWithDiscussionActivity, buildWeeklyReportWithDiscussionPosts } from "../report.ts";
+import type { WeeklyRadarReport } from "../types.ts";
 
 async function main(): Promise<void> {
   const args = parseArgs(process.argv.slice(2));
-  const databasePath = resolveDatabasePath(args);
   const outputDirectory = typeof args.output === "string" ? args.output : "reports";
+  if (typeof args.snapshot === "string") {
+    const snapshotText = readFileSync(args.snapshot, "utf8");
+    const inputSnapshotHash = createHash("sha256").update(snapshotText).digest("hex");
+    const report = JSON.parse(snapshotText) as WeeklyRadarReport;
+    if (args["skip-preflight"] !== true) validateWeeklyCollectionPreflight(report);
+    const outputPath = writeWeeklyHtmlReport(report, outputDirectory, { debug: args.debug === true });
+    console.log(`Render source: canonical snapshot`);
+    console.log(`networkRequests=0`);
+    console.log(`inputSnapshotHash=${inputSnapshotHash}`);
+    console.log(`output=${outputPath}`);
+    return;
+  }
+  const databasePath = resolveDatabasePath(args);
   const db = openDatabase(databasePath);
 
   try {

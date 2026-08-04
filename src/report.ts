@@ -16,6 +16,15 @@ import { buildThemeGraph } from "./theme-graph.ts";
 import { buildKnowledgeGraphLayer } from "./knowledge-graph.ts";
 import { officialRepoPath } from "./github.ts";
 import {
+  assertHealthyConfiguredRepositories,
+  availableOfficialRepositoryHealth,
+  isExactCaseFile,
+  repositoryHealth,
+  repositoryTypeForSourceRepo,
+  resolveOfficialProposalSource,
+  safeDirectory,
+} from "./source-resolver.ts";
+import {
   analyzeProposal,
   buildAccountAbstractionRadar,
   buildThemeInsights,
@@ -519,6 +528,18 @@ async function fetchGitHistoryEvents(
 }> {
   const fetchImpl = options.fetchImpl ?? fetch;
   const timeoutMs = Math.max(15_000, options.timeoutMs ?? 5000);
+  assertHealthyConfiguredRepositories();
+  const availableHealth = availableOfficialRepositoryHealth();
+  const localHealthFailures = availableHealth.filter((health) => !health.healthy);
+  if (localHealthFailures.length) {
+    throw new Error([
+      "Available official repository health check failed.",
+      ...localHealthFailures.map((check) =>
+        `${check.repositoryType}: root=${check.repositoryRoot ?? "missing"}; shallow=${check.isShallow}; commits=${check.commitCount}; errors=${check.errors.join(", ")}`,
+      ),
+    ].join("\n"));
+  }
+  const sourceMode = availableHealth.length > 0 ? "local_git" as const : "github_api" as const;
   const cache = readGitHistoryCache();
   const cacheTouched = { value: false };
   const events: ChangeEvent[] = [];
@@ -529,17 +550,28 @@ async function fetchGitHistoryEvents(
   let rateLimitedCount = 0;
   let notFoundCount = 0;
   let successfulTargets = 0;
+  let localHistoryRequested = 0;
+  let localHistorySucceeded = 0;
+  let localHistoryFailed = 0;
+  let apiHistoryRequested = 0;
+  let apiHistorySucceeded = 0;
+  let apiHistoryFailed = 0;
+  let pathCaseFailures = 0;
+  let shallowRepositoryDetected = availableHealth.filter((health) => health.isShallow).length;
   for (const record of records) {
     const repo = githubRepo(record);
     if (!repo || !record.sourcePath) continue;
     const cacheKey = `${repo}:${record.sourcePath}:${since.slice(0, 10)}:${until.slice(0, 10)}`;
     try {
-      const localEvents = fetchLocalGitHistoryEvents(record, since, until, snapshotId);
-      if (localEvents.length) {
+      if (sourceMode === "local_git") {
+        localHistoryRequested += 1;
+        const localEvents = fetchLocalGitHistoryEvents(record, since, until, snapshotId, true);
         events.push(...localEvents);
         successfulTargets += 1;
+        localHistorySucceeded += 1;
         continue;
       }
+      apiHistoryRequested += 1;
       const cached = cache[cacheKey] ?? await fetchCommitBundle(fetchImpl, repo, record.sourcePath, since, until, timeoutMs);
       if (!cache[cacheKey]) {
         cache[cacheKey] = cached;
@@ -558,13 +590,19 @@ async function fetchGitHistoryEvents(
         if (event) events.push(event);
       }
       successfulTargets += 1;
+      apiHistorySucceeded += 1;
     } catch (error) {
       fetchFailures += 1;
       failedProposalIds.push(record.proposalId);
       const message = error instanceof Error ? error.message : String(error);
-      failureCodes.push(message.includes("404") ? "not_found" : message.includes("403") ? "rate_limited_or_forbidden" : "fetch_failed");
+      const code = message.includes("PATH_CASE_FAILURE") ? "path_case_failure" : message.includes("SHALLOW_REPOSITORY") ? "shallow_repository" : message.includes("404") ? "not_found" : message.includes("403") ? "rate_limited_or_forbidden" : "fetch_failed";
+      failureCodes.push(code);
       if (message.includes("404")) notFoundCount += 1;
       if (message.includes("403")) rateLimitedCount += 1;
+      if (message.includes("PATH_CASE_FAILURE")) pathCaseFailures += 1;
+      if (message.includes("SHALLOW_REPOSITORY")) shallowRepositoryDetected += 1;
+      if (sourceMode === "local_git") localHistoryFailed += 1;
+      else apiHistoryFailed += 1;
     }
   }
   if (cacheTouched.value) writeGitHistoryCache(cache);
@@ -575,6 +613,15 @@ async function fetchGitHistoryEvents(
     fetchFailures,
     parseFailures,
     diagnostics: {
+      sourceMode,
+      localHistoryRequested,
+      localHistorySucceeded,
+      localHistoryFailed,
+      apiHistoryRequested,
+      apiHistorySucceeded,
+      apiHistoryFailed,
+      pathCaseFailures,
+      shallowRepositoryDetected,
       requestedTargets: records.length,
       successfulTargets,
       failedTargets: failedProposalIds.length,
@@ -617,7 +664,9 @@ async function timedFetch(fetchImpl: typeof fetch, url: string, timeoutMs: numbe
       signal: controller.signal,
       headers: {
         "Accept": "application/vnd.github+json",
+        "X-GitHub-Api-Version": "2022-11-28",
         "User-Agent": "EIPreporter",
+        ...(process.env.GITHUB_TOKEN ? { "Authorization": `Bearer ${process.env.GITHUB_TOKEN}` } : {}),
       },
     });
   } finally {
@@ -680,37 +729,63 @@ function eventFromCommitDetail(detail: GithubCommitDetail, record: ProposalRecor
   };
 }
 
-function fetchLocalGitHistoryEvents(record: ProposalRecord, since: string, until: string, snapshotId: number): ChangeEvent[] {
+function fetchLocalGitHistoryEvents(record: ProposalRecord, since: string, until: string, snapshotId: number, strict = false): ChangeEvent[] {
   const repoPath = localRepoPath(record);
-  if (!repoPath || !existsSync(repoPath)) return [];
+  if (!repoPath || !existsSync(repoPath)) {
+    if (strict) throw new Error(`LOCAL_SOURCE_MISSING ${record.proposalId}`);
+    return [];
+  }
+  const health = repositoryHealth(repositoryTypeForSourceRepo(record.sourceRepo));
+  if (health.isShallow) throw new Error(`SHALLOW_REPOSITORY ${record.proposalId}`);
+  const resolved = resolveOfficialProposalSource(record.proposalId);
+  const exactRelativePath = resolved?.relativePath ?? record.sourcePath;
+  if (!isExactCaseFile(repoPath, exactRelativePath)) {
+    throw new Error(`PATH_CASE_FAILURE ${record.proposalId}: ${exactRelativePath}`);
+  }
   try {
     const log = execFileSync("git", [
       "-c",
-      `safe.directory=${repoPath}`,
+      `safe.directory=${safeDirectory(repoPath)}`,
       "-C",
       repoPath,
       "log",
+      "--follow",
       `--since=${since}`,
       `--until=${until}`,
-      "--format=%H%x09%cI",
+      "--format=@@EIPREPORTER@@%H%x09%cI",
+      "--name-status",
       "--",
-      record.sourcePath,
+      exactRelativePath,
     ], { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] });
-    return log
-      .split(/\r?\n/)
-      .map((line) => line.trim())
-      .filter(Boolean)
-      .flatMap((line) => {
-        const [sha, occurredAt] = line.split("\t");
-        if (!sha || !occurredAt) return [];
-        const status = localGitFileStatus(repoPath, sha, record.sourcePath);
-        const patch = "";
-        const event = eventFromLocalGit(sha, occurredAt, patch, status, record, snapshotId);
+    return parseLocalGitLog(log)
+      .flatMap((commit) => {
+        const event = eventFromLocalGit(commit.sha, commit.occurredAt, "", commit.fileStatus, record, snapshotId);
         return event ? [event] : [];
       });
-  } catch {
+  } catch (error) {
+    if (strict) throw error;
     return [];
   }
+}
+
+function parseLocalGitLog(log: string): Array<{ sha: string; occurredAt: string; fileStatus: string }> {
+  const commits: Array<{ sha: string; occurredAt: string; fileStatus: string }> = [];
+  let current: { sha: string; occurredAt: string; fileStatus: string } | null = null;
+  for (const rawLine of log.split(/\r?\n/)) {
+    const line = rawLine.trim();
+    if (!line) continue;
+    if (line.startsWith("@@EIPREPORTER@@")) {
+      if (current) commits.push(current);
+      const [sha, occurredAt] = line.replace(/^@@EIPREPORTER@@/, "").split("\t");
+      current = sha && occurredAt ? { sha, occurredAt, fileStatus: "" } : null;
+      continue;
+    }
+    if (current && /^[A-Z]\d*\s+/i.test(line) && !current.fileStatus) {
+      current.fileStatus = line;
+    }
+  }
+  if (current) commits.push(current);
+  return commits;
 }
 
 function eventFromLocalGit(
@@ -778,14 +853,6 @@ function classifyChangeSemanticType(
   if (!patch.trim()) return "unknown";
   if (/typo|grammar|spelling|format|whitespace|markdown/i.test(text)) return "editorial_text";
   return "unknown";
-}
-
-function localGitFileStatus(repoPath: string, sha: string, sourcePath: string): string {
-  try {
-    return execFileSync("git", ["-c", `safe.directory=${repoPath}`, "-C", repoPath, "diff-tree", "--no-commit-id", "--name-status", "-r", sha, "--", sourcePath], { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] }).trim();
-  } catch {
-    return "";
-  }
 }
 
 function statusChangeFromPatch(patch: string): { previous: string | null; current: string | null } | undefined {
