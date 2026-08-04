@@ -414,14 +414,79 @@ test("subject registry check reports actual missing public IDs", () => {
   assert.deepEqual(__qualityTestHooks.subjectRegistryMissingIdsFromPublicViews(embeddedApi), ["ERC-8286", "ERC-8330"]);
 });
 
-test("cover wording handles 0, 1, and 2 weekly usable signals", () => {
-  const report = { ethereumTechRadar: { historicalInputDiagnostics: { timestampQuality: { weeklyRankingValidity: "valid" } } } } as unknown as WeeklyRadarReport;
+test("weekly signal copy handles empty, single, multiple, and non-ranking modes", () => {
+  const fixtures = [
+    { usableCount: 0, rawCount: 0, weeklyRankingValidity: "invalid", mode: "empty", rankingEnabled: false, value: "0건", summary: "최근 7일 확인 가능한 의미 변화가 없습니다." },
+    { usableCount: 1, rawCount: 1, weeklyRankingValidity: "valid", mode: "single", rankingEnabled: false, value: "1건", summary: "최근 7일 확인된 의미 변화는 1건입니다." },
+    { usableCount: 1, rawCount: 27, weeklyRankingValidity: "invalid", mode: "non_ranking", rankingEnabled: false, value: "1건", summary: "최근 7일 확인된 의미 변화는 1건입니다. 데이터 품질 기준에 따라 주간 순위는 제공하지 않습니다." },
+    { usableCount: 2, rawCount: 2, weeklyRankingValidity: "valid", mode: "multiple", rankingEnabled: true, value: "2건", summary: "최근 7일 확인된 의미 변화는 2건입니다." },
+    { usableCount: 5, rawCount: 27, weeklyRankingValidity: "invalid", mode: "non_ranking", rankingEnabled: false, value: "5건", summary: "최근 7일 확인된 의미 변화는 5건입니다. 데이터 품질 기준에 따라 주간 순위는 제공하지 않습니다." },
+    { usableCount: 5, rawCount: 5, weeklyRankingValidity: "valid", mode: "multiple", rankingEnabled: true, value: "5건", summary: "최근 7일 확인된 의미 변화는 5건입니다." },
+  ] as const;
 
-  assert.equal(__qualityTestHooks.coverSingularPluralConsistency(report, coverApi(0), "유효 신호 없음"), true);
-  assert.equal(__qualityTestHooks.coverSingularPluralConsistency(report, coverApi(0), "이번 주 주요 개발 주제"), false);
-  assert.equal(__qualityTestHooks.coverSingularPluralConsistency(report, coverApi(1), "단일 신호"), true);
-  assert.equal(__qualityTestHooks.coverSingularPluralConsistency(report, coverApi(1), "Top signals"), false);
-  assert.equal(__qualityTestHooks.coverSingularPluralConsistency(report, coverApi(2), "이번 주 주요 개발 주제"), true);
+  for (const fixture of fixtures) {
+    const copy = __qualityTestHooks.buildWeeklySignalCopy(fixture);
+    assert.equal(copy.metricLabel, "확인된 주간 신호");
+    assert.equal(copy.metricValue, fixture.value);
+    assert.equal(copy.summaryText, fixture.summary);
+    assert.equal(copy.mode, fixture.mode);
+    assert.equal(copy.rankingEnabled, fixture.rankingEnabled);
+  }
+});
+
+test("weekly signal canonical view drives Cover, Executive Pulse, and quality check", () => {
+  const fixtures = [
+    { usableCount: 0, rawCount: 0, mode: "empty", rankingEnabled: false },
+    { usableCount: 1, rawCount: 1, mode: "single", rankingEnabled: false },
+    { usableCount: 1, rawCount: 27, mode: "non_ranking", rankingEnabled: false },
+    { usableCount: 2, rawCount: 2, mode: "multiple", rankingEnabled: true },
+    { usableCount: 5, rawCount: 27, mode: "non_ranking", rankingEnabled: false },
+    { usableCount: 5, rawCount: 5, mode: "multiple", rankingEnabled: true },
+  ] as const;
+
+  for (const fixture of fixtures) {
+    const { report, html, visibleHtml, api } = weeklySignalScenario(fixture.usableCount, fixture.rawCount);
+    const dashboard = api.intelligenceSnapshot.views;
+    const copy = dashboard.weeklySignalCopy;
+
+    assert.equal(copy.metricLabel, "확인된 주간 신호");
+    assert.equal(copy.metricValue, `${fixture.usableCount}건`);
+    assert.equal(copy.mode, fixture.mode);
+    assert.equal(copy.rankingEnabled, fixture.rankingEnabled);
+    assert.match(visibleHtml, new RegExp(`<div data-weekly-signal-cover-metric><span>확인된 주간 신호</span><b>${fixture.usableCount}건</b></div>`));
+    assert.match(visibleHtml, new RegExp(`<b data-executive-weekly-usable>${fixture.usableCount}건</b>`));
+    assert.match(visibleHtml, new RegExp(`data-weekly-signal-mode="${fixture.mode}"`));
+    assert.equal(dashboard.dataQuality.current7dUsableEventCount, fixture.usableCount);
+    assert.match(visibleHtml, new RegExp(`data-landscape-weekly-usable>최근 7일 의미 변화 합계 ${fixture.usableCount}건</p>`));
+    assert.equal(api.intelligenceSnapshot.aggregates.weeklyQuality.find((metric: { metricId: string }) => metric.metricId === "weekly.usableEvents")?.value, fixture.usableCount);
+    assert.equal(__qualityTestHooks.coverSingularPluralConsistency(report, api, visibleHtml), true);
+    assert.notDeepEqual(__qualityTestHooks.coverSingularPluralAffectedIds(api), []);
+    assert.match(__qualityTestHooks.coverSingularPluralObserved(api, visibleHtml), /"usableCount":/);
+
+    if (!fixture.rankingEnabled) {
+      assert.doesNotMatch(visibleHtml, /Top signals|상위 신호|이번 주 주요 개발 주제/);
+    }
+    if (fixture.usableCount > 0) {
+      assert.doesNotMatch(visibleHtml, /data-weekly-signal-cover-metric><span>확인된 주간 신호<\/span><b>0건<\/b>/);
+    }
+    void html;
+  }
+});
+
+test("weekly signal quality check rejects stale ranking and count renderings", () => {
+  const single = weeklySignalScenario(1, 1);
+  assert.equal(__qualityTestHooks.coverSingularPluralConsistency(single.report, single.api, single.visibleHtml.replace("data-weekly-signal-ranking=\"false\"", "data-weekly-signal-ranking=\"true\"")), false);
+  assert.equal(__qualityTestHooks.coverSingularPluralConsistency(single.report, single.api, single.visibleHtml.replace("확인된 주간 신호", "상위 신호")), false);
+
+  const invalid = weeklySignalScenario(5, 27);
+  assert.equal(__qualityTestHooks.coverSingularPluralConsistency(invalid.report, invalid.api, invalid.visibleHtml.replace("data-weekly-signal-mode=\"non_ranking\"", "data-weekly-signal-mode=\"multiple\"")), false);
+  assert.equal(__qualityTestHooks.coverSingularPluralConsistency(invalid.report, invalid.api, invalid.visibleHtml.replace("<div data-weekly-signal-cover-metric><span>확인된 주간 신호</span><b>5건</b></div>", "<div data-weekly-signal-cover-metric><span>확인된 주간 신호</span><b>0건</b></div>")), false);
+  assert.equal(__qualityTestHooks.coverSingularPluralConsistency(invalid.report, invalid.api, invalid.visibleHtml.replace("data-weekly-signal-usable=\"5\"", "data-weekly-signal-usable=\"4\"")), false);
+
+  const observed = __qualityTestHooks.coverSingularPluralObserved(invalid.api, invalid.visibleHtml);
+  assert.match(observed, /"renderedCoverLabel":/);
+  assert.match(observed, /"renderedCoverSummary":/);
+  assert.notDeepEqual(__qualityTestHooks.coverSingularPluralAffectedIds(invalid.api), []);
 });
 
 test("weekly usable event gating preserves raw facts but excludes unknown fallback and low confidence signals", () => {
@@ -530,14 +595,46 @@ function visibleReportHtml(html: string): string {
     .replace(/<script>[\s\S]*?<\/script>/, "");
 }
 
-function coverApi(current7dUsableEventCount: number) {
-  return {
-    intelligenceSnapshot: {
-      views: {
-        dataQuality: { current7dUsableEventCount },
-      },
-    },
-  };
+function weeklySignalScenario(usableCount: number, rawCount: number) {
+  const db = openDatabase(":memory:");
+  try {
+    const proposalCount = Math.max(1, usableCount);
+    const records = Array.from({ length: proposalCount }, (_, index) => ({
+      ...makeRecord(),
+      proposalId: `ERC-${4626 + index}`,
+      number: 4626 + index,
+      sourcePath: `ERCS/erc-${4626 + index}.md`,
+      canonicalUrl: `https://example.test/ERC-${4626 + index}`,
+    }));
+    insertSnapshot(db, records);
+    const report = buildWeeklyReport(db, new Date("2026-06-12T12:00:00.000Z"));
+    assert.ok(report);
+
+    const usable = Array.from({ length: usableCount }, (_, index) => makeChangeEvent(index + 1, `usable-${index + 1}`, {
+      proposalId: `ERC-${4626 + index}`,
+      sourcePath: `ERCS/erc-${4626 + index}.md`,
+      canonicalUrl: `https://example.test/ERC-${4626 + index}`,
+      changeSemanticType: "normative_specification",
+      occurredAtSource: "git_commit",
+      timestampConfidence: "high",
+    }));
+    const unusable = Array.from({ length: Math.max(0, rawCount - usableCount) }, (_, index) => makeChangeEvent(index + 101, `unusable-${index + 1}`, {
+      proposalId: `ERC-${4626 + (index % proposalCount)}`,
+      sourcePath: `ERCS/erc-${4626 + (index % proposalCount)}.md`,
+      canonicalUrl: `https://example.test/ERC-${4626 + (index % proposalCount)}`,
+      changeSemanticType: "unknown",
+      occurredAtSource: "fallback_detected_at",
+      timestampConfidence: "low",
+    }));
+    setReportEvents(report, [...usable, ...unusable]);
+
+    const html = generateWeeklyHtml(report);
+    const visibleHtml = visibleReportHtml(html);
+    const api = JSON.parse(html.match(/<script type="application\/json" id="technology-platform-api">([\s\S]*?)<\/script>/)?.[1] ?? "{}");
+    return { report, html, visibleHtml, api };
+  } finally {
+    db.close();
+  }
 }
 
 function canonicalQualityFixture(input: {

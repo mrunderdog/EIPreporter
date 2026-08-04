@@ -44,6 +44,15 @@ const SEP = " · ";
 const WEEKLY_USABLE_EVENT_CONFIDENCE_THRESHOLD = 0.6;
 
 type ReportMode = "normal" | "partial" | "incident";
+type WeeklySignalMode = "empty" | "single" | "multiple" | "non_ranking";
+
+type WeeklySignalCopy = {
+  mode: WeeklySignalMode;
+  metricLabel: string;
+  metricValue: string;
+  summaryText: string;
+  rankingEnabled: boolean;
+};
 
 type DiagnosticSummaryRow = {
   sourceName: string;
@@ -216,7 +225,7 @@ export function generateWeeklyQualityJson(report: WeeklyRadarReport, html = gene
     qualityCheck("topic-section-exclusivity", topicSectionExclusivity(embeddedApi, visibleHtml), "fail", "topic sections", "same topic is rendered in one executive category"),
     qualityCheck("topic-description-template", topicDescriptionTemplateValid(visibleHtml), "fail", "topic narratives", "topic-specific templates are not mixed"),
     qualityCheck("comment-scope-label-consistency", commentScopeLabelConsistency(visibleHtml), "fail", "comment labels", "scope and window are explicit"),
-    qualityCheck("cover-singular-plural-consistency", coverSingularPluralConsistency(report, embeddedApi, visibleHtml), "fail", "cover signal label", "single/invalid signal uses singular non-ranking wording"),
+    qualityCheck("cover-singular-plural-consistency", coverSingularPluralConsistency(report, embeddedApi, visibleHtml), "fail", coverSingularPluralObserved(embeddedApi, visibleHtml), "canonical weekly signal mode and non-ranking state match usable/ranking quality", coverSingularPluralAffectedIds(embeddedApi)),
     qualityCheck("product-q1-development-landscape", productQ1DevelopmentLandscape(embeddedApi, visibleHtml), "fail", "Technology Landscape", "8 domains with 7d/30d/180d meaningful signals"),
     qualityCheck("product-q2-developer-attention", productQ2DeveloperAttention(embeddedApi, visibleHtml), "fail", "Developer Attention", "raw/valid/analyzed discussion activity separated"),
     qualityCheck("product-q3-long-vs-recent", productQ3LongVsRecent(embeddedApi, visibleHtml), "fail", "period comparison", "180d, 30d, 7d are separately visible"),
@@ -631,11 +640,57 @@ function finalHtmlSemanticValidation(visibleHtml: string): boolean {
     && !/토론을 분석했습니다/.test(visibleHtml);
 }
 
+function buildWeeklySignalCopy(input: {
+  usableCount: number;
+  rawCount: number;
+  weeklyRankingValidity?: string;
+}): WeeklySignalCopy {
+  const usableCount = Math.max(0, Number(input.usableCount) || 0);
+  const rawCount = Math.max(0, Number(input.rawCount) || 0);
+  const rankingValid = isWeeklyRankingReliable(input.weeklyRankingValidity);
+  const metricLabel = "확인된 주간 신호";
+  const metricValue = `${usableCount}건`;
+  if (usableCount === 0) {
+    return {
+      mode: "empty",
+      metricLabel,
+      metricValue,
+      summaryText: "최근 7일 확인 가능한 의미 변화가 없습니다.",
+      rankingEnabled: false,
+    };
+  }
+  if (!rankingValid || input.weeklyRankingValidity === "invalid") {
+    return {
+      mode: "non_ranking",
+      metricLabel,
+      metricValue,
+      summaryText: `최근 7일 확인된 의미 변화는 ${usableCount}건입니다. 데이터 품질 기준에 따라 주간 순위는 제공하지 않습니다.`,
+      rankingEnabled: false,
+    };
+  }
+  if (usableCount === 1) {
+    return {
+      mode: "single",
+      metricLabel,
+      metricValue,
+      summaryText: "최근 7일 확인된 의미 변화는 1건입니다.",
+      rankingEnabled: false,
+    };
+  }
+  return {
+    mode: "multiple",
+    metricLabel,
+    metricValue,
+    summaryText: `최근 7일 확인된 의미 변화는 ${usableCount}건입니다.`,
+    rankingEnabled: true,
+  };
+}
+
 function weeklyRankingValidityRendering(report: WeeklyRadarReport, visibleHtml: string): boolean {
   const invalid = report.ethereumTechRadar.historicalInputDiagnostics?.timestampQuality?.weeklyRankingValidity === "invalid";
   if (!invalid) return true;
   return /확인된 주간 신호/.test(visibleHtml)
-    && /주간 개발 순위를 산정하지 않았습니다|주간 개발 순위에서 제외했습니다/.test(visibleHtml)
+    && /주간 개발 순위를 산정하지 않았습니다|주간 개발 순위에서 제외했습니다|주간 순위는 제공하지 않습니다/.test(visibleHtml)
     && !/이번 주 주요 개발 주제/.test(visibleHtml)
     && !/가장 활발한 개발 주제|Top 3|Top 1/.test(visibleHtml);
 }
@@ -779,11 +834,74 @@ function commentScopeLabelConsistency(visibleHtml: string): boolean {
 
 function coverSingularPluralConsistency(report: WeeklyRadarReport, embeddedApi: unknown, visibleHtml: string): boolean {
   const dashboard = dashboardFromApi(embeddedApi);
-  const count = dashboard?.dataQuality?.current7dUsableEventCount ?? selectFrontPageTopics(buildTechnologyAtlas(report)).length;
-  const invalid = report.ethereumTechRadar.historicalInputDiagnostics?.timestampQuality?.weeklyRankingValidity === "invalid";
-  if (invalid || count === 0) return /확인된 주간 신호|유효 신호 없음|신호 없음/.test(visibleHtml) && !/이번 주 주요 개발 주제|주요 신호들|Top signals/i.test(visibleHtml);
-  if (count === 1) return /확인된 주간 신호|단일 신호/.test(visibleHtml) && !/이번 주 주요 개발 주제|주요 신호들|Top signals/i.test(visibleHtml);
-  return /이번 주 주요 개발 주제/.test(visibleHtml);
+  void report;
+  if (!dashboard?.dataQuality || !dashboard.weeklySignalCopy) return false;
+  const usableCount = Number(dashboard.dataQuality.current7dUsableEventCount ?? 0);
+  const rawCount = Number(dashboard.dataQuality.current7dRawEventCount ?? 0);
+  const weeklyRankingValidity = dashboard.dataQuality.weeklyRankingValidity;
+  const expected = buildWeeklySignalCopy({ usableCount, rawCount, weeklyRankingValidity });
+  const copy = dashboard.weeklySignalCopy;
+  const cover = weeklySignalAttrs(visibleHtml, "report-cover dashboard-cover");
+  const executive = weeklySignalAttrs(visibleHtml, "executive-stack");
+  const structuralModeValid = usableCount === 1
+    ? (copy.mode === "single" || copy.mode === "non_ranking") && copy.rankingEnabled === false
+    : weeklyRankingValidity === "invalid"
+      ? (copy.mode === "non_ranking" || (usableCount === 0 && copy.mode === "empty")) && copy.rankingEnabled === false
+      : usableCount >= 2
+        ? copy.mode === "multiple" && copy.rankingEnabled === true
+        : copy.mode === "empty" && copy.rankingEnabled === false;
+  return structuralModeValid
+    && JSON.stringify(copy) === JSON.stringify(expected)
+    && cover.mode === copy.mode
+    && executive.mode === copy.mode
+    && cover.rankingEnabled === copy.rankingEnabled
+    && executive.rankingEnabled === copy.rankingEnabled
+    && cover.usableCount === usableCount
+    && executive.usableCount === usableCount
+    && visibleHtml.includes(`<div data-weekly-signal-cover-metric><span>${escapeHtml(copy.metricLabel)}</span><b>${escapeHtml(copy.metricValue)}</b></div>`)
+    && visibleHtml.includes(`data-executive-weekly-usable>${escapeHtml(copy.metricValue)}</b>`);
+}
+
+function coverSingularPluralObserved(embeddedApi: unknown, visibleHtml: string): string {
+  const dashboard = dashboardFromApi(embeddedApi);
+  const usableCount = Number(dashboard?.dataQuality?.current7dUsableEventCount ?? 0);
+  const rawCount = Number(dashboard?.dataQuality?.current7dRawEventCount ?? 0);
+  const weeklyRankingValidity = dashboard?.dataQuality?.weeklyRankingValidity ?? "unknown";
+  const expected = buildWeeklySignalCopy({ usableCount, rawCount, weeklyRankingValidity });
+  const copy = dashboard?.weeklySignalCopy;
+  const renderedCoverLabel = visibleHtml.match(/<div data-weekly-signal-cover-metric><span>([^<]+)<\/span><b>[^<]+<\/b><\/div>/)?.[1] ?? "missing";
+  const renderedCoverSummary = visibleHtml.match(/<p class="cover-weekly-summary">([^<]+)<\/p>/)?.[1] ?? "missing";
+  return JSON.stringify({
+    usableCount,
+    rawCount,
+    weeklyRankingValidity,
+    renderedCoverLabel,
+    renderedCoverSummary,
+    expectedMode: expected.mode,
+    renderedMode: copy?.mode ?? "missing",
+    rankingEnabled: copy?.rankingEnabled ?? null,
+    coverAttrs: weeklySignalAttrs(visibleHtml, "report-cover dashboard-cover"),
+    executiveAttrs: weeklySignalAttrs(visibleHtml, "executive-stack"),
+  });
+}
+
+function coverSingularPluralAffectedIds(embeddedApi: unknown): string[] {
+  const dashboard = dashboardFromApi(embeddedApi);
+  const ids = stringList(dashboard?.dataQuality?.usableEventIds);
+  return ids.length ? ids : ["cover"];
+}
+
+function weeklySignalAttrs(visibleHtml: string, className: string): { mode?: string; rankingEnabled?: boolean; usableCount?: number } {
+  const escapedClass = escapeRegExpForHtml(className);
+  const tag = visibleHtml.match(new RegExp(`<[^>]+class="${escapedClass}"[^>]*>`))?.[0] ?? "";
+  const mode = tag.match(/data-weekly-signal-mode="([^"]+)"/)?.[1];
+  const ranking = tag.match(/data-weekly-signal-ranking="([^"]+)"/)?.[1];
+  const usable = tag.match(/data-weekly-signal-usable="([^"]+)"/)?.[1];
+  return {
+    mode,
+    rankingEnabled: ranking === undefined ? undefined : ranking === "true",
+    usableCount: usable === undefined ? undefined : Number(usable),
+  };
 }
 
 function dashboardFromApi(embeddedApi: unknown) {
@@ -1818,7 +1936,10 @@ export const __qualityTestHooks = {
   finalGoldenFixtureDateScope,
   finalGoldenObserved,
   finalTechnologyMapCanonicalConsistency,
+  buildWeeklySignalCopy,
+  coverSingularPluralAffectedIds,
   coverSingularPluralConsistency,
+  coverSingularPluralObserved,
   goldenFixtureInputHash,
   inputSnapshotHash,
   qualityCheck,
@@ -2203,8 +2324,13 @@ function buildDashboard(report: WeeklyRadarReport, atlas: TechnologyAtlas) {
     implementationEvidenceCoverage: coverage.allAnalysisCoverage.implementationEvidenceConfirmed,
     sourceMissingClaimCount: 0,
   };
+  const weeklySignalCopy = buildWeeklySignalCopy({
+    usableCount: dataQuality.current7dUsableEventCount,
+    rawCount: dataQuality.current7dRawEventCount,
+    weeklyRankingValidity: dataQuality.weeklyRankingValidity,
+  });
   const longTermTop3 = focusTopics.slice(0, 3);
-  const weeklyTop3 = isWeeklyRankingReliable(dataQuality.weeklyRankingValidity) ? weeklyTopics.filter((topic) => !longTermTop3.some((item) => item.topicId === topic.topicId)).slice(0, 3) : [];
+  const weeklyTop3 = weeklySignalCopy.rankingEnabled ? weeklyTopics.filter((topic) => !longTermTop3.some((item) => item.topicId === topic.topicId)).slice(0, 3) : [];
   const attentionTop3 = developerAttention.activity.slice(0, 3).map((item) => ({
     topicId: item.proposalId,
     nameKo: `${item.proposalId} ${item.title}`,
@@ -2214,22 +2340,23 @@ function buildDashboard(report: WeeklyRadarReport, atlas: TechnologyAtlas) {
   }));
   const executivePulse = {
     dataQuality,
-    executiveAbstract: executiveAbstract({ dataQuality, focusTopics, weeklyTop3, attentionTop3, aa, kgld }),
-    bottomLine: bottomLineStatements({ dataQuality, focusTopics, attentionTop3, kgld }),
+    weeklySignalCopy,
+    executiveAbstract: executiveAbstract({ dataQuality, weeklySignalCopy, focusTopics, weeklyTop3, attentionTop3, aa, kgld }),
+    bottomLine: bottomLineStatements({ dataQuality, weeklySignalCopy, focusTopics, attentionTop3, kgld }),
     whatChanged: {
-      confirmedSpecificationChanges: usableCurrent7d.length === 0 ? "확인 가능한 의미 변화 없음" : `${usableCurrent7d.length}건의 확인된 의미 변화`,
+      confirmedSpecificationChanges: weeklySignalCopy.summaryText,
       magiciansActivity: attentionTop3,
     },
     confidenceLimits: [
       { label: "Long-term standards direction", level: "medium", reason: "관찰 대상 내 180일 명세 이력은 유효합니다." },
-      { label: "Weekly specification trend", level: isWeeklyRankingReliable(dataQuality.weeklyRankingValidity) ? "medium" : "low", reason: weeklySpecificationTrendReason(dataQuality) },
+      { label: "Weekly specification trend", level: weeklySignalCopy.rankingEnabled ? "medium" : "low", reason: weeklySpecificationTrendReason(dataQuality) },
       { label: "Magicians activity", level: "medium", reason: "최근 post metadata는 수집됐지만 relevance classification은 미완료입니다." },
       { label: "Discussion meaning", level: "unavailable", reason: "검증된 토론 insight가 없습니다." },
       { label: "Implementation progress", level: "unavailable", reason: "implementation source adapter가 수집 대상이 아닙니다." },
     ],
     longTermFocusTop3: longTermTop3,
     weeklyDevelopmentTop3: weeklyTop3,
-    weeklyDevelopmentDisabledReason: dataQuality.weeklyRankingValidity === "invalid" ? "최근 7일 usable event 비율이 50% 미만이어서 주간 개발 순위를 비활성화했습니다." : "",
+    weeklyDevelopmentDisabledReason: weeklySignalCopy.rankingEnabled ? "" : weeklySignalCopy.summaryText,
     developerAttentionTop3: attentionTop3,
     aaPulse: aa.summary,
     kgldPulse: kgld.summary,
@@ -2242,6 +2369,7 @@ function buildDashboard(report: WeeklyRadarReport, atlas: TechnologyAtlas) {
     accountAbstraction: aa,
     kgldWatch: kgld,
     dataQuality,
+    weeklySignalCopy,
   };
 }
 
@@ -2268,6 +2396,7 @@ function usableEventSignalAccepted(event: ChangeEvent): boolean {
 
 function executiveAbstract(input: {
   dataQuality: ReturnType<typeof buildDashboard>["dataQuality"];
+  weeklySignalCopy: WeeklySignalCopy;
   focusTopics: ReturnType<typeof topicDashboardItem>[];
   weeklyTop3: ReturnType<typeof topicDashboardItem>[];
   attentionTop3: Array<{ nameKo: string; proposalIds: string[]; rawPostCount?: number }>;
@@ -2277,9 +2406,7 @@ function executiveAbstract(input: {
   const longNames = input.focusTopics.slice(0, 3).map((topic) => topic.nameKo).join(", ") || "장기 흐름 미확인";
   const weekly = input.weeklyTop3.length
     ? `${input.weeklyTop3.map((topic) => topic.nameKo).join(", ")}에서 확인된 주간 의미 변화가 있습니다.`
-    : input.dataQuality.weeklyRankingValidity === "invalid"
-      ? "최근 7일 변경 이벤트는 주간 순위에 사용할 만큼 충분히 검증되지 않았습니다."
-      : "이번 주 확인된 의미 변화는 제한적입니다.";
+    : input.weeklySignalCopy.summaryText;
   const attention = input.attentionTop3.length
     ? `${input.attentionTop3.map((topic) => topic.nameKo).join(", ")} 관련 Magicians 활동이 관찰됐습니다.`
     : "검증 가능한 최근 Magicians 활동은 제한적입니다.";
@@ -2298,6 +2425,7 @@ function executiveAbstract(input: {
 
 function bottomLineStatements(input: {
   dataQuality: ReturnType<typeof buildDashboard>["dataQuality"];
+  weeklySignalCopy: WeeklySignalCopy;
   focusTopics: ReturnType<typeof topicDashboardItem>[];
   attentionTop3: Array<{ nameKo: string; proposalIds: string[]; rawPostCount?: number }>;
   kgld: ReturnType<typeof kgldDashboard>;
@@ -2307,9 +2435,7 @@ function bottomLineStatements(input: {
   const kgld = input.kgld.groups.research_now.map((item) => item.proposalId).join(", ") || "즉시 연구 항목 없음";
   return [
     `관찰 대상 내 장기 표준 개발은 ${focus} 흐름에 집중되어 있습니다.`,
-    input.dataQuality.current7dUsableEventCount === 0
-      ? "최근 7일에는 발생 시각과 의미가 모두 확인된 명세 변화가 없어 주간 개발 순위를 산정하지 않았습니다."
-      : `최근 7일 확인된 의미 변화는 ${input.dataQuality.current7dUsableEventCount}건입니다.`,
+    input.weeklySignalCopy.summaryText,
     `Magicians 활동은 ${attention} 순으로 확인됐고, KGLD는 ${kgld}를 우선 연구 대상으로 둡니다.`,
   ];
 }
@@ -3151,26 +3277,22 @@ function kgldDashboard(atlas: TechnologyAtlas) {
 
 function renderDashboardCover(report: WeeklyRadarReport, dashboard: ReturnType<typeof buildDashboard>): string {
   const quality = dashboard.dataQuality;
-  const weeklySignalLabel = quality.weeklyRankingValidity === "invalid" || quality.current7dUsableEventCount <= 1
-    ? "확인된 주간 신호"
-    : "이번 주 주요 개발 주제";
-  const weeklySignalValue = quality.current7dUsableEventCount === 0
-    ? "신호 없음"
-    : `${quality.current7dUsableEventCount}건`;
+  const weeklyCopy = dashboard.weeklySignalCopy;
   const scopeSubtitle = quality.implementationEvidenceCoverage === 0
     ? "EIP/ERC 명세와 Ethereum Magicians 활동을 중심으로 한 Ethereum 표준 개발 관찰 보고서"
     : "EIP/ERC 명세, Ethereum Magicians 활동, 확인된 구현 근거를 함께 보는 표준 개발 관찰 보고서";
-  return `<section class="report-cover dashboard-cover">
+  return `<section class="report-cover dashboard-cover" data-weekly-signal-mode="${escapeHtml(weeklyCopy.mode)}" data-weekly-signal-ranking="${String(weeklyCopy.rankingEnabled)}" data-weekly-signal-usable="${quality.current7dUsableEventCount}">
     <div>
       <p class="eyebrow">Ethereum Development Intelligence Dashboard v1</p>
       <h1>Ethereum 개발 인텔리전스</h1>
       <p class="cover-lead">${escapeHtml(scopeSubtitle)}</p>
+      <p class="cover-weekly-summary">${escapeHtml(weeklyCopy.summaryText)}</p>
       <p>${dashboard.executivePulse.bottomLine.slice(0, 2).map(escapeHtml).join(" ")}</p>
     </div>
     <div class="cover-facts">
       <div><span>분석 기간</span><b>${escapeHtml(formatDate(report.trendPeriod.from))}~${escapeHtml(formatDate(report.trendPeriod.to))}</b></div>
       <div><span>관찰 대상 내 180일 이력</span><b>${escapeHtml(quality.coverage180d === "valid" ? "유효" : "제한적")}</b></div>
-      <div><span>${escapeHtml(weeklySignalLabel)}</span><b>${escapeHtml(weeklySignalValue)}</b></div>
+      <div data-weekly-signal-cover-metric><span>${escapeHtml(weeklyCopy.metricLabel)}</span><b>${escapeHtml(weeklyCopy.metricValue)}</b></div>
       <div><span>상세 데이터 품질</span><b><a href="#data-quality">Evidence Quality</a></b></div>
     </div>
   </section>`;
@@ -3178,11 +3300,12 @@ function renderDashboardCover(report: WeeklyRadarReport, dashboard: ReturnType<t
 
 function renderExecutivePulse(dashboard: ReturnType<typeof buildDashboard>): string {
   const weekly = dashboard.executivePulse.weeklyDevelopmentTop3;
+  const weeklyCopy = dashboard.weeklySignalCopy;
   return `<div class="section-head"><h2>Executive Pulse</h2><p>관찰 대상 내 결론, 실제 변화, 의미, KGLD action, 한계를 분리합니다.</p></div>
-  ${dashboard.dataQuality.weeklyRankingValidity === "invalid" ? `<p class="notice">확인된 주간 신호만 표시합니다. 발생일 미확정 변화 ${dashboard.dataQuality.current7dFallbackEventCount}건과 변경 유형 미확정 ${dashboard.dataQuality.unknownSemanticEventCount}건은 주간 개발 순위에서 제외했습니다.</p>` : ""}
-  <div class="executive-stack">
+  ${weeklyCopy.rankingEnabled ? "" : `<p class="notice">${escapeHtml(weeklyCopy.summaryText)} 발생일 미확정 변화 ${dashboard.dataQuality.current7dFallbackEventCount}건과 변경 유형 미확정 ${dashboard.dataQuality.unknownSemanticEventCount}건은 주간 개발 순위에서 제외했습니다.</p>`}
+  <div class="executive-stack" data-weekly-signal-mode="${escapeHtml(weeklyCopy.mode)}" data-weekly-signal-ranking="${String(weeklyCopy.rankingEnabled)}" data-weekly-signal-usable="${dashboard.dataQuality.current7dUsableEventCount}">
     <article class="executive-abstract"><h3>Bottom Line</h3>${dashboard.executivePulse.bottomLine.map((line) => `<p>${escapeHtml(line)}</p>`).join("")}</article>
-    <article><h3>이번 주 관찰 신호</h3><div class="two-col"><div><h4>Specification change</h4><p>${escapeHtml(dashboard.executivePulse.whatChanged.confirmedSpecificationChanges)}</p></div><div><h4>Magicians activity</h4><p>${dashboard.executivePulse.whatChanged.magiciansActivity.map((item) => `${proposalLink(item.proposalIds[0] ?? "")} ${item.rawPostCount ?? 0} posts`).join(" · ") || "최근 활동 없음"}</p></div></div></article>
+    <article><h3>이번 주 관찰 신호</h3><div class="two-col"><div><h4>${escapeHtml(weeklyCopy.metricLabel)}</h4><p><b data-executive-weekly-usable>${escapeHtml(weeklyCopy.metricValue)}</b> ${escapeHtml(weeklyCopy.summaryText)}</p></div><div><h4>Magicians activity</h4><p>${dashboard.executivePulse.whatChanged.magiciansActivity.map((item) => `${proposalLink(item.proposalIds[0] ?? "")} ${item.rawPostCount ?? 0} posts`).join(" · ") || "최근 활동 없음"}</p></div></div></article>
     <article><h3>Why It Matters</h3><div class="why-grid">${dashboard.executivePulse.longTermFocusTop3.slice(0, 3).map((topic) => `<div><b>${escapeHtml(topic.nameKo)}</b><p>${linkProposalText(topic.problemKo)}</p><p class="muted">Implementation, Activation, Adoption 근거는 미수집입니다.</p></div>`).join("")}</div></article>
     <article><h3>KGLD Actions</h3><ul><li>ERC-8328 event field와 KGLD 로그 구조를 비교합니다.</li><li>ERC-8330 가격 기준시각, 출처, 정정 방식을 비교합니다.</li><li>ERC-8161은 구현 근거가 확인될 때까지 적용 판단을 보류합니다.</li></ul></article>
     <article><h3>Confidence & Limits</h3><div class="source-coverage-grid">${dashboard.executivePulse.confidenceLimits.map((item) => `<div><span>${escapeHtml(item.label)}</span><b>${escapeHtml(item.level)}</b><em>${escapeHtml(item.reason)}</em></div>`).join("")}</div></article>
@@ -3198,7 +3321,7 @@ function renderTechnologyLandscape(dashboard: ReturnType<typeof buildDashboard>)
   const max = Math.max(1, ...domains.map((domain) => domain.meaningful180dProposals));
   return `<div class="section-head"><h2>Technology Landscape</h2><p>8개 기술 영역을 7d, 30d, 180d 기간과 근거 종류별로 살펴봅니다.</p></div>
   ${dashboardControls(domains)}
-  <p class="muted" data-filter-summary>기간 180d · 근거 Specification · 전체 Domain</p><p class="empty is-hidden" data-landscape-empty>현재 필터 조건에 해당하는 기술 영역이 없습니다.</p>
+  <p class="muted" data-filter-summary>기간 180d · 근거 Specification · 전체 Domain</p><p class="muted" data-landscape-weekly-usable>최근 7일 의미 변화 합계 ${escapeHtml(dashboard.weeklySignalCopy.metricValue)}</p><p class="empty is-hidden" data-landscape-empty>현재 필터 조건에 해당하는 기술 영역이 없습니다.</p>
   <div class="atlas-chart-frame"><div class="landscape-bars">${domains.map((domain) => `<div class="landscape-bar" data-landscape-bar data-domain="${escapeHtml(domain.domainId)}" data-7d="${domain.meaningful7dProposals}" data-30d="${domain.meaningful30dProposals}" data-180d="${domain.meaningful180dProposals}"><b>${escapeHtml(domain.nameKo)}</b><span><i style="width:${roundPercent(domain.meaningful180dProposals / max)}%"></i></span><em data-period-value data-7d="${domain.meaningful7dProposals}" data-30d="${domain.meaningful30dProposals}" data-180d="${domain.meaningful180dProposals}">${domain.meaningful180dProposals}</em></div>`).join("")}</div></div>
   <div class="atlas-domain-grid">${domains.map((domain) => `<article class="atlas-domain-card" data-landscape-card data-domain="${escapeHtml(domain.domainId)}" data-statuses="${escapeHtml(domain.statusSet.join(" "))}" data-aa="${domain.domainId === "accounts-wallets"}" data-kgld="${domain.domainId === "tokens-finance" || domain.domainId === "identity-compliance"}" data-search="${escapeHtml(domain.searchText.toLowerCase())}">
     <h3>${escapeHtml(domain.nameKo)}</h3><p>${escapeHtml(domain.descriptionKo)}</p>
@@ -4092,10 +4215,16 @@ function signalQualityPayload(report: WeeklyRadarReport, atlas: TechnologyAtlas)
     current7dRawEventCount: recent.length,
     current7dConfirmedEventCount: confirmed.length,
     current7dUsableEventCount: usable.length,
+    weeklyUsableCount: usable.length,
     usableEventIds: usable.map(reportEventKey),
     current7dFallbackEventCount: fallback.length,
     current7dFallbackRatio: recent.length ? fallback.length / recent.length : 0,
     semanticChangeCounts: semanticCounts,
+    weeklySignalCopy: buildWeeklySignalCopy({
+      usableCount: usable.length,
+      rawCount: recent.length,
+      weeklyRankingValidity: usable.length / Math.max(1, recent.length) >= 0.5 ? "reliable" : "invalid",
+    }),
     editorialOnlyExcluded,
     frontPageTopics: selectFrontPageTopics(atlas).map((item) => ({ topic: item.topic, priority: item.priority, proposalIds: item.proposals })),
     frontPageSignals: frontPageSignals(report, atlas),
