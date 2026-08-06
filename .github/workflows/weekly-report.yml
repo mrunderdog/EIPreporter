@@ -4,6 +4,7 @@ on:
   schedule:
     - cron: "0 0 * * 1"
   workflow_dispatch:
+  pull_request:
 
 permissions:
   contents: read
@@ -11,6 +12,8 @@ permissions:
 jobs:
   weekly-report:
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
     env:
       GITHUB_TOKEN: ${{ github.token }}
       TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
@@ -186,4 +189,111 @@ jobs:
           ' "$quality_path"
 
       - name: Send weekly report to Telegram
+        if: ${{ github.ref == 'refs/heads/main' && github.event_name != 'pull_request' }}
         run: npm run send:weekly:existing -- --report-path reports/weekly-${{ steps.report-date.outputs.report_date }}.html
+
+      - name: Configure GitHub Pages
+        if: ${{ github.ref == 'refs/heads/main' && github.event_name != 'pull_request' }}
+        uses: actions/configure-pages@v5
+
+      - name: Prepare GitHub Pages site
+        if: ${{ github.ref == 'refs/heads/main' && github.event_name != 'pull_request' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          report_path="reports/weekly-${{ steps.report-date.outputs.report_date }}.html"
+
+          test -s "$report_path"
+          rm -rf _site
+          mkdir -p _site
+          cp "$report_path" _site/index.html
+          touch _site/.nojekyll
+          test -s "_site/index.html"
+
+          node - <<'NODE'
+          const fs = require("fs");
+          const path = require("path");
+
+          const htmlPath = path.join("_site", "index.html");
+          const html = fs.readFileSync(htmlPath, "utf8");
+          const linkPattern = /\b(?:href|src)=["']([^"']+)["']/gi;
+          const missing = [];
+          const forbiddenLinks = [];
+          const relativeAssets = new Set();
+
+          for (const match of html.matchAll(linkPattern)) {
+            const raw = match[1].trim();
+            if (
+              !raw ||
+              raw.startsWith("#") ||
+              /^(?:mailto:|tel:|data:|javascript:)/i.test(raw)
+            ) {
+              continue;
+            }
+
+            if (/^(?:file:\/\/|https?:\/\/(?:localhost|127\.0\.0\.1)(?::|\/|$))/i.test(raw)) {
+              forbiddenLinks.push(raw);
+            }
+
+            if (raw.startsWith("/") || /^https?:/i.test(raw)) {
+              continue;
+            }
+
+            const assetPath = raw.split(/[?#]/, 1)[0];
+            if (!assetPath) continue;
+            relativeAssets.add(assetPath);
+          }
+
+          for (const asset of relativeAssets) {
+            const sourcePath = path.normalize(path.join("reports", asset));
+            const sitePath = path.normalize(path.join("_site", asset));
+
+            if (!sourcePath.startsWith(`reports${path.sep}`) || !sitePath.startsWith(`_site${path.sep}`)) {
+              missing.push(`${asset}: invalid relative path`);
+              continue;
+            }
+
+            if (!fs.existsSync(sourcePath)) {
+              missing.push(asset);
+              continue;
+            }
+
+            fs.mkdirSync(path.dirname(sitePath), { recursive: true });
+            fs.copyFileSync(sourcePath, sitePath);
+          }
+
+          if (missing.length > 0) {
+            console.error(`Missing relative assets: ${missing.join(", ")}`);
+            process.exit(1);
+          }
+
+          if (forbiddenLinks.length > 0) {
+            console.error(`Report contains forbidden local links: ${forbiddenLinks.join(", ")}`);
+            process.exit(1);
+          }
+
+          console.log(`Prepared _site with ${relativeAssets.size} relative asset(s).`);
+          NODE
+
+      - name: Upload GitHub Pages artifact
+        if: ${{ github.ref == 'refs/heads/main' && github.event_name != 'pull_request' }}
+        uses: actions/upload-pages-artifact@v4
+        with:
+          path: _site
+
+  deploy-pages:
+    runs-on: ubuntu-latest
+    needs: weekly-report
+    if: ${{ github.ref == 'refs/heads/main' && github.event_name != 'pull_request' }}
+    permissions:
+      contents: read
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Deploy GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4
