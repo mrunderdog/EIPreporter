@@ -87,7 +87,7 @@ test("HTML keeps watchlist context out of the main Atlas IA", () => {
   assert.match(html, /Proposal 근거 appendix/);
   assert.doesNotMatch(html, /Proposal Directory/);
   assert.doesNotMatch(html, /DATA COLLECTION DEGRADED/);
-  assert.match(html, /이번 주 관찰 신호/);
+  assert.match(html, /이번 주 공식 저장소 반영/);
   assert.doesNotMatch(html, /채택 근거:<\/b> 확인 불가/);
   assert.doesNotMatch(html, /이번 실행에서 구현 또는 외부 참조 근거가 수집되지 않았습니다/);
   assert.doesNotMatch(html, /현재 관찰 신호는 논의와 모멘텀 기반으로 유지됩니다/);

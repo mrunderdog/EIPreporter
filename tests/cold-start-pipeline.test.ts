@@ -77,7 +77,7 @@ test("report:html renders from canonical snapshot without collecting again", () 
     assert.match(result.stdout, /Render source: canonical snapshot/);
     assert.match(result.stdout, /networkRequests=0/);
     assert.match(result.stdout, /inputSnapshotHash=/);
-    assert.ok(readFileSync(join(directory, "weekly-2026-08-01.html"), "utf8").includes("Ethereum Technology Atlas"));
+    assert.ok(readFileSync(join(directory, "weekly-2026-08-01.html"), "utf8").includes("Ethereum Standards Weekly - 2026-08-01"));
     assert.ok(readFileSync(join(directory, "weekly-2026-08-01.compact.json"), "utf8").includes("intelligenceSnapshot"));
     assert.ok(readFileSync(join(directory, "weekly-2026-08-01.quality.json"), "utf8").includes("passed"));
   } finally {
