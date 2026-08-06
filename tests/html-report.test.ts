@@ -345,6 +345,90 @@ test("writes Korean HTML as UTF-8 without mojibake", () => {
   }
 });
 
+test("parses abstract-less EIP documents when substantive body sections exist", () => {
+  const eip1Like = `---
+eip: 1
+title: EIP Purpose and Guidelines
+status: Living
+type: Meta
+---
+
+# EIP-1: EIP Purpose and Guidelines
+
+## Table of Contents
+
+- [What is an EIP?](#what-is-an-eip)
+- [EIP Work Flow](#eip-work-flow)
+
+## What is an EIP?
+
+EIP stands for Ethereum Improvement Proposal. An EIP is a design document providing information to the Ethereum community, or describing a new feature for Ethereum or its processes or environment.
+
+## EIP Work Flow
+
+The EIP process begins with a new idea for Ethereum. Each proposal should have a champion who writes the EIP using the style and format described here.
+`;
+
+  const parsed = __qualityTestHooks.parseLocalSpecificationMarkdown(eip1Like);
+
+  assert.equal(parsed.officialTitle, "EIP Purpose and Guidelines");
+  assert.equal(parsed.abstractText, null);
+  assert.equal(parsed.parseState, "body_parsed");
+  assert.match(parsed.specificationIntroText ?? "", /EIP stands for Ethereum Improvement Proposal/);
+});
+
+test("keeps abstract-less title and table-of-contents-only documents as title_only", () => {
+  const tocOnly = `---
+eip: 9999
+title: Empty Draft
+status: Draft
+---
+
+# EIP-9999: Empty Draft
+
+## Table of Contents
+
+- [Overview](#overview)
+
+## Overview
+
+- [Reference](https://example.test/reference)
+`;
+
+  const parsed = __qualityTestHooks.parseLocalSpecificationMarkdown(tocOnly);
+
+  assert.equal(parsed.officialTitle, "Empty Draft");
+  assert.equal(parsed.abstractText, null);
+  assert.equal(parsed.specificationIntroText, null);
+  assert.equal(parsed.parseState, "title_only");
+});
+
+test("preserves regular abstract specification parsing", () => {
+  const normal = `---
+eip: 4626
+title: Tokenized Vaults
+status: Final
+---
+
+# ERC-4626: Tokenized Vaults
+
+## Abstract
+
+This standard is an extension for tokenized Vaults that represent shares of a single underlying ERC-20 token.
+
+## Specification
+
+Tokenized Vaults MUST implement ERC-20 to represent shares. The vault interface exposes standardized deposit, mint, withdraw, and redeem flows.
+`;
+
+  const parsed = __qualityTestHooks.parseLocalSpecificationMarkdown(normal);
+
+  assert.equal(parsed.officialTitle, "Tokenized Vaults");
+  assert.match(parsed.abstractText ?? "", /tokenized Vaults/);
+  assert.match(parsed.specificationIntroText ?? "", /MUST implement ERC-20/);
+  assert.equal(parsed.parseState, "body_parsed");
+});
+
 test("applies exact golden fixtures only when reportAsOf and input hash match", () => {
   const fixtureA = canonicalQualityFixture({
     reportAsOf: "2026-07-31T00:00:00.000Z",

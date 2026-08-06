@@ -3073,6 +3073,7 @@ export const __qualityTestHooks = {
   goldenFixtureInputHash,
   inputSnapshotHash,
   qualityCheck,
+  parseLocalSpecificationMarkdown,
   weeklyConfidenceLimitCanonical,
   weeklySpecificationTrendReason,
   subjectRegistryMissingIdsFromPublicViews,
@@ -6658,22 +6659,33 @@ function localSpecificationEvidence(proposalId: string): {
   if (!path) return { officialTitle: null, status: null, abstractText: null, motivationText: null, specificationIntroText: null, parseState: "title_only" };
   try {
     const markdown = readFileSync(path, "utf8");
-    const frontmatter = parseSimpleFrontmatter(markdown);
-    const body = markdown.replace(/^---\r?\n[\s\S]*?\r?\n---\r?\n/, "");
-    const abstractText = markdownSection(body, "Abstract");
-    const motivationText = markdownSection(body, "Motivation");
-    const specificationIntroText = markdownSection(body, "Specification");
-    return {
-      officialTitle: frontmatter.title ?? null,
-      status: frontmatter.status ?? null,
-      abstractText,
-      motivationText,
-      specificationIntroText,
-      parseState: abstractText || motivationText || specificationIntroText ? "body_parsed" : "title_only",
-    };
+    return parseLocalSpecificationMarkdown(markdown);
   } catch {
     return { officialTitle: null, status: null, abstractText: null, motivationText: null, specificationIntroText: null, parseState: "fetch_failed" };
   }
+}
+
+function parseLocalSpecificationMarkdown(markdown: string): {
+  officialTitle: string | null;
+  status: string | null;
+  abstractText: string | null;
+  motivationText: string | null;
+  specificationIntroText: string | null;
+  parseState: "body_parsed" | "title_only";
+} {
+  const frontmatter = parseSimpleFrontmatter(markdown);
+  const body = markdown.replace(/^---\r?\n[\s\S]*?\r?\n---\r?\n/, "");
+  const abstractText = markdownSection(body, "Abstract");
+  const motivationText = markdownSection(body, "Motivation");
+  const specificationIntroText = markdownSection(body, "Specification") ?? (!abstractText ? firstSubstantiveMarkdownSection(body) : null);
+  return {
+    officialTitle: frontmatter.title ?? null,
+    status: frontmatter.status ?? null,
+    abstractText,
+    motivationText,
+    specificationIntroText,
+    parseState: abstractText || motivationText || specificationIntroText ? "body_parsed" : "title_only",
+  };
 }
 
 function localProposalMarkdownPath(proposalId: string): string | null {
@@ -6708,6 +6720,53 @@ function markdownSection(body: string, heading: string): string | null {
     .replace(/\s+/g, " ")
     .trim();
   return section ? section.slice(0, 1200) : null;
+}
+
+function firstSubstantiveMarkdownSection(body: string): string | null {
+  const headingPattern = /^#{2,3}\s+(.+?)\s*$/gm;
+  const headings = [...body.matchAll(headingPattern)];
+  for (let index = 0; index < headings.length; index += 1) {
+    const heading = headings[index]!;
+    const title = heading[1]!.replace(/\s*#+\s*$/, "").trim();
+    if (/^(table of contents|contents)$/i.test(title)) continue;
+    const start = heading.index! + heading[0].length;
+    const end = headings[index + 1]?.index ?? body.length;
+    const rawSection = body.slice(start, end);
+    if (isSubstantiveMarkdownSection(rawSection)) return cleanMarkdownSection(rawSection);
+  }
+  return null;
+}
+
+function isSubstantiveMarkdownSection(section: string): boolean {
+  const contentLines = section
+    .replace(/<!--[\s\S]*?-->/g, " ")
+    .replace(/```[\s\S]*?```/g, " ")
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter(Boolean);
+  if (contentLines.length === 0) return false;
+  const proseLines = contentLines.filter((line) => {
+    const withoutMarker = line.replace(/^[-*+]\s+/, "").replace(/^\d+\.\s+/, "").trim();
+    if (!withoutMarker) return false;
+    if (/^\[[^\]]+\]\([^)]+\)$/.test(withoutMarker)) return false;
+    if (/^<https?:\/\/[^>]+>$/.test(withoutMarker) || /^https?:\/\/\S+$/.test(withoutMarker)) return false;
+    return /[.!?。！？]/.test(withoutMarker) || withoutMarker.split(/\s+/).length >= 12;
+  });
+  if (proseLines.length === 0) return false;
+  const cleaned = cleanMarkdownSection(section);
+  return Boolean(cleaned && cleaned.length >= 80);
+}
+
+function cleanMarkdownSection(section: string): string | null {
+  const cleaned = section
+    .replace(/<!--[\s\S]*?-->/g, " ")
+    .replace(/```[\s\S]*?```/g, " ")
+    .replace(/\[[^\]]+\]\([^)]+\)/g, (value) => value.replace(/^\[|\]\([^)]+\)$/g, ""))
+    .replace(/^\s*[-*+]\s+/gm, "")
+    .replace(/^\s*\d+\.\s+/gm, "")
+    .replace(/\s+/g, " ")
+    .trim();
+  return cleaned ? cleaned.slice(0, 1200) : null;
 }
 
 function metricDictionaryForDashboard() {
