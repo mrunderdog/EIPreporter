@@ -278,6 +278,16 @@ export function generateWeeklyQualityJson(report: WeeklyRadarReport, html = gene
     qualityCheck("landscape-evidence-functional", landscapeEvidenceFunctional(html), "fail", "evidence buttons", "V2 global evidence changes specification/discussion/implementation labels"),
     qualityCheck("landscape-status-enum-consistency", landscapeStatusEnumConsistency(html), "fail", "status filter", "status options match filterable status metadata"),
     qualityCheck("landscape-filter-scope-isolation", landscapeFilterScopeIsolation(html), "fail", "filter scope", "Global Filter applies only to V2 filterable sections and leaves Evidence Quality/source snapshot unchanged"),
+    qualityCheck("dashboard-filter-period-functional", dashboardFilterPeriodFunctional(html), "fail", dashboardFilterObserved(html), "period controls update current7d/current30d/current180d values"),
+    qualityCheck("dashboard-filter-evidence-functional", dashboardFilterEvidenceFunctional(html), "fail", dashboardFilterObserved(html), "evidence filtering uses tokenized specification/discussion/implementation scopes"),
+    qualityCheck("dashboard-filter-domain-functional", dashboardFilterDomainFunctional(html), "fail", dashboardFilterObserved(html), "domain filter is backed by filterable domain metadata"),
+    qualityCheck("dashboard-filter-status-functional", dashboardFilterStatusFunctional(html), "fail", dashboardFilterObserved(html), "status filter is backed by lifecycle status metadata"),
+    qualityCheck("dashboard-filter-aa-functional", dashboardFilterAaFunctional(html), "fail", dashboardFilterObserved(html), "AA filter is backed by data-aa metadata"),
+    qualityCheck("dashboard-filter-kgld-functional", dashboardFilterKgldFunctional(html), "fail", dashboardFilterObserved(html), "KGLD filter is backed by data-kgld metadata"),
+    qualityCheck("dashboard-filter-search-functional", dashboardFilterSearchFunctional(html), "fail", dashboardFilterObserved(html), "search input filters data-search metadata"),
+    qualityCheck("dashboard-filter-reset-functional", dashboardFilterResetFunctional(html), "fail", dashboardFilterObserved(html), "reset restores period/evidence/domain/status/aa/kgld/confirmed/query/page/pageSize"),
+    qualityCheck("dashboard-filter-pagination-functional", dashboardFilterPaginationFunctional(html), "fail", dashboardFilterObserved(html), "pagination uses matched filter result indexes"),
+    qualityCheck("dashboard-filter-empty-state-functional", dashboardFilterEmptyStateFunctional(html), "fail", dashboardFilterObserved(html), "empty sections and implementation not-collected state are explicit"),
     qualityCheck("topic-drawer-data-completeness", topicDrawerDataCompleteness(embeddedApi, html), "fail", "topic drawer", "drawer reads dashboard topic data"),
     qualityCheck("focus-real-timeseries-only", focusRealTimeseriesOnly(embeddedApi, visibleHtml), "fail", "focus trend", "sparkline uses weeklyTrend or is hidden"),
     qualityCheck("focus-milestone-date-evidence", focusMilestoneDateEvidence(embeddedApi, visibleHtml), "fail", "milestones", "dated milestones have source URLs; status-only uses fallback label"),
@@ -1615,10 +1625,11 @@ function weeklySummaryLanguageConsistency(embeddedApi: unknown, visibleHtml: str
 
 function aaMetricPublicLabels(visibleHtml: string): boolean {
   const segment = visibleHtml.match(/<section class="dash-panel dash-section" id="aa-watch"[\s\S]*?<\/section>/)?.[0] ?? "";
-  return /최근 30일 명세 반영/.test(segment)
-    && /최근 30일 원문 게시물/.test(segment)
-    && /최근 확인 활동/.test(segment)
-    && !/milestone 미확인|assignment count|confirmed_zero|confirmed_value|baseline_not_linked/.test(segment);
+  const text = visibleTextOnly(segment);
+  return /최근 30일 명세 반영/.test(text)
+    && /최근 30일 원문 게시물/.test(text)
+    && /최근 확인 활동/.test(text)
+    && !/milestone 미확인|assignment count|confirmed_zero|confirmed_value|baseline_not_linked/.test(text);
 }
 
 function aaMetricPublicObserved(visibleHtml: string): string {
@@ -1721,12 +1732,12 @@ function publicInternalWordingObserved(visibleHtml: string): string {
 }
 
 function publicRenderNoObjectString(html: string): boolean {
-  const publicHtml = html.replace(/<script[\s\S]*?<\/script>/g, " ").replace(/<style[\s\S]*?<\/style>/g, " ");
+  const publicHtml = html.replace(/<script[\s\S]*?<\/script>/g, " ").replace(/<style[\s\S]*?<\/style>/g, " ").replace(/\sdata-evidence-state="[^"]*"/g, " ");
   return !/\[object Object\]|undefined|data-search="[^"]*undefined|<h3>\s*<\/h3>|<dd>\s*<\/dd>|confirmed_zero|confirmed_value|not_collected|baseline_not_linked|confirmed zero/.test(publicHtml);
 }
 
 function publicRenderNoObjectObserved(html: string): string {
-  const publicHtml = html.replace(/<script[\s\S]*?<\/script>/g, " ").replace(/<style[\s\S]*?<\/style>/g, " ");
+  const publicHtml = html.replace(/<script[\s\S]*?<\/script>/g, " ").replace(/<style[\s\S]*?<\/style>/g, " ").replace(/\sdata-evidence-state="[^"]*"/g, " ");
   const matches = publicHtml.match(/\[object Object\]|undefined|data-search="[^"]*undefined|<h3>\s*<\/h3>|<dd>\s*<\/dd>|confirmed_zero|confirmed_value|not_collected|baseline_not_linked|confirmed zero/g) ?? [];
   return JSON.stringify(matches.slice(0, 20));
 }
@@ -2690,7 +2701,87 @@ function landscapeEvidenceFunctional(html: string): boolean {
     && /data-evidence="implementation"/.test(html)
     && /state=\{period:"7d",evidence:"all"/.test(html)
     && /state\.evidence/.test(html)
-    && /d\.evidenceScope/.test(html);
+    && /evidenceScopes\(node\)/.test(html)
+    && /data-evidence-scopes="[^"]*discussion/.test(html);
+}
+
+function dashboardFilterPeriodFunctional(html: string): boolean {
+  return /data-period="7d"[\s\S]*data-period="30d"[\s\S]*data-period="180d"/.test(html)
+    && /data-c7="[^"]+"/.test(html)
+    && /data-c30="[^"]+"/.test(html)
+    && /data-c180="[^"]+"/.test(html)
+    && /periodAttr=\(\)=>state\.period==="180d"\?"c180":state\.period==="30d"\?"c30":"c7"/.test(html)
+    && /data-period-value/.test(html);
+}
+
+function dashboardFilterEvidenceFunctional(html: string): boolean {
+  return /data-evidence="specification"/.test(html)
+    && /data-evidence="discussion"/.test(html)
+    && /data-evidence="implementation"/.test(html)
+    && /data-evidence-scopes="[^"]*discussion/.test(html)
+    && /evidenceScopes\(node\)\.has\(state\.evidence\)/.test(html)
+    && /현재 구현·릴리스 근거는 수집되지 않았습니다/.test(html);
+}
+
+function dashboardFilterDomainFunctional(html: string): boolean {
+  return /data-domain-filter/.test(html)
+    && /data-domain="execution-state"/.test(html)
+    && /state\.domain!=="all"&&d\.domain!==state\.domain/.test(html);
+}
+
+function dashboardFilterStatusFunctional(html: string): boolean {
+  return /data-status-filter/.test(html)
+    && /data-status="Final"/.test(html)
+    && /state\.status!=="all"&&d\.status!==state\.status/.test(html);
+}
+
+function dashboardFilterAaFunctional(html: string): boolean {
+  return /data-aa-toggle/.test(html)
+    && /data-aa="true"/.test(html)
+    && /state\.aa&&d\.aa!=="true"/.test(html);
+}
+
+function dashboardFilterKgldFunctional(html: string): boolean {
+  return /data-kgld-toggle/.test(html)
+    && /data-kgld="true"/.test(html)
+    && /state\.kgld&&d\.kgld!=="true"/.test(html);
+}
+
+function dashboardFilterSearchFunctional(html: string): boolean {
+  return /data-proposal-search/.test(html)
+    && /data-search="[^"]*eip-8198/.test(html)
+    && /\(d\.search\|\|""\)\.toLowerCase\(\)\.includes\(state\.query\)/.test(html);
+}
+
+function dashboardFilterResetFunctional(html: string): boolean {
+  return /data-filter-reset/.test(html)
+    && /period:"7d",evidence:"all",domain:"all",status:"all",aa:false,kgld:false,confirmed:true,query:"",page:1,pageSize:12/.test(html)
+    && /data-page-size/.test(html)
+    && /s\.value="12"/.test(html);
+}
+
+function dashboardFilterPaginationFunctional(html: string): boolean {
+  return /data-page-index/.test(html)
+    && /matchedIndexes=Array\.from\(new Set\(rows\.filter\(matches\)/.test(html)
+    && /visibleIndexes=new Set\(matchedIndexes\.slice/.test(html)
+    && /탐색 결과 "\+matchedIndexes\.length\+"\건"/.test(html);
+}
+
+function dashboardFilterEmptyStateFunctional(html: string): boolean {
+  return /data-filter-scope="technology"/.test(html)
+    && /data-section-empty/.test(html)
+    && /sectionEmpty\(\)/.test(html)
+    && /data-implementation-empty/.test(html)
+    && /현재 구현·릴리스 근거는 수집되지 않았습니다/.test(html);
+}
+
+function dashboardFilterObserved(html: string): string {
+  return JSON.stringify({
+    periodAttrs: (html.match(/data-c(?:7|30|180)=/g) ?? []).length,
+    evidenceScopes: (html.match(/data-evidence-scopes=/g) ?? []).length,
+    filterScopes: (html.match(/data-filter-scope=/g) ?? []).length,
+    emptyStates: (html.match(/data-section-empty|data-implementation-empty/g) ?? []).length,
+  });
 }
 
 function landscapeStatusEnumConsistency(html: string): boolean {
@@ -4006,16 +4097,21 @@ function buildDashboardV3Presentation(view: ReturnType<typeof buildDashboardV2Vi
   const domains = view.filters.domains.map((domainId) => {
     const proposals = view.proposalExplorer.rows.filter((proposal) => proposal.domainId === domainId);
     const topics = view.topicActivityMap.points.filter((topic) => topic.domainId === domainId);
-    const spec = proposals.reduce((sum, proposal) => sum + proposal.counts.current7d, 0);
+    const spec7d = proposals.reduce((sum, proposal) => sum + proposal.counts.current7d, 0);
+    const spec30d = proposals.reduce((sum, proposal) => sum + proposal.counts.current30d, 0);
+    const spec180d = proposals.reduce((sum, proposal) => sum + proposal.counts.current180d, 0);
     const raw = proposals.filter((proposal) => current7dThreadProposalIds.has(proposal.proposalId)).reduce((sum, proposal) => sum + proposal.counts.rawPosts, 0);
     return {
       domainId,
       label: domainDisplayName(domainId),
       description: domainDescriptionForV3(domainId),
-      confirmedChanges: spec,
+      confirmedChanges: spec7d,
+      confirmedChanges7d: spec7d,
+      confirmedChanges30d: spec30d,
+      confirmedChanges180d: spec180d,
       rawPosts: raw,
       monitoredProposals: proposals.length,
-      evidenceState: topics.some((topic) => topic.evidenceState === "direct_verified") ? "confirmed" : raw > 0 ? "raw_only" : "confirmed_zero",
+      evidenceState: topics.some((topic) => topic.evidenceState === "direct_verified") ? "confirmed" : raw > 0 ? "confirmed" : "confirmed_zero",
       proposalIds: proposals.map((proposal) => proposal.proposalId),
       topicIds: topics.map((topic) => topic.topicId),
     };
@@ -4113,13 +4209,15 @@ function renderDashboardV3(p: DashboardV3Presentation): string {
           </div>
           <label>Domain<select data-domain-filter><option value="all">전체</option>${domains}</select></label>
           <label>Status<select data-status-filter><option value="all">전체</option>${statuses}</select></label>
-          <label><input type="checkbox" data-aa-toggle> AA only</label>
-          <label><input type="checkbox" data-kgld-toggle> KGLD</label>
+          <label><input type="checkbox" data-aa-toggle data-aa-filter> AA only</label>
+          <label><input type="checkbox" data-kgld-toggle data-kgld-filter> KGLD</label>
           <label><input type="checkbox" data-confirmed-toggle checked> Confirmed only</label>
         </div>
       </details>
       <button class="dash-reset" type="button" data-filter-reset>초기화</button>
-      <output class="dash-result-count" aria-live="polite" data-result-count>${view.proposalExplorer.rows.length}개 결과</output>
+      <output class="dash-result-count" aria-live="polite" data-result-count>탐색 결과 ${view.proposalExplorer.rows.length}건</output>
+      <p class="dash-filter-help">필터는 기술 영역, Magicians 활동, AA·KGLD 및 Proposal 탐색에 적용됩니다. 보고서 총계와 출처·품질 정보는 변경하지 않습니다.</p>
+      <p class="dash-empty dash-filter-empty" data-implementation-empty hidden>현재 구현·릴리스 근거는 수집되지 않았습니다.</p>
     </section>
     <main class="dash-main">
       ${renderDashboardV3Direction(p)}
@@ -4195,7 +4293,8 @@ function renderDashboardV3WeeklyBrief(p: DashboardV3Presentation): string {
   return `<section class="dash-section dash-weekly-grid" id="weekly-brief">
     <article class="dash-panel dash-weekly-panel">
       <div class="dash-section-head"><span>요약</span><h2>이번 주 공식 저장소 반영</h2><p>최근 7일 동안 공식 EIP/ERC 저장소에 새로 반영된 전체 ${repositoryAdditionCount}건입니다. Proposal의 최초 작성일과 저장소 반영일은 서로 다를 수 있습니다.</p></div>
-      <div class="dash-signal-list" data-weekly-signal-list data-weekly-repository-addition-list>${rows || `<p class="dash-empty">최근 기간 공식 저장소 신규 반영이 없습니다.</p>`}</div>
+      <div class="dash-signal-list" data-weekly-signal-list data-weekly-repository-addition-list data-filter-excluded="fixed-weekly">${rows || `<p class="dash-empty">최근 기간 공식 저장소 신규 반영이 없습니다.</p>`}</div>
+      <p class="dash-caption">이 고정 weekly fact section은 Global Filter 적용 제외입니다.</p>
       <details class="dash-compact-details"><summary>내용 수정 이벤트 ${pendingSemanticCount}건</summary><p>내용 수정 이벤트는 변경 의미가 아직 분류되지 않아 핵심 변화 비교에서 제외했습니다.</p></details>
     </article>
     <aside class="dash-panel dash-interpretation">
@@ -4304,34 +4403,36 @@ function renderDashboardV3TrendRow(label: string, key: string, weeks: Array<Reco
 }
 
 function renderDashboardV3Technology(p: DashboardV3Presentation): string {
-  const maxSpec = Math.max(1, ...p.domains.map((domain) => domain.confirmedChanges));
+  const maxSpec = Math.max(1, ...p.domains.map((domain) => domain.confirmedChanges180d));
   const maxRaw = Math.max(1, ...p.domains.map((domain) => domain.rawPosts));
-  const rows = p.domains.map((domain) => `<button type="button" class="dash-domain-row dash-filterable" data-kind="domain" data-open-domain="${escapeHtml(domain.domainId)}" data-domain="${escapeHtml(domain.domainId)}" data-status="all" data-aa="false" data-kgld="false" data-search="${escapeHtml(`${domain.label} ${domain.proposalIds.join(" ")}`.toLowerCase())}" data-evidence-state="${escapeHtml(evidenceStateLabelV3(domain.evidenceState))}" data-evidence-scope="specification">
+  const rows = p.domains.map((domain) => `<button type="button" class="dash-domain-row dash-filterable" data-kind="domain" data-open-domain="${escapeHtml(domain.domainId)}" data-domain="${escapeHtml(domain.domainId)}" data-status="all" data-aa="false" data-kgld="false" data-search="${escapeHtml(`${domain.label} ${domain.proposalIds.join(" ")}`.toLowerCase())}" data-evidence-state="${escapeHtml(domain.evidenceState)}" data-evidence-label="${escapeHtml(evidenceStateLabelV3(domain.evidenceState))}" data-evidence-scopes="${escapeHtml(domainEvidenceScopes(domain.confirmedChanges7d, domain.rawPosts).join(" "))}" data-c7="${domain.confirmedChanges7d}" data-c30="${domain.confirmedChanges30d}" data-c180="${domain.confirmedChanges180d}" data-period-count="${domain.confirmedChanges7d}" data-posts7d="${domain.rawPosts}" data-posts30d="${domain.rawPosts}" data-posts180d="${domain.rawPosts}">
     <span class="dash-domain-copy"><strong>${escapeHtml(domain.label)}</strong><small>${escapeHtml(domain.description)}</small></span>
-    <span class="dash-domain-stats"><em>공식 저장소 신규 반영 ${domain.confirmedChanges}건</em><em>원문 게시물 ${domain.rawPosts}건</em><em>관찰 Proposal ${domain.monitoredProposals}건</em></span>
+    <span class="dash-domain-stats"><em><span data-period-label>최근 7일</span> 명세 활동 <b data-period-value>${domain.confirmedChanges7d}</b>건</em><em>원문 게시물 <b data-post-value>${domain.rawPosts}</b>건</em><em>관찰 Proposal ${domain.monitoredProposals}건</em></span>
     <span class="dash-dual-bars"><i style="--w:${Math.round(domain.confirmedChanges / maxSpec * 100)}%"></i><i class="dash-discussion-bar" style="--w:${Math.round(domain.rawPosts / maxRaw * 100)}%"></i></span>
     <span class="dash-state">${escapeHtml(evidenceStateLabelV3(domain.evidenceState))}</span>
   </button>`).join("");
-  return `<section class="dash-panel dash-section" id="technology-pulse">
+  return `<section class="dash-panel dash-section" id="technology-pulse" data-filter-scope="technology">
     <div class="dash-section-head"><span>기술 영역</span><h2>기술 영역별 움직임</h2><p>선택한 기간의 공식 저장소 신규 문서 반영과 Magicians 원문 게시물을 비교합니다.</p></div>
     <div class="dash-legend"><span><i class="dash-spec-dot"></i>공식 저장소 신규 문서 반영</span><span><i class="dash-discussion-dot"></i>원문 게시물</span></div>
     <div class="dash-domain-list">${rows}</div>
+    <p class="dash-empty" data-section-empty hidden>선택한 조건에 맞는 기술 영역 활동이 없습니다.</p>
   </section>`;
 }
 
 function renderDashboardV3Magicians(p: DashboardV3Presentation): string {
   const view = p.view;
   const maxPosts = Math.max(1, ...p.activeThreads.map((thread) => thread.rawPostCount));
-  const cards = p.activeThreads.map((thread, index) => `<article class="dash-thread-card dash-filterable ${index === 0 ? "dash-thread-featured" : ""}" ${filterAttrsForProposalId(view, thread.proposalId)} data-kind="proposal" data-evidence-id="${escapeHtml(thread.evidenceIds[0] ?? thread.sourcePath)}" data-source-path="${escapeHtml(thread.sourcePath)}">
+  const cards = p.activeThreads.map((thread, index) => `<article class="dash-thread-card dash-filterable ${index === 0 ? "dash-thread-featured" : ""}" ${filterAttrsForProposalId(view, thread.proposalId, ["discussion"])} data-kind="proposal" data-evidence-id="${escapeHtml(thread.evidenceIds[0] ?? thread.sourcePath)}" data-source-path="${escapeHtml(thread.sourcePath)}">
     <div class="dash-thread-head"><span class="dash-proposal-pill">${escapeHtml(thread.proposalId)}</span><span class="dash-state">${escapeHtml(collectionLabel(thread.collectionStatus))}</span></div>
     <h3>${escapeHtml(thread.title)}</h3>
     <div class="dash-thread-metrics"><strong>${thread.rawPostCount}<span>원문 게시물</span></strong><em>${thread.uniqueParticipantCount}명 참여</em><em>최근 게시 ${escapeHtml(shortDate(thread.latestActivityAt))}</em></div>
     <div class="dash-wide-bar"><i style="--w:${Math.round(thread.rawPostCount / maxPosts * 100)}%"></i></div>
     <a href="${escapeHtml(thread.sourceUrl)}" target="_blank" rel="noopener noreferrer" class="dash-inline-link">Magicians 열기 ${iconSvg("external")}</a>
   </article>`).join("");
-  return `<section class="dash-panel dash-section" id="magicians">
+  return `<section class="dash-panel dash-section" id="magicians" data-filter-scope="discussion">
     <div class="dash-section-head"><span>Magicians</span><h2>수집된 원문 활동</h2><p>최근 7일 원문 게시물 ${view.developerActivity.rawPostCount}건과 활성 thread ${view.developerActivity.activeThreadCount}개를 표시합니다.</p></div>
     <div class="dash-thread-list">${cards || `<p class="dash-empty">활동 thread 없음</p>`}</div>
+    <p class="dash-empty" data-section-empty hidden>선택한 조건에 맞는 Magicians 활동이 없습니다.</p>
     <details class="dash-compact-details"><summary>수집 한계 보기</summary><p>thread URL · 전체 게시물 수집 · 유효 기술 post 미분류 상태에서는 토론 방향 판단 불가 · 분석된 insight ${view.developerActivity.analyzedInsightCount}건.</p></details>
     <details class="dash-compact-details"><summary>일별 원문 활동 보기</summary>${renderDashboardV3Heatmap(p)}</details>
   </section>`;
@@ -4349,7 +4450,7 @@ function renderDashboardV3Lifecycle(p: DashboardV3Presentation): string {
   const total = Math.max(1, p.lifecycle.reduce((sum, stage) => sum + stage.count, 0));
   const segments = p.lifecycle.filter((stage) => stage.count > 0).map((stage) => `<button type="button" class="dash-life-segment dash-life-${slugifyTopic(stage.stage)}" data-life-stage="${escapeHtml(stage.sourceStage)}" style="--w:${(stage.count / total * 100).toFixed(2)}%" title="${escapeHtml(stage.stage)} ${stage.count}"><span>${escapeHtml(stage.stage)}</span><strong>${stage.count}</strong></button>`).join("");
   const legend = p.lifecycle.map((stage) => `<button type="button" data-life-stage="${escapeHtml(stage.sourceStage)}" class="${stage.count === 0 ? "dash-muted-stage" : ""}">${escapeHtml(stage.stage)} <strong>${stage.count}</strong></button>`).join("");
-  return `<section class="dash-section dash-panel" id="lifecycle">
+  return `<section class="dash-section dash-panel" id="lifecycle" data-filter-scope="lifecycle">
     <div class="dash-section-head"><span>진행 단계</span><h2>Proposal 진행 단계</h2><p>분류·탐색 대상 ${p.view.proposalExplorer.rows.length}건의 단계 분포입니다. 새 문서 반영은 단계 변경으로 표시하지 않습니다.</p></div>
     <div class="dash-life-stack" data-lifecycle-stack>${segments}</div>
     <div class="dash-life-legend">${legend}</div>
@@ -4360,17 +4461,18 @@ function renderDashboardV3Lifecycle(p: DashboardV3Presentation): string {
 function renderDashboardV3AA(p: DashboardV3Presentation): string {
   const specActive = p.aaTracks.filter((track) => track.specification30d?.state === "confirmed_value").length;
   const discussionActive = p.aaTracks.filter((track) => track.discussion30d?.state === "confirmed_value").length;
-  const recent = p.aaRecent.map((track) => `<button type="button" class="dash-aa-row" data-open-aa="${escapeHtml(track.id)}">
+  const recent = p.aaRecent.map((track) => `<button type="button" class="dash-aa-row dash-filterable" data-kind="aa" data-open-aa="${escapeHtml(track.id)}" data-domain="accounts-wallets" data-status="all" data-aa="true" data-kgld="false" data-search="${escapeHtml(`${track.name} ${track.proposalIds.join(" ")}`.toLowerCase())}" data-evidence-state="${escapeHtml(canonicalMetricEvidenceState(track.specification30d?.state ?? track.discussion30d?.state))}" data-evidence-scopes="${escapeHtml(aaTrackEvidenceScopes(track).join(" "))}">
     <strong>${escapeHtml(track.name)}</strong>
     <span>최근 30일 명세 반영: ${escapeHtml(metricStateText(track.specification30d, "없음"))}</span>
     <span>최근 30일 원문 게시물: ${escapeHtml(metricStateText(track.discussion30d, "없음"))}</span>
     <em>최근 확인 활동: ${escapeHtml(aaRecentActivityText(track))}</em>
   </button>`).join("");
   const all = p.aaTracks.map((track) => `<tr><th><button type="button" data-open-aa="${escapeHtml(track.id)}">${escapeHtml(track.name)}</button></th><td>${escapeHtml(track.proposalIds.join(", ") || "기준 Proposal 미연결")}</td><td>${escapeHtml(metricStateText(track.specification30d, "없음"))}</td><td>${escapeHtml(metricStateText(track.discussion30d, "없음"))}</td><td>미수집</td></tr>`).join("");
-  return `<section class="dash-panel dash-section" id="aa-watch">
+  return `<section class="dash-panel dash-section" id="aa-watch" data-filter-scope="aa">
     <div class="dash-section-head"><span>AA</span><h2>Account Abstraction</h2><p>ERC-4337 EntryPoint 기준 Proposal과 최근 확인 신호를 분리해서 봅니다.</p></div>
     <dl class="dash-watch-metrics"><div><dt>관찰 Track</dt><dd>${p.aaTracks.length}개</dd></div><div><dt>최근 30일 명세 변화 Track</dt><dd>${specActive}개</dd></div><div><dt>최근 30일 토론 활동 Track</dt><dd>${discussionActive}개</dd></div><div><dt>구현 근거</dt><dd>미수집</dd></div></dl>
     <div class="dash-aa-list">${recent || `<p class="dash-empty">최근 AA track signal 없음</p>`}</div>
+    <p class="dash-empty" data-section-empty hidden>선택한 조건에 맞는 AA 활동이 없습니다.</p>
     <details class="dash-compact-details"><summary>AA 수집 기준 보기</summary><p>최근 7일 확인된 명세 변화 · 최근 30일 확인된 명세 변화 · 최근 30일 Magicians 원문 게시물 · 구현 출처는 현재 수집 대상이 아닙니다. 원문 게시물은 유효 기술 post 미분류 상태에서는 토론 방향 판단 불가로 표시합니다.</p></details>
     <details class="dash-compact-details"><summary>12개 AA Track 전체 보기</summary><div class="dash-local-scroll"><table class="dash-compact-table"><thead><tr><th>Track</th><th>기준 Proposal</th><th>최근 30일 명세 반영</th><th>최근 30일 원문 게시물</th><th>구현 근거</th></tr></thead><tbody>${all}</tbody></table></div></details>
   </section>`;
@@ -4379,7 +4481,7 @@ function renderDashboardV3AA(p: DashboardV3Presentation): string {
 function renderDashboardV3Kgld(p: DashboardV3Presentation): string {
   const cards = p.kgldItems.map((rawItem) => {
     const item = kgldPresentationItem(rawItem);
-    return `<article class="dash-kgld-card dash-filterable" data-kind="proposal" data-open-proposal="${escapeHtml(item.proposalId)}" data-domain="kgld" data-status="all" data-aa="false" data-kgld="true" data-search="${escapeHtml(`${item.proposalId} ${item.title} ${item.action}`.toLowerCase())}" data-evidence-state="${escapeHtml(item.evidenceLevel)}" data-evidence-scope="specification" tabindex="0">
+    return `<article class="dash-kgld-card dash-filterable" data-kind="proposal" data-open-proposal="${escapeHtml(item.proposalId)}" data-domain="kgld" data-status="all" data-aa="false" data-kgld="true" data-search="${escapeHtml(`${item.proposalId} ${item.title} ${item.action}`.toLowerCase())}" data-evidence-state="${escapeHtml(canonicalEvidenceStateFromLabel(item.evidenceLevel))}" data-evidence-scopes="specification" tabindex="0">
     <span class="dash-proposal-pill">${escapeHtml(item.proposalId)}</span>
     <h3>${escapeHtml(item.title)}</h3>
     <dl>
@@ -4395,38 +4497,41 @@ function renderDashboardV3Kgld(p: DashboardV3Presentation): string {
     <p class="dash-caption">${escapeHtml(item.limitation)}</p>
   </article>`;
   }).join("");
-  return `<section class="dash-panel dash-section" id="kgld-watch">
+  return `<section class="dash-panel dash-section" id="kgld-watch" data-filter-scope="kgld">
     <div class="dash-section-head"><span>KGLD</span><h2>KGLD Watch</h2><p>관련 Proposal만 action card로 표시합니다. 영향 업무, 권고 조치, 재검토 조건, 근거 수준을 분리해 확인합니다.</p></div>
     ${cards || `<p class="dash-empty">KGLD 관련 item 없음</p>`}
+    <p class="dash-empty" data-section-empty hidden>선택한 조건에 맞는 KGLD 관련 항목이 없습니다.</p>
     <p class="dash-caption">즉시 조사 ${p.view.kgldBoard.groups.research_now.length} · 계속 관찰 ${p.view.kgldBoard.groups.monitor.length} · 현재 조치 없음 ${p.view.kgldBoard.groups.no_action.length}</p>
   </section>`;
 }
 
 function renderDashboardV3Explorer(p: DashboardV3Presentation): string {
-  const rows = p.view.proposalExplorer.rows
+  const explorerRows = p.view.proposalExplorer.rows
     .slice()
-    .sort((a, b) => b.counts.current7d - a.counts.current7d || String(b.latestChangeAt ?? "").localeCompare(String(a.latestChangeAt ?? "")) || compareProposalIds(a.proposalId, b.proposalId))
-    .map((proposal, index) => `<tr class="dash-filterable dash-explorer-row" data-kind="proposal" data-explorer-row data-page-index="${index}" ${filterAttrsForProposal(proposal)} data-evidence-id="${escapeHtml(proposal.evidenceIds[0] ?? proposal.sourcePath)}" data-source-path="${escapeHtml(proposal.sourcePath)}">
+    .sort((a, b) => b.counts.current7d - a.counts.current7d || String(b.latestChangeAt ?? "").localeCompare(String(a.latestChangeAt ?? "")) || compareProposalIds(a.proposalId, b.proposalId));
+  const rows = explorerRows
+    .map((proposal, index) => `<tr class="dash-filterable dash-explorer-row" data-kind="proposal" data-explorer-row data-page-index="${index}" data-open-proposal="${escapeHtml(proposal.proposalId)}" ${filterAttrsForProposal(proposal)} data-evidence-id="${escapeHtml(proposal.evidenceIds[0] ?? proposal.sourcePath)}" data-source-path="${escapeHtml(proposal.sourcePath)}">
       <td><span class="dash-proposal-pill">${escapeHtml(proposal.proposalId)}</span></td>
       <td><strong>${escapeHtml(proposal.title)}</strong></td>
       <td>${escapeHtml(publicDomainForProposal(proposal.proposalId, proposal.domainId, proposal.topic, proposal.title).labelKo)}</td>
       <td>${escapeHtml(proposal.status)}</td>
-      <td>${proposal.counts.current7d}</td>
+      <td><span data-period-value>${proposal.counts.current7d}</span></td>
       <td>${escapeHtml(discussionCountTextKo(proposal.counts.rawPosts))}</td>
       <td>${renderProposalTagsV3(proposal)}</td>
       <td><button type="button" data-open-proposal="${escapeHtml(proposal.proposalId)}">자세히</button></td>
     </tr>`).join("");
-  const cards = p.view.proposalExplorer.rows.map((proposal, index) => `<button type="button" class="dash-mobile-proposal dash-filterable dash-explorer-card" data-kind="proposal" data-explorer-row data-page-index="${index}" data-open-proposal="${escapeHtml(proposal.proposalId)}" ${filterAttrsForProposal(proposal)} data-evidence-id="${escapeHtml(proposal.evidenceIds[0] ?? proposal.sourcePath)}" data-source-path="${escapeHtml(proposal.sourcePath)}">
+  const cards = explorerRows.map((proposal, index) => `<button type="button" class="dash-mobile-proposal dash-filterable dash-explorer-card" data-kind="proposal" data-explorer-row data-page-index="${index}" data-open-proposal="${escapeHtml(proposal.proposalId)}" ${filterAttrsForProposal(proposal)} data-evidence-id="${escapeHtml(proposal.evidenceIds[0] ?? proposal.sourcePath)}" data-source-path="${escapeHtml(proposal.sourcePath)}">
     <span><b>${escapeHtml(proposal.proposalId)}</b><em>${escapeHtml(proposal.status)}</em></span>
     <strong>${escapeHtml(proposal.title)}</strong>
-    <small>${escapeHtml(publicDomainForProposal(proposal.proposalId, proposal.domainId, proposal.topic, proposal.title).labelKo)} · 신규 문서 반영 ${proposal.counts.current7d}건 · ${escapeHtml(discussionCountTextKo(proposal.counts.rawPosts))}</small>
+    <small>${escapeHtml(publicDomainForProposal(proposal.proposalId, proposal.domainId, proposal.topic, proposal.title).labelKo)} · <span data-period-label>최근 7일</span> 명세 활동 <span data-period-value>${proposal.counts.current7d}</span>건 · ${escapeHtml(discussionCountTextKo(proposal.counts.rawPosts))}</small>
     <span class="dash-tag-row">${renderProposalTagsV3(proposal)}</span>
   </button>`).join("");
-  return `<section class="dash-section dash-panel" id="explorer">
+  return `<section class="dash-section dash-panel" id="explorer" data-filter-scope="explorer">
     <div class="dash-section-head"><span>Proposal 탐색</span><h2>Proposal Explorer</h2><p>이번 보고서 관찰 대상 Proposal ${p.view.proposalExplorer.rows.length}건을 검색, 필터, 페이지 단위로 탐색합니다.</p></div>
     <div class="dash-page-size"><label>Page size<select data-page-size><option value="12" selected>12</option><option value="24">24</option><option value="48">48</option></select></label></div>
     <div class="dash-explorer-table-wrap"><table class="dash-explorer-table"><thead><tr><th>Proposal</th><th>Title</th><th>기술 영역</th><th>Status</th><th>신규 문서 반영</th><th>원문 게시물</th><th>Tags</th><th>Detail</th></tr></thead><tbody>${rows}</tbody></table></div>
     <div class="dash-mobile-explorer">${cards}</div>
+    <p class="dash-empty" data-section-empty hidden>현재 조건에 맞는 Proposal이 없습니다.</p>
     <div class="dash-pager"><button type="button" data-page-prev>이전</button><span data-page-state>1 / 1 page</span><button type="button" data-page-next>다음</button></div>
   </section>`;
 }
@@ -4873,6 +4978,59 @@ function evidenceStateLabelV3(state: string): string {
   return state || "확인 불가";
 }
 
+function canonicalEvidenceStateFromLabel(value: string | null | undefined): string {
+  const text = String(value ?? "").toLowerCase();
+  if (/confirmed[_ -]?zero|확인된 변화 없음/.test(text)) return "confirmed_zero";
+  if (/partial|제한적/.test(text)) return "partial";
+  if (/unavailable|확인 불가/.test(text)) return "unavailable";
+  if (/unclassified|분류 대기/.test(text)) return "unclassified";
+  if (/not[_ -]?collected|미수집/.test(text)) return "not_collected";
+  if (/unknown/.test(text)) return "unclassified";
+  return "confirmed";
+}
+
+function canonicalMetricEvidenceState(state: string | null | undefined): string {
+  if (state === "confirmed_value") return "confirmed";
+  if (state === "confirmed_zero") return "confirmed_zero";
+  if (state === "not_collected") return "not_collected";
+  if (state === "baseline_not_linked") return "unavailable";
+  return canonicalEvidenceStateFromLabel(state);
+}
+
+function evidenceScopesFromIds(ids: string[] = [], fallback: string[] = ["specification"]): string[] {
+  const scopes = new Set<string>();
+  for (const id of ids) {
+    if (/^(post|thread):/i.test(id)) scopes.add("discussion");
+    else if (/^(implementation|release|client|adoption):/i.test(id)) scopes.add("implementation");
+    else if (/^(event|spec|proposal):/i.test(id)) scopes.add("specification");
+  }
+  for (const item of fallback) scopes.add(item);
+  return [...scopes].filter((scope) => ["specification", "discussion", "implementation", "mixed"].includes(scope));
+}
+
+function domainEvidenceScopes(specCount: number, rawPosts: number): string[] {
+  const scopes = new Set<string>();
+  if (specCount > 0) scopes.add("specification");
+  if (rawPosts > 0) scopes.add("discussion");
+  if (!scopes.size) scopes.add("specification");
+  return [...scopes];
+}
+
+function aaTrackEvidenceScopes(track: { specification30d?: { state?: string }; discussion30d?: { state?: string } }): string[] {
+  const scopes = new Set<string>();
+  if (track.specification30d?.state === "confirmed_value" || track.specification30d?.state === "confirmed_zero") scopes.add("specification");
+  if (track.discussion30d?.state === "confirmed_value" || track.discussion30d?.state === "confirmed_zero") scopes.add("discussion");
+  if (!scopes.size) scopes.add("specification");
+  return [...scopes];
+}
+
+function periodDataAttrs(counts: { current7d?: number; current30d?: number; current180d?: number }): string {
+  const c7 = Number(counts.current7d ?? 0);
+  const c30 = Number(counts.current30d ?? c7);
+  const c180 = Number(counts.current180d ?? c30);
+  return `data-c7="${c7}" data-c30="${c30}" data-c180="${c180}" data-period-count="${c7}"`;
+}
+
 function trendAxisLabels(weeks: Array<Record<string, number | string>>): string {
   return weeks.filter((_, index) => index % 4 === 0 || index === weeks.length - 1).map((week) => `<span>${escapeHtml(String(week.weekStart ?? "").slice(5, 10))}</span>`).join("");
 }
@@ -4934,8 +5092,17 @@ function renderDashboardV3Script(): string {
     const root=document.querySelector(".dash-v3"); if(!root) return;
     const $$=(s,r=document)=>Array.from(r.querySelectorAll(s)); const $=(s,r=document)=>r.querySelector(s);
     const state={period:"7d",evidence:"all",domain:"all",status:"all",aa:false,kgld:false,confirmed:true,query:"",page:1,pageSize:12}; let lastFocus=null;
-    function matches(node){const d=node.dataset;if(state.domain!=="all"&&d.domain!==state.domain)return false;if(state.status!=="all"&&d.status!==state.status)return false;if(state.aa&&d.aa!=="true")return false;if(state.kgld&&d.kgld!=="true")return false;if(state.confirmed&&d.evidenceState&&/partial|unavailable|제한적 수집|확인 불가/.test(d.evidenceState))return false;if(state.evidence!=="all"&&d.evidenceScope!==state.evidence)return false;if(state.query&&!(d.search||"").includes(state.query))return false;return true;}
-    function apply(){const filterable=$$(".dash-filterable");filterable.forEach((n)=>{n.hidden=!matches(n);});const rows=$$("[data-explorer-row]");const matchedIndexes=Array.from(new Set(rows.filter(matches).map((n)=>Number(n.dataset.pageIndex)).filter((n)=>Number.isFinite(n)))).sort((a,b)=>a-b);const pages=Math.max(1,Math.ceil(matchedIndexes.length/state.pageSize));state.page=Math.min(Math.max(1,state.page),pages);const visibleIndexes=new Set(matchedIndexes.slice((state.page-1)*state.pageSize,state.page*state.pageSize));rows.forEach((n)=>{n.hidden=!matches(n)||!visibleIndexes.has(Number(n.dataset.pageIndex));});$$("[data-result-count]").forEach((n)=>n.textContent=matchedIndexes.length+"개 결과");$$("[data-page-state]").forEach((n)=>n.textContent=state.page+" / "+pages+" page");$$("[data-page-prev]").forEach((b)=>b.disabled=state.page<=1);$$("[data-page-next]").forEach((b)=>b.disabled=state.page>=pages);const active=(state.evidence!=="all"?1:0)+(state.domain!=="all"?1:0)+(state.status!=="all"?1:0)+(state.aa?1:0)+(state.kgld?1:0)+(state.confirmed?1:0);$$("[data-filter-count]").forEach((n)=>{n.hidden=active===0;n.textContent=String(active);});}
+    const periodLabels={"7d":"최근 7일","30d":"최근 30일","180d":"최근 180일"};
+    const periodKey=()=>state.period==="180d"?"current180d":state.period==="30d"?"current30d":"current7d";
+    const periodAttr=()=>state.period==="180d"?"c180":state.period==="30d"?"c30":"c7";
+    function tokenSet(value){return new Set(String(value||"").split(/\\s+/).map((item)=>item.trim()).filter(Boolean));}
+    function confirmedAllowed(value){return ["confirmed","confirmed_zero"].includes(String(value||"confirmed"));}
+    function periodCount(node){const d=node.dataset;return Number(d[periodAttr()]??d.periodCount??0)||0;}
+    function evidenceScopes(node){const scopes=tokenSet(node.dataset.evidenceScopes||node.dataset.evidenceScope||"specification");if(scopes.size>1)scopes.add("mixed");return scopes;}
+    function matches(node){const d=node.dataset;if(state.domain!=="all"&&d.domain!==state.domain&&d.domain!=="mixed")return false;if(state.status!=="all"&&d.status!==state.status&&d.status!=="all")return false;if(state.aa&&d.aa!=="true")return false;if(state.kgld&&d.kgld!=="true")return false;if(state.confirmed&&!confirmedAllowed(d.evidenceState))return false;if(state.evidence!=="all"&&!evidenceScopes(node).has(state.evidence))return false;if(state.query&&!(d.search||"").toLowerCase().includes(state.query))return false;return true;}
+    function updatePeriodText(){const label=periodLabels[state.period]||"최근 7일";$$("[data-period-label]").forEach((n)=>n.textContent=label);$$("[data-period-value]").forEach((n)=>{const host=n.closest(".dash-filterable");if(host)n.textContent=String(periodCount(host));});$$(".dash-filterable").forEach((n)=>{n.dataset.periodCount=String(periodCount(n));});}
+    function sectionEmpty(){ $$("[data-filter-scope]").forEach((section)=>{const items=$$(".dash-filterable",section);const visible=items.filter((item)=>!item.hidden);const empty=$("[data-section-empty]",section);if(empty)empty.hidden=visible.length>0 || items.length===0;}); const anyImplementation=$$(".dash-filterable").some((n)=>evidenceScopes(n).has("implementation")&&matches(n)); $$("[data-implementation-empty]").forEach((n)=>n.hidden=state.evidence!=="implementation"||anyImplementation); }
+    function apply(){updatePeriodText();const filterable=$$(".dash-filterable");filterable.forEach((n)=>{n.hidden=!matches(n);});const rows=$$("[data-explorer-row]");const matchedIndexes=Array.from(new Set(rows.filter(matches).map((n)=>Number(n.dataset.pageIndex)).filter((n)=>Number.isFinite(n)))).sort((a,b)=>a-b);const pages=Math.max(1,Math.ceil(matchedIndexes.length/state.pageSize));state.page=Math.min(Math.max(1,state.page),pages);const visibleIndexes=new Set(matchedIndexes.slice((state.page-1)*state.pageSize,state.page*state.pageSize));rows.forEach((n)=>{n.hidden=!matches(n)||!visibleIndexes.has(Number(n.dataset.pageIndex));});$$("[data-result-count]").forEach((n)=>n.textContent="탐색 결과 "+matchedIndexes.length+"건");$$("[data-page-state]").forEach((n)=>n.textContent=state.page+" / "+pages+" page");$$("[data-page-prev]").forEach((b)=>b.disabled=state.page<=1);$$("[data-page-next]").forEach((b)=>b.disabled=state.page>=pages);const active=(state.evidence!=="all"?1:0)+(state.domain!=="all"?1:0)+(state.status!=="all"?1:0)+(state.aa?1:0)+(state.kgld?1:0)+(state.confirmed!==true?1:0)+(state.query?1:0)+(state.period!=="7d"?1:0);$$("[data-filter-count]").forEach((n)=>{n.hidden=active===0;n.textContent=String(active);});sectionEmpty();}
     $$("[data-period]").forEach((b)=>b.addEventListener("click",()=>{state.period=b.dataset.period||"7d";$$("[data-period]").forEach((x)=>x.setAttribute("aria-pressed",String(x===b)));state.page=1;apply();}));
     $$("[data-evidence]").forEach((b)=>b.addEventListener("click",()=>{state.evidence=b.dataset.evidence||"all";$$("[data-evidence]").forEach((x)=>x.setAttribute("aria-pressed",String(x===b)));state.page=1;apply();}));
     $$("[data-domain-filter]").forEach((s)=>s.addEventListener("change",()=>{state.domain=s.value;state.page=1;apply();}));
@@ -4947,7 +5114,7 @@ function renderDashboardV3Script(): string {
     $$("[data-page-size]").forEach((s)=>s.addEventListener("change",()=>{state.pageSize=Number(s.value)||12;state.page=1;apply();}));
     $$("[data-page-prev]").forEach((b)=>b.addEventListener("click",()=>{state.page-=1;apply();}));$$("[data-page-next]").forEach((b)=>b.addEventListener("click",()=>{state.page+=1;apply();}));
     $$("[data-life-stage]").forEach((b)=>b.addEventListener("click",()=>{state.status=b.dataset.lifeStage||"all";state.page=1;$$("[data-status-filter]").forEach((s)=>s.value=state.status);apply();document.getElementById("explorer")?.scrollIntoView({block:"start",behavior:"smooth"});}));
-    $$("[data-filter-reset]").forEach((b)=>b.addEventListener("click",()=>{Object.assign(state,{period:"7d",evidence:"all",domain:"all",status:"all",aa:false,kgld:false,confirmed:true,query:"",page:1,pageSize:12});$$("[data-period]").forEach((x)=>x.setAttribute("aria-pressed",String(x.dataset.period==="7d")));$$("[data-evidence]").forEach((x)=>x.setAttribute("aria-pressed",String(x.dataset.evidence==="all")));$$(".dash-toolbar select").forEach((s)=>{s.value=s.matches("[data-page-size]")?"12":"all";});$$(".dash-toolbar input").forEach((i)=>{if(i.type==="checkbox")i.checked=i.hasAttribute("data-confirmed-toggle");else i.value="";});apply();}));
+    $$("[data-filter-reset]").forEach((b)=>b.addEventListener("click",()=>{Object.assign(state,{period:"7d",evidence:"all",domain:"all",status:"all",aa:false,kgld:false,confirmed:true,query:"",page:1,pageSize:12});$$("[data-period]").forEach((x)=>x.setAttribute("aria-pressed",String(x.dataset.period==="7d")));$$("[data-evidence]").forEach((x)=>x.setAttribute("aria-pressed",String(x.dataset.evidence==="all")));$$("select").forEach((s)=>{if(s.matches("[data-page-size]"))s.value="12";else if(s.matches("[data-domain-filter],[data-status-filter]"))s.value="all";});$$("[data-proposal-search]").forEach((i)=>{i.value="";});$$("[data-aa-toggle],[data-kgld-toggle],[data-confirmed-toggle]").forEach((i)=>{i.checked=i.hasAttribute("data-confirmed-toggle");});apply();}));
     root.addEventListener("click",(e)=>{const p=e.target.closest?.("[data-open-proposal]");if(p&&!e.target.closest("a")){lastFocus=p;openProposal(p.dataset.openProposal);return;}const d=e.target.closest?.("[data-open-domain]");if(d){lastFocus=d;openDomain(d.dataset.openDomain);return;}const a=e.target.closest?.("[data-open-aa]");if(a){lastFocus=a;openAa(a.dataset.openAa);}});
     root.addEventListener("keydown",(e)=>{if((e.key==="Enter"||e.key===" ")&&e.target.matches?.("[data-open-proposal],[data-open-domain],[data-open-aa]")){e.preventDefault();e.target.click();}});
     document.addEventListener("keydown",(e)=>{if(e.key==="Escape")closeInspector();});
@@ -5074,8 +5241,13 @@ function dashboardV2Styles(): string {
   `;
 }
 
-function filterAttrsForProposal(proposal: { domainId: string; status: string; isAA: boolean; kgldRelevance: boolean; topic: string; proposalId: string; title?: string | null; evidenceState?: string }): string {
+function filterAttrsForProposal(proposal: { domainId: string; status: string; isAA: boolean; kgldRelevance: boolean; topic: string; proposalId: string; title?: string | null; evidenceState?: string; evidenceIds?: string[]; counts?: { current7d?: number; current30d?: number; current180d?: number; rawPosts?: number } }, forcedScopes?: string[]): string {
   const audited = publicDomainForProposal(proposal.proposalId, proposal.domainId, proposal.topic, proposal.title ?? "");
+  const inferredScopes = evidenceScopesFromIds(proposal.evidenceIds ?? [], [
+    "specification",
+    Number(proposal.counts?.rawPosts ?? 0) > 0 ? "discussion" : "",
+  ].filter(Boolean));
+  const scopes = forcedScopes ?? inferredScopes;
   const searchText = [
     proposal.proposalId,
     proposal.title ?? "",
@@ -5085,16 +5257,16 @@ function filterAttrsForProposal(proposal: { domainId: string; status: string; is
     ...(audited.secondaryTags ?? []),
     ...(audited.searchTerms ?? []),
   ].join(" ").toLowerCase();
-  return `data-domain="${escapeHtml(audited.domainId)}" data-status="${escapeHtml(lifecycleStageForStatus(proposal.status))}" data-aa="${proposal.isAA}" data-kgld="${proposal.kgldRelevance}" data-search="${escapeHtml(searchText)}" data-evidence-state="${escapeHtml(evidenceStateLabelV3(proposal.evidenceState ?? "confirmed"))}" data-evidence-scope="specification"`;
+  return `data-domain="${escapeHtml(audited.domainId)}" data-status="${escapeHtml(lifecycleStageForStatus(proposal.status))}" data-aa="${proposal.isAA}" data-kgld="${proposal.kgldRelevance}" data-search="${escapeHtml(searchText)}" data-evidence-state="${escapeHtml(canonicalEvidenceStateFromLabel(proposal.evidenceState ?? "confirmed"))}" data-evidence-label="${escapeHtml(evidenceStateLabelV3(proposal.evidenceState ?? "confirmed"))}" data-evidence-scopes="${escapeHtml(scopes.join(" "))}" ${periodDataAttrs(proposal.counts ?? {})}`;
 }
 
-function filterAttrsForProposalId(view: ReturnType<typeof buildDashboardV2View>, proposalId: string): string {
+function filterAttrsForProposalId(view: ReturnType<typeof buildDashboardV2View>, proposalId: string, forcedScopes?: string[]): string {
   const proposal = view.proposalExplorer.rows.find((row) => row.proposalId === proposalId);
-  return proposal ? filterAttrsForProposal(proposal) : `data-domain="unknown" data-status="Unknown" data-aa="false" data-kgld="false" data-search="${escapeHtml(proposalId.toLowerCase())}" data-evidence-state="공식 근거 확인" data-evidence-scope="specification"`;
+  return proposal ? filterAttrsForProposal(proposal, forcedScopes) : `data-domain="unknown" data-status="Unknown" data-aa="false" data-kgld="false" data-search="${escapeHtml(proposalId.toLowerCase())}" data-evidence-state="confirmed" data-evidence-label="공식 근거 확인" data-evidence-scopes="${escapeHtml((forcedScopes ?? ["specification"]).join(" "))}" data-c7="0" data-c30="0" data-c180="0" data-period-count="0"`;
 }
 
 function filterAttrsForTopic(topic: { domainId: string; proposalIds: string[]; name: string; evidenceState: string }): string {
-  return `data-domain="${escapeHtml(topic.domainId)}" data-status="all" data-aa="${topic.proposalIds.some((id) => /^ERC-4337|EIP-7702|ERC-7579|ERC-6900|ERC-7715|ERC-7710|ERC-8286/.test(id))}" data-kgld="false" data-search="${escapeHtml(`${topic.name} ${topic.proposalIds.join(" ")}`.toLowerCase())}" data-evidence-state="${escapeHtml(evidenceStateLabelV3(topic.evidenceState))}" data-evidence-scope="specification"`;
+  return `data-domain="${escapeHtml(topic.domainId)}" data-status="all" data-aa="${topic.proposalIds.some((id) => /^ERC-4337|EIP-7702|ERC-7579|ERC-6900|ERC-7715|ERC-7710|ERC-8286/.test(id))}" data-kgld="false" data-search="${escapeHtml(`${topic.name} ${topic.proposalIds.join(" ")}`.toLowerCase())}" data-evidence-state="${escapeHtml(canonicalEvidenceStateFromLabel(topic.evidenceState))}" data-evidence-label="${escapeHtml(evidenceStateLabelV3(topic.evidenceState))}" data-evidence-scopes="specification"`;
 }
 
 function metricV2(metricId: string, value: unknown, unit: string, sourcePath: string, evidenceIds: string[], state: string, limitation: string) {
