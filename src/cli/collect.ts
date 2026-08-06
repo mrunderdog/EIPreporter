@@ -6,6 +6,7 @@ import { collectProposals } from "../collector.ts";
 import { insertSnapshot, openDatabase } from "../db.ts";
 import { assertHealthyConfiguredRepositories } from "../source-resolver.ts";
 import { buildWeeklyReportWithDiscussionPosts } from "../report.ts";
+import { collectVitalikBlogSource } from "../sources/vitalik-blog.ts";
 
 async function main(): Promise<void> {
   const args = parseArgs(process.argv.slice(2));
@@ -33,6 +34,7 @@ async function main(): Promise<void> {
         timeoutMs: readPositiveInteger(args["timeout-ms"], "--timeout-ms") ?? 5000,
       });
       if (!report) throw new Error("No report snapshot could be built after collection.");
+      report.vitalikBlog = await collectVitalikBlogSource(new Date(report.generatedAt));
       const snapshotHash = writeJson(snapshotOut, report);
       const backfill = report.ethereumTechRadar.historicalInputDiagnostics?.gitBackfillDiagnostics;
       writeJson(diagnosticsOut, {

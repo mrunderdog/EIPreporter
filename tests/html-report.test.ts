@@ -26,7 +26,7 @@ test("generates and writes the Developer Intelligence HTML report", () => {
     const html = generateWeeklyHtml(report);
     assert.match(html, /<!doctype html>/);
     assert.match(html, /<meta charset="utf-8">/);
-    assert.match(html, /Ethereum Technology Atlas/);
+    assert.match(html, /Ethereum Standards Weekly - 2026-06-12/);
     assert.match(html, /Ethereum 개발 인텔리전스/);
     assert.match(html, /Executive Pulse/);
     assert.match(html, /Technology Landscape/);
@@ -35,7 +35,7 @@ test("generates and writes the Developer Intelligence HTML report", () => {
     assert.match(html, /Account Abstraction Radar/);
     assert.doesNotMatch(html, /기술 성숙도/);
     assert.match(html, /Evidence & Data Quality/);
-    assert.match(html, /이번 주 관찰 신호/);
+    assert.match(html, /이번 주 공식 저장소 반영/);
     assert.match(html, /KGLD Technology Watch/);
     assert.match(html, /Proposal 근거 appendix/);
     assert.doesNotMatch(html, /Evolution Timeline/);
@@ -52,20 +52,20 @@ test("generates and writes the Developer Intelligence HTML report", () => {
     assert.doesNotMatch(html, /Raw Chart Data/);
     assert.doesNotMatch(html, /[湲蹂理]|쨌|�/);
     assert.doesNotMatch(html, /Current Era/);
-    assert.match(html, /class="report-cover dashboard-cover"/);
-    assert.match(html, /분석 기간/);
+    assert.match(html, /class="dash-v3"/);
+    assert.match(html, /data-period="7d"[\s\S]*data-period="30d"[\s\S]*data-period="180d"/);
     assert.match(html, /Generated/);
     const visibleShell = html
       .replace(/<style>[\s\S]*?<\/style>/, "")
       .replace(/<script type="application\/json" id="technology-platform-api">[\s\S]*?<\/script>/, "")
       .replace(/<!-- EIPreporter chart data: [\s\S]*? -->/, "")
       .replace(/<script>[\s\S]*?<\/script>/, "");
-    assert.match(html, /class="atlas-domain-grid"/);
-    assert.match(html, /class="five-lane"/);
+    assert.match(html, /class="dash-domain-list"/);
+    assert.match(html, /class="dash-life-stack"/);
     assert.doesNotMatch(html, /class="atlas-node-map"/);
-    assert.match(html, /class="section-nav"/);
+    assert.match(html, /class="dash-section-nav"/);
     assert.doesNotMatch(visibleShell, /glance-strip/);
-    assert.equal((html.match(/<nav class="section-nav"[\s\S]*?<\/nav>/)?.[0].match(/<a /g) ?? []).length, 8);
+    assert.equal((html.match(/<nav class="dash-section-nav"[\s\S]*?<\/nav>/)?.[0].match(/<a /g) ?? []).length, 9);
     assert.doesNotMatch(
       html
         .replace(/<script type="application\/json" id="technology-platform-api">[\s\S]*?<\/script>/, "")
@@ -98,10 +98,10 @@ test("generates and writes the Developer Intelligence HTML report", () => {
     assert.match(html, /@media\(max-width:1040px\)/);
     assert.match(html, /\.section-nav,script\{display:none!important\}/);
     assert.doesNotMatch(html, /chart\.umd\.min\.js/);
-    assert.match(html, /class="atlas-chart-frame"/);
+    assert.match(html, /class="dash-trend-card"/);
     assert.match(html, /Technology Landscape/);
     assert.match(html, /Developer Attention/);
-    assert.match(html, /class="atlas-chart-frame"/);
+    assert.match(html, /class="dash-trend-card"/);
     assert.doesNotMatch(html, /id="atlasTechnologyDistributionChart"/);
     const platformApi = JSON.parse(html.match(/<script type="application\/json" id="technology-platform-api">([\s\S]*?)<\/script>/)?.[1] ?? "{}");
     assert.ok(platformApi.intelligenceSnapshot);
@@ -122,7 +122,7 @@ test("generates and writes the Developer Intelligence HTML report", () => {
     assert.equal(platformApi.unclusteredProposals, undefined);
     assert.equal(platformApi.topicDiagnostics, undefined);
     assert.match(html, /ERC-4626/);
-    assert.match(html, /이번 주 관찰 신호/);
+    assert.match(html, /이번 주 공식 저장소 반영/);
     assert.doesNotMatch(html, /<canvas id="developerMomentumChart"><\/canvas>/);
     assert.doesNotMatch(html, /<canvas id="weeklyEventTypeDistributionChart"><\/canvas>/);
     assert.doesNotMatch(html, /Goldstation/);
@@ -182,7 +182,7 @@ test("generates and writes the Developer Intelligence HTML report", () => {
 
     report.chartData.weeklyEventTypeDistribution = { labels: [], data: [] };
     const emptyEventHtml = generateWeeklyHtml(report);
-    assert.match(emptyEventHtml, /이번 주 관찰 신호/);
+    assert.match(emptyEventHtml, /이번 주 공식 저장소 반영/);
     assert.doesNotMatch(
       emptyEventHtml,
       /drawSeries\("weeklyEventTypeDistributionChart",reportCharts\.weeklyEventTypeDistribution,"doughnut",false,"Event Count"\)/,
@@ -225,7 +225,7 @@ test("generates and writes the Developer Intelligence HTML report", () => {
       canonicalUrl: "https://example.test/ERC-4626",
     }];
     const signalHtml = generateWeeklyHtml(report);
-    assert.match(signalHtml, /이번 주 관찰 신호/);
+    assert.match(signalHtml, /이번 주 공식 저장소 반영/);
     assert.doesNotMatch(signalHtml, /class="top-signal"/);
     assert.doesNotMatch(signalHtml, /Recent proposal content changed; section-level diff not available\.|최근 proposal content가 변경됐으며 section-level diff는 사용할 수 없습니다\./);
     assert.doesNotMatch(signalHtml, /ERCS\/erc-4626\.md/);
@@ -574,12 +574,13 @@ test("weekly confidence limit reason uses canonical usable and raw counts when r
     const api = JSON.parse(html.match(/<script type="application\/json" id="technology-platform-api">([\s\S]*?)<\/script>/)?.[1] ?? "{}");
     const dashboard = api.intelligenceSnapshot.views;
     const expectedReason = "최근 7일 usable event는 5/27건이며, 데이터 품질 기준에 따라 주간 순위는 비활성화했습니다.";
+    const expectedPublicReason = "최근 7일 분석 반영 이벤트는 5/27건이며, 데이터 품질 기준에 따라 변화 강도 비교는 제공하지 않습니다.";
 
     assert.equal(dashboard.dataQuality.current7dRawEventCount, 27);
     assert.equal(dashboard.dataQuality.current7dUsableEventCount, 5);
     assert.equal(dashboard.dataQuality.weeklyRankingValidity, "invalid");
     assert.equal(dashboard.executivePulse.confidenceLimits.find((item: { label: string }) => item.label === "Weekly specification trend")?.reason, expectedReason);
-    assert.match(visibleHtml, new RegExp(expectedReason));
+    assert.match(visibleHtml, new RegExp(expectedPublicReason));
     assert.doesNotMatch(visibleHtml, /usable event가 0건입니다/);
     assert.equal(__qualityTestHooks.weeklyConfidenceLimitCanonical(api, visibleHtml), true);
   } finally {

@@ -4,6 +4,7 @@ import { parseArgs, resolveDatabasePath } from "../config.ts";
 import { openDatabase } from "../db.ts";
 import { validateWeeklyCollectionPreflight, writeWeeklyHtmlReport } from "../html-report.ts";
 import { buildWeeklyReport, buildWeeklyReportWithDiscussionActivity, buildWeeklyReportWithDiscussionPosts } from "../report.ts";
+import { collectVitalikBlogSource } from "../sources/vitalik-blog.ts";
 import type { WeeklyRadarReport } from "../types.ts";
 
 async function main(): Promise<void> {
@@ -41,6 +42,7 @@ async function main(): Promise<void> {
     if (!report) {
       throw new Error("스냅샷이 없습니다. 먼저 `npm run collect`를 실행하세요.");
     }
+    report.vitalikBlog = await collectVitalikBlogSource(generatedAt);
     if (args["skip-preflight"] !== true) validateWeeklyCollectionPreflight(report);
     console.log(writeWeeklyHtmlReport(report, outputDirectory, { debug: args.debug === true }));
   } finally {

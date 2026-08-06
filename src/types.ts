@@ -415,6 +415,7 @@ export type WeeklyChartData = {
 
 export type WeeklyRadarReport = {
   generatedAt: string;
+  vitalikBlog?: import("./sources/vitalik-blog.ts").VitalikBlogSourceResult | import("./sources/vitalik-blog.ts").VitalikBlogView;
   trendPeriod: {
     from: string;
     to: string;

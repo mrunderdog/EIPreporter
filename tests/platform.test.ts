@@ -99,7 +99,7 @@ test("HTML renders theme-centric intelligence IA without proposal-centric dashbo
     .replace(/<script type="application\/json" id="technology-platform-api">[\s\S]*?<\/script>/, "")
     .replace(/<!-- EIPreporter chart data: [\s\S]*? -->/, "");
 
-  assert.match(html, /Ethereum Technology Atlas/);
+  assert.match(html, /Ethereum Standards Weekly - 2026-07-20/);
   assert.match(html, /Executive Pulse/);
   assert.match(html, /Technology Landscape/);
   assert.match(html, /Focus & Progress/);
@@ -107,7 +107,7 @@ test("HTML renders theme-centric intelligence IA without proposal-centric dashbo
   assert.match(html, /Account Abstraction Radar/);
   assert.doesNotMatch(html, /기술 성숙도/);
   assert.match(html, /Evidence & Data Quality/);
-  assert.match(html, /이번 주 관찰 신호/);
+  assert.match(html, /이번 주 공식 저장소 반영/);
   assert.match(html, /KGLD Technology Watch/);
   assert.match(html, /Proposal 근거 appendix/);
   assert.doesNotMatch(html, /Evolution Timeline/);
@@ -116,7 +116,7 @@ test("HTML renders theme-centric intelligence IA without proposal-centric dashbo
   assert.doesNotMatch(html, /Implementation and Lifecycle/);
   assert.doesNotMatch(html, /Business Relevance/);
   assert.doesNotMatch(html, /Evidence and Limitations/);
-  assert.equal((html.match(/<nav class="section-nav"[\s\S]*?<\/nav>/)?.[0].match(/<a /g) ?? []).length, 8);
+  assert.equal((html.match(/<nav class="dash-section-nav"[\s\S]*?<\/nav>/)?.[0].match(/<a /g) ?? []).length, 9);
   assert.doesNotMatch(html, /DATA COLLECTION DEGRADED/);
   assert.doesNotMatch(html, /수집 신뢰도|근거 신뢰도/);
   assert.match(html, /Evidence & Data Quality/);
@@ -159,7 +159,7 @@ test("HTML keeps collection incidents out of the end-user IA", () => {
   };
   degradedReport.ethereumTechRadar.technologyPlatformLayer = buildTechnologyPlatformLayer(degradedReport);
   const degradedHtml = generateWeeklyHtml(degradedReport);
-  const degradedNav = degradedHtml.match(/<nav class="section-nav"[\s\S]*?<\/nav>/)?.[0] ?? "";
+  const degradedNav = degradedHtml.match(/<nav class="dash-section-nav"[\s\S]*?<\/nav>/)?.[0] ?? "";
 
   assert.doesNotMatch(degradedHtml, /DATA COLLECTION DEGRADED/);
   assert.doesNotMatch(degradedHtml, /Collection Incident Summary/);
@@ -167,7 +167,7 @@ test("HTML keeps collection incidents out of the end-user IA", () => {
   assert.doesNotMatch(degradedHtml, /Unsupported Conclusions/);
   assert.doesNotMatch(degradedHtml, /Recovery Priorities/);
   assert.doesNotMatch(degradedHtml, /Executive Rating/);
-  assert.equal((degradedNav.match(/<a /g) ?? []).length, 8);
+  assert.equal((degradedNav.match(/<a /g) ?? []).length, 9);
   assert.match(degradedHtml, /Executive Pulse/);
   assert.match(degradedHtml, /Technology Landscape/);
   assert.match(degradedHtml, /KGLD Technology Watch/);
