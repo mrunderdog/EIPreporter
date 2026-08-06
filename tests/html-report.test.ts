@@ -672,6 +672,96 @@ test("weekly confidence limit reason uses canonical usable and raw counts when r
   }
 });
 
+test("current-window-fallback-ratio passes when high-ratio fallback events are isolated from core views", () => {
+  const scenario = weeklySignalScenario(17, 28);
+  const ratio = 11 / 28;
+  scenario.report.ethereumTechRadar.historicalInputDiagnostics = {
+    ...(scenario.report.ethereumTechRadar.historicalInputDiagnostics ?? {}),
+    timestampQuality: {
+      ...(scenario.report.ethereumTechRadar.historicalInputDiagnostics?.timestampQuality ?? {}),
+      current7dFallbackRatio: ratio,
+    },
+  } as WeeklyRadarReport["ethereumTechRadar"]["historicalInputDiagnostics"];
+
+  assert.equal(__qualityTestHooks.currentWindowFallbackHandled(scenario.report, scenario.api), true);
+  assert.match(__qualityTestHooks.currentWindowFallbackObserved(scenario.report, scenario.api), /"ratio":0\.39285714285714285/);
+  assert.match(__qualityTestHooks.currentWindowFallbackObserved(scenario.report, scenario.api), /"usableEventIds":\[\]/);
+  assert.match(__qualityTestHooks.currentWindowFallbackObserved(scenario.report, scenario.api), /"overviewEventIds":\[\]/);
+  assert.match(__qualityTestHooks.currentWindowFallbackObserved(scenario.report, scenario.api), /"timelineEventIds":\[\]/);
+  assert.match(__qualityTestHooks.currentWindowFallbackObserved(scenario.report, scenario.api), /"topicMapEventIds":\[\]/);
+  assert.match(__qualityTestHooks.currentWindowFallbackObserved(scenario.report, scenario.api), /"explorerWeeklyEventIds":\[\]/);
+});
+
+test("AA advancing without current qualifying evidence is rendered as stable and passes both AA direction gates", () => {
+  const db = openDatabase(":memory:");
+  try {
+    insertSnapshot(db, [makeRecord()]);
+    const report = buildWeeklyReport(db, new Date("2026-06-12T12:00:00.000Z"));
+    assert.ok(report);
+    setReportEvents(report, []);
+    report.ethereumTechRadar.trendChanges!.contentHashChanges = [
+      makeChangeEvent(8141, "older-aa", {
+        proposalId: "EIP-8141",
+        sourcePath: "EIPS/eip-8141.md",
+        canonicalUrl: "https://eips.ethereum.org/EIPS/eip-8141",
+        occurredAt: "2026-05-25T00:00:00.000Z",
+        detectedAt: "2026-05-25T00:00:00.000Z",
+        changeSemanticType: "normative_specification",
+        occurredAtSource: "git_commit",
+        timestampConfidence: "high",
+      }),
+    ];
+
+    const html = generateWeeklyHtml(report);
+    const api = JSON.parse(html.match(/<script type="application\/json" id="technology-platform-api">([\s\S]*?)<\/script>/)?.[1] ?? "{}");
+    const track = api.intelligenceSnapshot.views.accountAbstraction.tracks.find((item: { proposalIds: string[] }) => item.proposalIds.includes("EIP-8141"));
+
+    assert.equal(track.direction, "stable");
+    assert.equal(track.specification30d.value, 1);
+    assert.equal(track.specification7d.value, 0);
+    assert.equal(__qualityTestHooks.aaDirectionEvidenceValid(api), true);
+    assert.equal(__qualityTestHooks.aaDirectionEvidenceV2(api), true);
+  } finally {
+    db.close();
+  }
+});
+
+test("monitoring scope count and wording are data-driven for current and rolling counts", () => {
+  for (const fixture of [
+    { discovered: 83, publicCount: 77, excluded: 6, monitored: 26, cards: 3 },
+    { discovered: 91, publicCount: 82, excluded: 9, monitored: 29, cards: 4 },
+  ]) {
+    const api = monitoringScopeApi(fixture);
+    const sentence = `총 ${fixture.discovered}건의 EIP/ERC Proposal을 발견했고, 이 중 ${fixture.publicCount}건을 주간 탐색과 진행 단계 분포 대상으로 선정했습니다. 탐색 대상에서 제외한 기준 Proposal은 ${fixture.excluded}건입니다. 이 중 ${fixture.monitored}건을 주간 집중 모니터링하며, 최근 활동을 상세 표시한 Proposal은 ${fixture.cards}건입니다.`;
+    const html = `<div class="dash-scope-summary"><p>${sentence}</p><dl><dt>발견 대상</dt><dd>${fixture.discovered}건</dd><dt>탐색·단계 분포 대상</dt><dd>${fixture.publicCount}건</dd><dt>기준 Proposal</dt><dd>${fixture.excluded}건</dd><dt>집중 모니터링</dt><dd>${fixture.monitored}건</dd><dt>상세 활동 카드</dt><dd>${fixture.cards}건</dd></dl></div>`;
+
+    assert.equal(__qualityTestHooks.monitoringScopeReferenceCount(api), true);
+    assert.equal(__qualityTestHooks.monitoringScopeWording(api, html), true);
+  }
+});
+
+test("Vitalik facts do not change core projection and usable count one remains valid", () => {
+  const scenario = weeklySignalScenario(1, 1);
+  const snapshot = scenario.api.intelligenceSnapshot;
+  snapshot.facts.vitalikBlogPosts = [{
+    factId: "vitalik:post-1",
+    sourceUrl: "https://vitalik.eth.limo/example.html",
+    publishedAt: "2026-06-10",
+    title: "Example",
+  }];
+  snapshot.views.vitalikBlog = { selectedPosts: [{ factId: "vitalik:post-1" }] };
+
+  assert.deepEqual(
+    __qualityTestHooks.coreProjection(snapshot),
+    __qualityTestHooks.coreProjection(__qualityTestHooks.snapshotWithoutVitalik(snapshot)),
+  );
+  assert.equal(__qualityTestHooks.vitalikNoCoreMetricContamination(scenario.api), true);
+  assert.equal(snapshot.views.dashboardV2.overview.weeklyUsableCount.value, 1);
+  assert.equal(snapshot.views.dashboardV2.weeklyTimeline.totalUsableCount, 1);
+  assert.equal(snapshot.views.dashboardV2.topicActivityMap.totalCurrent7d, 1);
+  assert.equal(snapshot.views.dashboardV2.proposalExplorer.totalCurrent7d, 1);
+});
+
 function visibleReportHtml(html: string): string {
   return html
     .replace(/<style>[\s\S]*?<\/style>/, "")
@@ -830,6 +920,38 @@ function canonicalQualityFixture(input: {
       intelligenceSnapshot: snapshot,
     },
     visibleHtml: `<span>기술 지도 최근 7일 댓글</span><b>${input.technologyMapPostCount}</b><span>Developer ${input.postCount}</span>`,
+  };
+}
+
+function monitoringScopeApi(input: { discovered: number; publicCount: number; excluded: number; monitored: number; cards: number }) {
+  const publicIds = Array.from({ length: input.publicCount }, (_, index) => `ERC-${7000 + index}`);
+  const excludedIds = Array.from({ length: input.excluded }, (_, index) => `EIP-${9000 + index}`);
+  const specificationEvidence = [...publicIds, ...excludedIds].map((proposalId) => ({ proposalId, factId: `spec:${proposalId}` }));
+  assert.equal(specificationEvidence.length, input.discovered);
+  return {
+    intelligenceSnapshot: {
+      facts: { specificationEvidence },
+      views: {
+        dashboardV2: {
+          proposalExplorer: {
+            rows: publicIds.map((proposalId) => ({
+              proposalId,
+              title: `${proposalId} title`,
+              status: "Draft",
+              domainId: "accounts-wallets",
+              domain: "계정·권한",
+              topic: "Wallet UX",
+              weeklyUsableEventIds: [],
+              counts: { current7d: 0 },
+            })),
+          },
+          monitoringScope: {
+            monitoredProposalCount: input.monitored,
+            detailedProposalCount: input.cards,
+          },
+        },
+      },
+    },
   };
 }
 

@@ -191,7 +191,7 @@ export function generateWeeklyQualityJson(report: WeeklyRadarReport, html = gene
     qualityCheck("window-filter-regression", !windowFilterRegression(report, atlas), "fail", report.ethereumTechRadar.historicalInputDiagnostics?.failureCode ?? "none", "no identical 180d/7d regression without explanation"),
     qualityCheck("weekly-history-sufficient", baselineHistorySufficient(report), "warning", String(report.ethereumTechRadar.historicalInputDiagnostics?.uniqueWeeks ?? 0), ">= 8 complete weeks"),
     qualityCheck("magicians-discovery-executed", magiciansDiscoveryCompleted(report), "fail", "discussion discovery states", "URL proposals completed or explicit states"),
-    qualityCheck("magicians-fetch-attempted", !report.ethereumTechRadar.historicalInputDiagnostics || coverage.threadUrlConfirmed === 0 || coverage.postFetchAttempted === coverage.threadUrlConfirmed, "fail", `${coverage.postFetchAttempted}/${coverage.threadUrlConfirmed}`, "post fetch attempted for every confirmed thread URL"),
+    qualityCheck("magicians-fetch-attempted", magiciansFetchAttemptStateValid(report, atlas), "fail", magiciansFetchAttemptObserved(report, atlas), "post fetch attempted for every collected, partial, or failed thread state"),
     qualityCheck("topic-current-ranking", topicCurrentRankingValid(atlas), "fail", selectFrontPageTopics(atlas).map((topic) => `${topic.topic}:${topic.priority}`).join(", "), "cover Top 3 equals current score Top 3"),
     qualityCheck("topic-count-consistency", topicCountConsistency(atlas), "fail", "topic chart/progress rows", "same topic counts across sections"),
     qualityCheck("lifecycle-percent-complete", lifecyclePercentComplete(html, atlas), "fail", "lifecycle segment totals", "each grouped topic stack sums to 100% ± 0.2"),
@@ -201,8 +201,8 @@ export function generateWeeklyQualityJson(report: WeeklyRadarReport, html = gene
     qualityCheck("magicians-pagination-complete", magiciansPaginationComplete(embeddedApi), "fail", "discussion pagination", "full threads complete, partial threads marked partial"),
     qualityCheck("magicians-last-post-consistency", magiciansLastPostConsistency(embeddedApi), "fail", "latestCollectedPostAt vs lastPostAt", "full threads latest post matches lastPostAt"),
     qualityCheck("magicians-content-analysis-claim", !/토론 내용을 분석했습니다|Magicians 토론을 분석했습니다|Ethereum Magicians 토론을 분석했습니다/.test(visibleHtml), "fail", "visible discussion claim", "no discussion analysis claim unless completed"),
-    qualityCheck("current-window-fallback-ratio", currentWindowFallbackHandled(report, visibleHtml), "fail", String(report.ethereumTechRadar.historicalInputDiagnostics?.timestampQuality?.current7dFallbackRatio ?? 0), "fallback events isolated when current7d ratio > 25%"),
-    qualityCheck("fallback-events-excluded-from-ranking", fallbackEventsExcludedFromRanking(report, atlas), "fail", "front page and weekly changes", "ranking uses confirmed timestamp events only"),
+    qualityCheck("current-window-fallback-ratio", currentWindowFallbackHandled(report, embeddedApi), "fail", currentWindowFallbackObserved(report, embeddedApi), "fallback events isolated when current7d ratio > 25%"),
+    qualityCheck("fallback-events-excluded-from-ranking", fallbackEventsExcludedFromRanking(report, embeddedApi), "fail", currentWindowFallbackObserved(report, embeddedApi), "ranking uses confirmed timestamp events only"),
     qualityCheck("change-semantic-classification", semanticClassificationAvailable(report), "fail", "current content changes", "content_hash_change has semantic classification or is excluded"),
     qualityCheck("discussion-analysis-state-consistency", discussionAnalysisStateConsistent(report, visibleHtml), "fail", "discussion analysis rendering", "analysisCompleted=false does not render extracted categories as final"),
     qualityCheck("discussion-summary-completeness", !/핵심 쟁점 자동 요약 불가|제기된 반대 자동 요약 불가|대안 자동 요약 불가|미해결 문제 자동 요약 불가/.test(visibleHtml), "fail", "auto summary rows", "hidden when no quality summary"),
@@ -384,7 +384,7 @@ export function generateWeeklyQualityJson(report: WeeklyRadarReport, html = gene
     qualityCheck("public-render-no-object-string", publicRenderNoObjectString(html), "fail", publicRenderNoObjectObserved(html), "public HTML has no object/undefined/empty public fields", ["public-html"]),
     qualityCheck("html-document-title", htmlDocumentTitle(html, embeddedApi), "fail", htmlDocumentTitleObserved(html), "HTML title uses Ethereum Standards Weekly and reportDate", ["metadata"]),
     qualityCheck("snapshot-id-visible-canonical", snapshotIdVisibleCanonical(embeddedApi, html), "fail", snapshotIdObserved(embeddedApi, html), "Evidence details render canonical snapshotId, not source root", ["metadata"]),
-    qualityCheck("compatibility-scope-current", compatibilityScopeCurrent(embeddedApi, html), "fail", compatibilityScopeObserved(html), "hidden compatibility contract uses current 74/68/6/24/3 scope", ["metadata"]),
+    qualityCheck("compatibility-scope-current", compatibilityScopeCurrent(embeddedApi, html), "fail", compatibilityScopeObserved(html), "hidden compatibility contract uses current discovered/public/excluded/monitoring/card scope", ["metadata"]),
     qualityCheck("public-evidence-labels", publicEvidenceLabels(html), "fail", publicEvidenceLabelsObserved(html), "Evidence public labels use Korean-facing terms with internal keys only as secondary text", ["metadata"]),
     qualityCheck("vitalik-current-source-collected", vitalikCurrentSourceCollected(embeddedApi), "fail", vitalikObserved(embeddedApi), "current Vitalik source attempt includes parsed selected posts with reviewed Korean summary and source lineage", ["vitalik"]),
     qualityCheck("vitalik-source-official", vitalikSourceOfficial(embeddedApi), "fail", vitalikObserved(embeddedApi), "Vitalik Blog source uses official vitalik.eth.limo root and official index/feed discovery", ["vitalik"]),
@@ -631,22 +631,47 @@ function historicalTimestampQuality(report: WeeklyRadarReport): boolean {
   return (report.ethereumTechRadar.historicalInputDiagnostics?.fallbackDetectedAtRatio ?? 0) <= 0.25;
 }
 
-function currentWindowFallbackHandled(report: WeeklyRadarReport, visibleHtml: string): boolean {
+function currentWindowFallbackHandled(report: WeeklyRadarReport, embeddedApi: unknown): boolean {
   const quality = report.ethereumTechRadar.historicalInputDiagnostics?.timestampQuality;
   if (!quality || quality.current7dFallbackRatio <= 0.25) return true;
-  return /발생일 미확정 변화/.test(visibleHtml);
+  const intersections = fallbackIsolationIntersections(report, embeddedApi);
+  return Object.values(intersections).every((ids) => ids.length === 0);
 }
 
-function fallbackEventsExcludedFromRanking(report: WeeklyRadarReport, atlas: TechnologyAtlas): boolean {
-  const fallbackIds = new Set(allReportRecentEvents(report).filter((event) => !isConfirmedReportEvent(event)).map((event) => event.proposalId));
-  if (!fallbackIds.size) return true;
-  return selectFrontPageTopics(atlas).every((topic) =>
-    topic.priority > 0 && topic.proposals.some((id) => {
-      const proposal = proposalById(atlas, id);
-      const discussionSignal = proposal && proposal.activity.current7d.discussionCount > 0;
-      return proposal && ((proposal.activity.current7d.activeProposalCount > 0 && !fallbackIds.has(id)) || discussionSignal);
-    })
-  );
+function currentWindowFallbackObserved(report: WeeklyRadarReport, embeddedApi: unknown): string {
+  const quality = report.ethereumTechRadar.historicalInputDiagnostics?.timestampQuality;
+  return JSON.stringify({
+    ratio: quality?.current7dFallbackRatio ?? 0,
+    ...fallbackIsolationIntersections(report, embeddedApi),
+  });
+}
+
+function fallbackIsolationIntersections(report: WeeklyRadarReport, embeddedApi: unknown): Record<string, string[]> {
+  const fallbackEventIds = new Set(allReportRecentEvents(report)
+    .filter((event) => (event.occurredAtSource ?? "fallback_detected_at") === "fallback_detected_at")
+    .map(reportEventKey));
+  const view = dashboardV2FromApi(embeddedApi);
+  if (!view || !fallbackEventIds.size) {
+    return {
+      usableEventIds: [],
+      overviewEventIds: [],
+      timelineEventIds: [],
+      topicMapEventIds: [],
+      explorerWeeklyEventIds: [],
+    };
+  }
+  return {
+    usableEventIds: intersection([...fallbackEventIds], stringList(view.weeklyTimeline?.usableEventIds)),
+    overviewEventIds: intersection([...fallbackEventIds], stringList(view.overview?.weeklyUsableCount?.evidenceIds).map(stripEventFactPrefix)),
+    timelineEventIds: intersection([...fallbackEventIds], stringList(view.weeklyTimeline?.items?.map((item) => item.eventId))),
+    topicMapEventIds: intersection([...fallbackEventIds], stringList(view.topicActivityMap?.points?.flatMap((point) => point.weeklyUsableEventIds))),
+    explorerWeeklyEventIds: intersection([...fallbackEventIds], stringList(view.proposalExplorer?.rows?.flatMap((row) => row.weeklyUsableEventIds))),
+  };
+}
+
+function fallbackEventsExcludedFromRanking(report: WeeklyRadarReport, embeddedApi: unknown): boolean {
+  const intersections = fallbackIsolationIntersections(report, embeddedApi);
+  return Object.values(intersections).every((ids) => ids.length === 0);
 }
 
 function semanticClassificationAvailable(report: WeeklyRadarReport): boolean {
@@ -1459,7 +1484,7 @@ function monitoringScopeFourLevelsVisible(embeddedApi: unknown, visibleHtml: str
   const text = visibleTextOnly(visibleHtml);
   return text.includes(`발견 대상 ${p.scope.discoveredProposalCount}건`)
     && text.includes(`탐색·단계 분포 대상 ${p.scope.publicExplorerCount}건`)
-    && text.includes(`기준 Proposal ${p.scope.referenceOnlyCount}건`)
+    && text.includes(`기준 Proposal ${p.scope.explorerExcludedBaselineProposalCount}건`)
     && text.includes(`집중 모니터링 ${p.scope.concentratedMonitoringCount}건`)
     && text.includes(`상세 활동 카드 ${p.scope.detailedActivityCardCount}건`)
     && text.includes("구현 데이터 수집원 없음");
@@ -1469,7 +1494,9 @@ function monitoringScopeFourLevelsObserved(embeddedApi: unknown, visibleHtml: st
   const view = dashboardV2FromApi(embeddedApi);
   const facts = intelligenceSnapshotFromApi(embeddedApi)?.facts as DashboardV3Facts | undefined;
   const p = view && facts ? buildDashboardV3Presentation(view, facts) : null;
-  const segment = visibleHtml.match(/<div class="dash-scope-summary"[\s\S]*?<\/div>\s*<\/div>/)?.[0] ?? "";
+  const start = visibleHtml.indexOf('<div class="dash-scope-summary">');
+  const end = start >= 0 ? visibleHtml.indexOf('<div class="dash-evidence-summary">', start) : -1;
+  const segment = start >= 0 && end > start ? visibleHtml.slice(start, end) : "";
   return JSON.stringify({ scope: p?.scope, rendered: visibleTextOnly(segment) });
 }
 
@@ -1477,13 +1504,15 @@ function monitoringScopeReferenceCount(embeddedApi: unknown): boolean {
   const view = dashboardV2FromApi(embeddedApi);
   const facts = intelligenceSnapshotFromApi(embeddedApi)?.facts as DashboardV3Facts | undefined;
   if (!view || !facts) return false;
+  const scope = monitoringScopeFromViewFacts(view, facts);
   const discovered = new Set((facts.specificationEvidence ?? []).map((fact) => fact.proposalId).filter(Boolean));
   const publicIds = new Set(view.proposalExplorer.rows.map((row) => row.proposalId));
-  const referenceOnly = [...discovered].filter((id) => id && !publicIds.has(id));
-  return discovered.size === publicIds.size + referenceOnly.length
-    && discovered.size === 74
-    && publicIds.size === 68
-    && referenceOnly.length === 6;
+  const excluded = difference(discovered, publicIds).sort();
+  return scope.discoveredProposalCount === scope.publicExplorerCount + scope.explorerExcludedBaselineProposalCount
+    && discovered.size === scope.discoveredProposalCount
+    && publicIds.size === scope.publicExplorerCount
+    && excluded.length === scope.explorerExcludedBaselineProposalCount
+    && setEquals(new Set(excluded), new Set(scope.explorerExcludedBaselineProposalIds));
 }
 
 function monitoringScopeReferenceObserved(embeddedApi: unknown): string {
@@ -1491,19 +1520,46 @@ function monitoringScopeReferenceObserved(embeddedApi: unknown): string {
   const facts = intelligenceSnapshotFromApi(embeddedApi)?.facts as DashboardV3Facts | undefined;
   const discovered = new Set((facts?.specificationEvidence ?? []).map((fact) => fact.proposalId).filter(Boolean));
   const publicIds = new Set(view?.proposalExplorer.rows.map((row) => row.proposalId) ?? []);
-  const referenceOnly = [...discovered].filter((id) => id && !publicIds.has(id));
-  return JSON.stringify({ discovered: discovered.size, public: publicIds.size, referenceOnly: referenceOnly.length, referenceOnlyIds: referenceOnly.sort() });
+  const excluded = difference(discovered, publicIds).sort();
+  return JSON.stringify({ discovered: discovered.size, public: publicIds.size, explorerExcludedBaselineProposalCount: excluded.length, explorerExcludedBaselineProposalIds: excluded });
 }
 
 function monitoringScopeWording(embeddedApi: unknown, html: string): boolean {
+  const view = dashboardV2FromApi(embeddedApi);
+  const facts = intelligenceSnapshotFromApi(embeddedApi)?.facts as DashboardV3Facts | undefined;
+  if (!view || !facts || !monitoringScopeReferenceCount(embeddedApi)) return false;
+  const scope = monitoringScopeFromViewFacts(view, facts);
   const visible = visibleTextOnly(html.replace(/<script[\s\S]*?<\/script>/g, " "));
-  return monitoringScopeReferenceCount(embeddedApi)
-    && /발견 대상\s*74건/.test(visible)
-    && /탐색·단계 분포 대상\s*68건/.test(visible)
-    && /기준 Proposal\s*6건/.test(visible)
-    && /집중 모니터링\s*24건/.test(visible)
-    && /상세 활동 카드\s*3건/.test(visible)
+  return visible.includes(monitoringScopeSentence(scope))
+    && visible.includes(`발견 대상 ${scope.discoveredProposalCount}건`)
+    && visible.includes(`탐색·단계 분포 대상 ${scope.publicExplorerCount}건`)
+    && visible.includes(`기준 Proposal ${scope.explorerExcludedBaselineProposalCount}건`)
+    && visible.includes(`집중 모니터링 ${scope.concentratedMonitoringCount}건`)
+    && visible.includes(`상세 활동 카드 ${scope.detailedActivityCardCount}건`)
     && !/분류 가능한 68건|상세 활동 분석 3건|EIP\/ERC 공식 명세 24건/.test(html);
+}
+
+function monitoringScopeFromViewFacts(view: ReturnType<typeof buildDashboardV2View>, facts: DashboardV3Facts) {
+  const publicExplorerCount = view.proposalExplorer.rows.length;
+  const discoveredProposalIds = unique((facts.specificationEvidence ?? []).map((fact) => fact.proposalId).filter(Boolean)).sort(compareProposalIds);
+  const publicExplorerProposalIds = unique(view.proposalExplorer.rows.map((row) => row.proposalId)).sort(compareProposalIds);
+  const discoveredProposalCount = discoveredProposalIds.length || publicExplorerCount;
+  const explorerExcludedBaselineProposalIds = difference(new Set(discoveredProposalIds), new Set(publicExplorerProposalIds)).sort(compareProposalIds);
+  const explorerExcludedBaselineProposalCount = explorerExcludedBaselineProposalIds.length;
+  return {
+    discoveredProposalCount,
+    publicExplorerCount,
+    classifiedProposalCount: publicExplorerCount,
+    discoveredProposalIds,
+    publicExplorerProposalIds,
+    explorerExcludedBaselineProposalCount,
+    explorerExcludedBaselineProposalIds,
+    referenceOnlyCount: explorerExcludedBaselineProposalCount,
+    concentratedMonitoringCount: view.monitoringScope.monitoredProposalCount,
+    detailedActivityCardCount: view.monitoringScope.detailedProposalCount,
+    detailedAnalysisCount: view.monitoringScope.detailedProposalCount,
+    implementationSourceCount: 0,
+  };
 }
 
 function domainSearchMetadataConsistency(html: string): boolean {
@@ -1591,9 +1647,20 @@ function aaActivityDateSourceIntegrity(embeddedApi: unknown, visibleHtml: string
     return rendered.includes(formatDateKst(expected));
   }));
   const aaText = aaMetricPublicObserved(visibleHtml);
+  const renderedMilestones = tracks
+    .map((track) => {
+      const milestone = track.lastMilestone;
+      if (!milestone) return null;
+      const expected = sourceDateForSignal(milestone as Record<string, unknown>);
+      return expected ? { proposalId: String(milestone.proposalId ?? track.proposalIds?.[0] ?? ""), expected } : null;
+    })
+    .filter((item): item is { proposalId: string; expected: string } => Boolean(item));
   return lineageOk
-    && /ERC-8286[\s\S]{0,120}2026\.07\.29|2026\.07\.29[\s\S]{0,120}ERC-8286/.test(aaText)
-    && !/ERC-8286[\s\S]{0,120}2026\.08\.04|2026\.08\.04[\s\S]{0,120}ERC-8286/.test(aaText);
+    && renderedMilestones.every(({ proposalId, expected }) => {
+      const date = formatDateKst(expected);
+      const segment = aaText.match(new RegExp(`.{0,160}${escapeRegExpForHtml(proposalId)}.{0,160}`, "s"))?.[0] ?? "";
+      return segment.includes(date);
+    });
 }
 
 function aaActivityDateNotGeneratedAt(embeddedApi: unknown): boolean {
@@ -1702,7 +1769,9 @@ function compatibilityScopeCurrent(embeddedApi: unknown, html: string): boolean 
   const p = buildDashboardV3Presentation(view, facts);
   return parsed.scope?.discoveredProposalCount === p.scope.discoveredProposalCount
     && parsed.scope?.publicExplorerCount === p.scope.publicExplorerCount
-    && parsed.scope?.referenceProposalCount === p.scope.referenceOnlyCount
+    && parsed.scope?.explorerExcludedBaselineProposalCount === p.scope.explorerExcludedBaselineProposalCount
+    && JSON.stringify(parsed.scope?.explorerExcludedBaselineProposalIds ?? []) === JSON.stringify(p.scope.explorerExcludedBaselineProposalIds)
+    && parsed.scope?.referenceProposalCount === p.scope.explorerExcludedBaselineProposalCount
     && parsed.scope?.monitoredProposalCount === p.scope.concentratedMonitoringCount
     && parsed.scope?.detailedActivityCardCount === p.scope.detailedActivityCardCount
     && parsed.scope?.implementationSourceCount === p.scope.implementationSourceCount;
@@ -1885,13 +1954,62 @@ function vitalikRelatedProposalRelation(embeddedApi: unknown): boolean {
 
 function vitalikNoCoreMetricContamination(embeddedApi: unknown): boolean {
   const view = dashboardV2FromApi(embeddedApi);
-  if (!view) return false;
-  return Number(view.overview.weeklyUsableCount.value) === view.weeklyTimeline.items.filter((item) => item.eventType === "new_proposal").length
-    && Number(view.overview.rawPostCount.value) === Number(view.developerActivity.rawPostCount)
-    && Number(view.overview.activeMagiciansThreadCount.value) === Number(view.developerActivity.activeThreadCount)
-    && view.proposalExplorer.rows.length === 68
-    && view.aaMatrix.tracks.length === 12
-    && Object.values(view.kgldBoard.groups).flat().length === 1;
+  const snapshot = intelligenceSnapshotFromApi(embeddedApi);
+  if (!view || !snapshot) return false;
+  const usable = new Set(stringList(view.weeklyTimeline.usableEventIds));
+  const coreViewUnion = new Set([
+    ...stringList(view.overview.weeklyUsableCount.evidenceIds).map(stripEventFactPrefix),
+    ...stringList(view.weeklyTimeline.items.map((item) => item.eventId)),
+    ...stringList(view.topicActivityMap.points.flatMap((point) => point.weeklyUsableEventIds)),
+    ...stringList(view.proposalExplorer.rows.flatMap((row) => row.weeklyUsableEventIds)),
+  ]);
+  const vitalikFacts = vitalikFactsFromApi(embeddedApi);
+  const vitalikFactIds = new Set(vitalikFacts.map((fact) => String(fact.factId ?? "")).filter(Boolean));
+  const vitalikUrls = new Set(vitalikFacts.map((fact) => String(fact.sourceUrl ?? "")).filter(Boolean));
+  const coreFacts = [
+    ...(snapshot.facts.developmentEvents ?? []),
+    ...(snapshot.facts.logicalDevelopmentEvents ?? []),
+    ...(snapshot.facts.discussionPosts ?? []),
+    ...(snapshot.facts.specificationEvidence ?? []),
+  ] as Array<Record<string, unknown>>;
+  return setEquals(usable, coreViewUnion)
+    && coreFacts.every((fact) => !vitalikFactIds.has(String(fact.factId ?? fact.logicalEventId ?? "")) && !vitalikUrls.has(String(fact.sourceUrl ?? "")))
+    && stableJson(coreProjection(snapshot)) === stableJson(coreProjection(snapshotWithoutVitalik(snapshot)));
+}
+
+function snapshotWithoutVitalik(snapshot: Record<string, any>): Record<string, any> {
+  return {
+    ...snapshot,
+    facts: {
+      ...snapshot.facts,
+      vitalikBlogPosts: [],
+      vitalikBlogSourceAttempted: false,
+    },
+    views: {
+      ...snapshot.views,
+      vitalikBlog: undefined,
+    },
+  };
+}
+
+function coreProjection(snapshot: Record<string, any>): Record<string, unknown> {
+  const views = snapshot.views ?? {};
+  return {
+    overview: views.dashboardV2?.overview,
+    timeline: views.dashboardV2?.weeklyTimeline,
+    topicMap: views.dashboardV2?.topicActivityMap,
+    explorerWeeklySignal: {
+      totalCurrent7d: views.dashboardV2?.proposalExplorer?.totalCurrent7d,
+      rows: (views.dashboardV2?.proposalExplorer?.rows ?? []).map((row: Record<string, unknown>) => ({
+        proposalId: row.proposalId,
+        weeklyUsableEventIds: row.weeklyUsableEventIds,
+        counts: row.counts,
+      })),
+    },
+    lifecycle: views.dashboardV2?.lifecycleBoard,
+    aa: views.accountAbstraction ?? views.dashboardV2?.aaMatrix,
+    kgld: views.kgldWatch ?? views.dashboardV2?.kgldBoard,
+  };
 }
 
 function vitalikRenderIsolation(html: string): boolean {
@@ -1992,6 +2110,15 @@ function setEquals(left: Set<string>, right: Set<string>): boolean {
 
 function difference(left: Set<string>, right: Set<string>): string[] {
   return [...left].filter((value) => !right.has(value));
+}
+
+function intersection(left: string[], right: string[]): string[] {
+  const rightSet = new Set(right);
+  return left.filter((value) => rightSet.has(value)).sort();
+}
+
+function stripEventFactPrefix(value: string): string {
+  return value.startsWith("event:") ? value.slice("event:".length) : value;
 }
 
 function productQ1DevelopmentLandscape(embeddedApi: unknown, visibleHtml: string): boolean {
@@ -2483,13 +2610,53 @@ function aaBaselineRecentSeparation(embeddedApi: unknown, visibleHtml: string): 
 
 function aaDirectionEvidenceV2(embeddedApi: unknown): boolean {
   const tracks = dashboardFromApi(embeddedApi)?.accountAbstraction?.tracks ?? [];
+  const factIds = snapshotFactIds(embeddedApi);
   return tracks.every((track) => {
-    if (track.direction === "advancing") return (track.specification30d?.value ?? 0) > 0 || track.implementationEvidence?.length > 0;
-    if (track.direction === "active_discussion") return (track.discussion30d?.value ?? 0) > 0 && (track.specification30d?.value ?? 0) === 0;
+    if (track.direction === "advancing") return aaTrackHasQualifyingAdvancingEvidence(track, factIds);
+    if (track.direction === "active_discussion") return aaTrackHasCurrentMeaningfulDiscussionEvidence(track, factIds) && !aaTrackHasCurrentSpecificationEvidence(track, factIds);
     if (track.direction === "stable") return track.baselineProposals?.length > 0;
     if (track.direction === "baseline_not_linked") return (track.baselineProposals?.length ?? 0) === 0;
     if (track.direction === "not_monitored") return (track.baselineProposals?.length ?? 0) === 0;
     return true;
+  });
+}
+
+function aaTrackDirection(input: { hasBaseline: boolean; hasCurrent7dSpecificationEvidence: boolean; hasCurrent7dMeaningfulDiscussionEvidence: boolean }): string {
+  if (input.hasCurrent7dSpecificationEvidence) return "advancing";
+  if (input.hasCurrent7dMeaningfulDiscussionEvidence) return "active_discussion";
+  if (input.hasBaseline) return "stable";
+  return "baseline_not_linked";
+}
+
+function aaTrackHasQualifyingAdvancingEvidence(track: Record<string, unknown>, factIds: Set<string>): boolean {
+  return aaTrackHasCurrentSpecificationEvidence(track, factIds) || aaTrackHasCurrentMeaningfulDiscussionEvidence(track, factIds);
+}
+
+function aaTrackHasCurrentSpecificationEvidence(track: Record<string, unknown>, factIds: Set<string>): boolean {
+  const specification7d = track.specification7d as { state?: string; value?: number | null; evidenceIds?: string[] } | undefined;
+  const ids = stringList(specification7d?.evidenceIds);
+  return specification7d?.state === "confirmed_value"
+    && Number(specification7d.value ?? 0) > 0
+    && ids.length > 0
+    && ids.every((id) => factIds.has(id));
+}
+
+function aaTrackHasCurrentMeaningfulDiscussionEvidence(track: Record<string, unknown>, factIds: Set<string>): boolean {
+  const signals = Array.isArray(track.recentSignals) ? track.recentSignals as Array<Record<string, unknown>> : [];
+  return signals.some((signal) => {
+    const ids = stringList(signal.evidenceFactIds);
+    const latest = Date.parse(String(signal.latestActivityAt ?? ""));
+    const windowStart = Date.parse(String(signal.windowStart ?? ""));
+    const windowEnd = Date.parse(String(signal.windowEnd ?? ""));
+    return signal.signalType === "verified_discussion"
+      && Number(signal.validPostCount ?? 0) > 0
+      && Number.isFinite(latest)
+      && Number.isFinite(windowStart)
+      && Number.isFinite(windowEnd)
+      && latest >= windowStart
+      && latest <= windowEnd
+      && ids.length > 0
+      && ids.every((id) => factIds.has(id));
   });
 }
 
@@ -2642,7 +2809,8 @@ function proposalSummarySemanticFixtures(embeddedApi: unknown): boolean {
 
 function aaDirectionEvidenceValid(embeddedApi: unknown): boolean {
   const tracks = dashboardFromApi(embeddedApi)?.accountAbstraction.tracks ?? [];
-  return tracks.every((track) => track.direction !== "advancing" || track.current7dChanges > 0 || track.implementationEvidence.length > 0);
+  const factIds = snapshotFactIds(embeddedApi);
+  return tracks.every((track) => track.direction !== "advancing" || aaTrackHasQualifyingAdvancingEvidence(track, factIds));
 }
 
 function domainDiscussionAggregateValid(embeddedApi: unknown): boolean {
@@ -3067,18 +3235,27 @@ export const __qualityTestHooks = {
   finalGoldenObserved,
   finalTechnologyMapCanonicalConsistency,
   buildWeeklySignalCopy,
+  coreProjection,
   coverSingularPluralAffectedIds,
   coverSingularPluralConsistency,
   coverSingularPluralObserved,
+  currentWindowFallbackHandled,
+  currentWindowFallbackObserved,
   goldenFixtureInputHash,
   inputSnapshotHash,
+  monitoringScopeReferenceCount,
+  monitoringScopeWording,
   qualityCheck,
   parseLocalSpecificationMarkdown,
+  snapshotWithoutVitalik,
   weeklyConfidenceLimitCanonical,
   weeklySpecificationTrendReason,
   subjectRegistryMissingIdsFromPublicViews,
   snapshotHash,
   validateWeeklyCollectionPreflight,
+  vitalikNoCoreMetricContamination,
+  aaDirectionEvidenceValid,
+  aaDirectionEvidenceV2,
 };
 
 function aaMetricDefinitions(embeddedApi: unknown) {
@@ -3236,6 +3413,35 @@ function magiciansDiscoveryCompleted(report: WeeklyRadarReport): boolean {
     || discussion.discussionCollectionStatus === "url_not_found"
     || discussion.discussionCollectionStatus === "not_searched"
   );
+}
+
+function magiciansFetchAttemptStateValid(report: WeeklyRadarReport, atlas: TechnologyAtlas): boolean {
+  const proposalIds = new Set(mainReportProposals(atlas).map((proposal) => proposal.proposalId));
+  return report.ethereumTechRadar.signalLayer.discussionHeat
+    .filter((discussion) => proposalIds.has(discussion.proposalId))
+    .every((discussion) => {
+      const status = discussionCollectionStatus(discussion);
+      const requiresFetchAttempt = ["posts_fully_collected", "posts_partially_collected", "fetch_failed", "parse_failed"].includes(status);
+      return !requiresFetchAttempt || discussion.discussionFetchAttempted === true;
+    });
+}
+
+function magiciansFetchAttemptObserved(report: WeeklyRadarReport, atlas: TechnologyAtlas): string {
+  const coverage = sourceCoverage(report, atlas).allAnalysisCoverage;
+  const proposalIds = new Set(mainReportProposals(atlas).map((proposal) => proposal.proposalId));
+  const missing = report.ethereumTechRadar.signalLayer.discussionHeat
+    .filter((discussion) => proposalIds.has(discussion.proposalId))
+    .filter((discussion) => {
+      const status = discussionCollectionStatus(discussion);
+      return ["posts_fully_collected", "posts_partially_collected", "fetch_failed", "parse_failed"].includes(status) && discussion.discussionFetchAttempted !== true;
+    })
+    .map((discussion) => `${discussion.proposalId}:${discussionCollectionStatus(discussion)}`);
+  return JSON.stringify({
+    postFetchAttempted: coverage.postFetchAttempted,
+    threadUrlConfirmed: coverage.threadUrlConfirmed,
+    urlConfirmedNotAttempted: coverage.postFetchNotAttempted,
+    missingRequiredAttempt: missing,
+  });
 }
 
 function coverageStateConsistency(report: WeeklyRadarReport, atlas: TechnologyAtlas): boolean {
@@ -3762,19 +3968,7 @@ type DirectionAbstract = {
 function buildDashboardV3Presentation(view: ReturnType<typeof buildDashboardV2View>, facts: DashboardV3Facts = {}, snapshotMetadata: Record<string, unknown> = {}) {
   const publicDomainAudit = buildPublicDomainAudit(view, facts);
   const proposalById = new Map(view.proposalExplorer.rows.map((proposal) => [proposal.proposalId, proposal]));
-  const publicExplorerCount = view.proposalExplorer.rows.length;
-  const discoveredProposalCount = facts.specificationEvidence?.length ?? publicExplorerCount;
-  const referenceOnlyCount = Math.max(0, discoveredProposalCount - publicExplorerCount);
-  const scope = {
-    discoveredProposalCount,
-    publicExplorerCount,
-    classifiedProposalCount: publicExplorerCount,
-    referenceOnlyCount,
-    concentratedMonitoringCount: view.monitoringScope.monitoredProposalCount,
-    detailedActivityCardCount: view.monitoringScope.detailedProposalCount,
-    detailedAnalysisCount: view.monitoringScope.detailedProposalCount,
-    implementationSourceCount: 0,
-  };
+  const scope = monitoringScopeFromViewFacts(view, facts);
   const directionAbstract = buildDirectionAbstractV3(view, facts, scope);
   const proposalPublishedById = new Map((facts.logicalDevelopmentEvents ?? [])
     .filter((event) => event.eventType === "proposal_published" && event.proposalId && event.occurredAt)
@@ -3954,7 +4148,9 @@ function renderDashboardV3Contract(p: DashboardV3Presentation): string {
   const scopeContract = {
     discoveredProposalCount: p.scope.discoveredProposalCount,
     publicExplorerCount: p.scope.publicExplorerCount,
-    referenceProposalCount: p.scope.referenceOnlyCount,
+    explorerExcludedBaselineProposalCount: p.scope.explorerExcludedBaselineProposalCount,
+    explorerExcludedBaselineProposalIds: p.scope.explorerExcludedBaselineProposalIds,
+    referenceProposalCount: p.scope.explorerExcludedBaselineProposalCount,
     monitoredProposalCount: p.scope.concentratedMonitoringCount,
     detailedActivityCardCount: p.scope.detailedActivityCardCount,
     implementationSourceCount: p.scope.implementationSourceCount,
@@ -4235,6 +4431,10 @@ function renderDashboardV3Explorer(p: DashboardV3Presentation): string {
   </section>`;
 }
 
+function monitoringScopeSentence(scope: DashboardV3Presentation["scope"]): string {
+  return `총 ${scope.discoveredProposalCount}건의 EIP/ERC Proposal을 발견했고, 이 중 ${scope.publicExplorerCount}건을 주간 탐색과 진행 단계 분포 대상으로 선정했습니다. 탐색 대상에서 제외한 기준 Proposal은 ${scope.explorerExcludedBaselineProposalCount}건입니다. 이 중 ${scope.concentratedMonitoringCount}건을 주간 집중 모니터링하며, 최근 활동을 상세 표시한 Proposal은 ${scope.detailedActivityCardCount}건입니다.`;
+}
+
 function renderDashboardV3Evidence(p: DashboardV3Presentation): string {
   const q = p.view.evidenceQuality;
   const weeklyReason = `최근 7일 분석 반영 이벤트는 ${q.usableEvents}/${q.rawEvents}건이며, 데이터 품질 기준에 따라 변화 강도 비교는 제공하지 않습니다.`;
@@ -4244,11 +4444,11 @@ function renderDashboardV3Evidence(p: DashboardV3Presentation): string {
   return `<section class="dash-section dash-panel dash-evidence" id="evidence-quality">
     <div class="dash-section-head"><span>Evidence</span><h2>Evidence & Data Quality</h2></div>
     <div class="dash-scope-summary">
-      <div class="dash-section-head"><span>보고서 관찰 범위</span><h3>보고서 관찰 범위</h3><p>총 ${p.scope.discoveredProposalCount}건의 EIP/ERC Proposal을 발견했고, 이 중 ${p.scope.publicExplorerCount}건을 주간 탐색과 진행 단계 분포 대상으로 선정했습니다. 나머지 ${p.scope.referenceOnlyCount}건은 Account Abstraction과 토큰 표준의 기준 Proposal로 참조했습니다. 이 중 ${p.scope.concentratedMonitoringCount}건을 주간 집중 모니터링하며, 최근 7일 원문 활동이 확인된 ${p.scope.detailedActivityCardCount}건은 상세 활동 카드로 표시했습니다. 구현 데이터 수집원은 현재 연결되지 않았습니다.</p></div>
+      <div class="dash-section-head"><span>보고서 관찰 범위</span><h3>보고서 관찰 범위</h3><p>${monitoringScopeSentence(p.scope)} 구현 데이터 수집원은 현재 연결되지 않았습니다.</p></div>
       <dl class="dash-watch-metrics">
         <div><dt>발견 대상</dt><dd>${p.scope.discoveredProposalCount}건</dd></div>
         <div><dt>탐색·단계 분포 대상</dt><dd>${p.scope.publicExplorerCount}건</dd></div>
-        <div><dt>기준 Proposal</dt><dd>${p.scope.referenceOnlyCount}건</dd></div>
+        <div><dt>기준 Proposal</dt><dd>${p.scope.explorerExcludedBaselineProposalCount}건</dd></div>
         <div><dt>집중 모니터링</dt><dd>${p.scope.concentratedMonitoringCount}건</dd></div>
         <div><dt>상세 활동 카드</dt><dd>${p.scope.detailedActivityCardCount}건</dd></div>
         <div><dt>구현 데이터 수집원</dt><dd>없음</dd></div>
@@ -5786,13 +5986,11 @@ function accountAbstractionDashboard(atlas: TechnologyAtlas, discussionHeat: Dis
     const specification30d = aaMetric(aaMetricValueForState(spec30Count, specification30dState), specification30dState, window30dStart, windowEnd, current30dEvents.filter((event) => officialProposalIds.includes(event.proposalId)).map(eventFactId), "30일 window에서 확인된 명세 변화만 집계합니다.");
     const implementation = aaMetric(null, "not_collected", window30dStart, windowEnd, [], "구현 source adapter는 현재 수집 대상이 아닙니다.");
     const recentSignals = aaRecentSignalsForTrack(officialProposalIds, current30dEvents, discussionRows30d, discussionByProposal, window30dStart, windowEnd);
-    const direction = spec30Count > 0
-      ? "advancing"
-      : rawPostIds.length > 0
-        ? "active_discussion"
-        : proposalIds.length > 0
-          ? "stable"
-          : "baseline_not_linked";
+    const direction = aaTrackDirection({
+      hasBaseline: proposalIds.length > 0,
+      hasCurrent7dSpecificationEvidence: spec7Count > 0,
+      hasCurrent7dMeaningfulDiscussionEvidence: false,
+    });
     return {
       id: definition.id,
       trackId: definition.id,
@@ -6223,7 +6421,7 @@ function renderAaRecentSignals(track: ReturnType<typeof accountAbstractionDashbo
       if (signal.signalType === "discussion_activity") {
         const url = optionalAaString(signal.threadUrl) ?? optionalAaString(signal.sourceUrls[0]);
         const link = url ? `<a href="${escapeHtml(url)}" target="_blank" rel="noopener noreferrer">Magicians thread</a>` : "";
-        const latestActivityAt = optionalAaString(signal.latestActivityAt?.slice(0, 10)) ?? "확인 불가";
+        const latestActivityAt = optionalAaString(signal.latestActivityAt) ? formatDateKst(signal.latestActivityAt) : "확인 불가";
         return `${escapeHtml(signal.proposalId)} · 원시 post ${signal.rawPostCount ?? 0}건 · 고유 thread ${signal.threadCount ?? 0}개 · 유효 기술 post 미분류 · 토론 방향 판단 불가 · 최근 활동 ${escapeHtml(latestActivityAt)} ${link}`;
       }
       const url = signal.sourceUrls[0] ?? proposalUrl(signal.proposalId);
