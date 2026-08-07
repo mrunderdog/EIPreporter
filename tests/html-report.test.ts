@@ -64,6 +64,14 @@ test("generates and writes the Developer Intelligence HTML report", () => {
     assert.match(html, /class="dash-life-stack"/);
     assert.doesNotMatch(html, /class="atlas-node-map"/);
     assert.match(html, /class="dash-section-nav"/);
+    assert.match(html, /\.dash-section-nav\{position:sticky/);
+    assert.match(html, /\.dash-toolbar\{position:relative/);
+    assert.doesNotMatch(html, /\.dash-toolbar\{position:sticky/);
+    assert.match(html, /\.dash-section\{scroll-margin-top:calc\(var\(--dash-sticky-nav-height,58px\) \+ 32px\)/);
+    assert.match(html, /\.dash-domain-row\{[^}]*grid-template-columns:minmax\(220px,1\.15fr\)/);
+    assert.match(html, /\.dash-domain-copy\{min-width:220px;word-break:keep-all;overflow-wrap:normal\}/);
+    assert.match(html, /\.dash-signal-main small\{display:block[^}]*overflow:visible\}/);
+    assert.doesNotMatch(html, /\.dash-signal-main small\{[^}]*-webkit-line-clamp/);
     assert.doesNotMatch(visibleShell, /glance-strip/);
     assert.equal((html.match(/<nav class="dash-section-nav"[\s\S]*?<\/nav>/)?.[0].match(/<a /g) ?? []).length, 9);
     assert.doesNotMatch(
@@ -795,12 +803,184 @@ test("weekly summary generation falls back to neutral Korean when evidence is th
   assert.equal(__qualityTestHooks.weeklySummaryTextQuality(summary), true);
 });
 
+test("weekly repository addition quality uses canonical rows and empty state", () => {
+  const one = dashboardV3QualityFixture({ repositoryAdditions: 1, proposalCreatedOffsetDays: -1, rawPosts: 0, activeThreads: 0 });
+  assert.equal(__qualityTestHooks.weeklyEmptyStateValid({} as never, one.api, one.html), true);
+  assert.equal(__qualityTestHooks.weeklyRepositoryAdditionLabel(one.api, one.html), true);
+  assert.equal(__qualityTestHooks.heroRepositoryCountConsistency(one.api, one.html), true);
+  assert.equal(__qualityTestHooks.weeklyRepositoryAdditionsFromApi(one.api).length, 1);
+  assert.match(one.html, /공식 저장소 신규 반영/);
+  assert.match(one.html, /저장소 반영 2026\.08\.07/);
+  assert.match(one.html, /문서 작성 2026\.08\.06/);
+
+  const zero = dashboardV3QualityFixture({ repositoryAdditions: 0, rawPosts: 0, activeThreads: 0 });
+  assert.equal(__qualityTestHooks.weeklyEmptyStateValid({} as never, zero.api, zero.html), true);
+  assert.equal(__qualityTestHooks.weeklyRepositoryAdditionLabel(zero.api, zero.html), true);
+  assert.equal(__qualityTestHooks.heroRepositoryCountConsistency(zero.api, zero.html), true);
+  assert.match(zero.html, /최근 기간 공식 저장소 신규 반영이 없습니다/);
+});
+
+test("weekly repository count invariants survive changed next-week counts", () => {
+  for (const repositoryAdditions of [2, 3]) {
+    const fixture = dashboardV3QualityFixture({ repositoryAdditions, proposalCreatedOffsetDays: -2, rawPosts: 0, activeThreads: 0, reportDate: "2026-08-14" });
+    assert.equal(__qualityTestHooks.weeklyRepositoryAdditionsFromApi(fixture.api).length, repositoryAdditions);
+    assert.equal(__qualityTestHooks.heroRepositoryCountConsistency(fixture.api, fixture.html), true);
+    assert.equal((fixture.html.match(/data-weekly-repository-addition(?:\s|=)/g) ?? []).length, repositoryAdditions);
+  }
+});
+
+test("Magicians current-window cards compare thread cards separately from raw posts", () => {
+  const fixture = dashboardV3QualityFixture({ repositoryAdditions: 0, rawPosts: 10, activeThreads: 4 });
+  assert.match(fixture.html, /원문 게시물 10건/);
+  assert.equal((fixture.html.match(/<article class="dash-thread-card/g) ?? []).length, 4);
+  assert.equal(__qualityTestHooks.magiciansCurrentWindowCards(fixture.api, fixture.html), true);
+});
+
 function visibleReportHtml(html: string): string {
   return html
     .replace(/<style>[\s\S]*?<\/style>/, "")
     .replace(/<script type="application\/json" id="technology-platform-api">[\s\S]*?<\/script>/, "")
     .replace(/<!-- EIPreporter chart data: [\s\S]*? -->/, "")
     .replace(/<script>[\s\S]*?<\/script>/, "");
+}
+
+function dashboardV3QualityFixture(input: {
+  repositoryAdditions: number;
+  rawPosts: number;
+  activeThreads: number;
+  proposalCreatedOffsetDays?: number;
+  reportDate?: string;
+}) {
+  const reportDate = input.reportDate ?? "2026-08-07";
+  const generatedAt = `${reportDate}T05:00:00.000Z`;
+  const repoIds = Array.from({ length: input.repositoryAdditions }, (_, index) => `EIP-${8368 + index}`);
+  const threadIds = Array.from({ length: input.activeThreads }, (_, index) => `ERC-${8183 + index}`);
+  const postCounts = input.activeThreads ? distributeCounts(input.rawPosts, input.activeThreads) : [];
+  const proposalRows = [...repoIds, ...threadIds].map((proposalId, index) => proposalRowForDashboardV3(proposalId, index));
+  const weeklyItems = repoIds.map((proposalId, index) => ({
+    eventId: `event:${proposalId}:repo`,
+    proposalId,
+    title: `${proposalId} Official Title`,
+    eventType: "new_proposal",
+    occurredAt: `${reportDate}T02:00:00.000Z`,
+    toStatus: "Draft",
+    sourceUrl: `https://eips.ethereum.org/EIPS/eip-${proposalId.split("-")[1]}`,
+    sourcePath: `EIPS/eip-${proposalId.split("-")[1]}.md`,
+    evidenceIds: [`event:${proposalId}:repo`],
+  }));
+  const proposalCreatedDate = dateOffset(reportDate, input.proposalCreatedOffsetDays ?? 0);
+  const threads = threadIds.map((proposalId, index) => ({
+    proposalId,
+    title: `${proposalId} discussion`,
+    rawPostCount: postCounts[index] ?? 0,
+    uniqueParticipantCount: Math.max(1, postCounts[index] ?? 0),
+    latestActivityAt: `${reportDate}T03:00:00.000Z`,
+    sourceUrl: `https://ethereum-magicians.org/t/${proposalId.toLowerCase()}/1`,
+    sourcePath: `discussion/${proposalId}`,
+    evidenceIds: [`post:${proposalId}:1`],
+    collectionStatus: "posts_fully_collected",
+    daily: [{ date: reportDate, rawPostCount: postCounts[index] ?? 0 }],
+  }));
+  const facts = {
+    specificationEvidence: proposalRows.map((row) => ({
+      factId: `spec:${row.proposalId}`,
+      proposalId: row.proposalId,
+      officialTitle: row.title,
+      status: "Draft",
+      sourceUrl: row.sourceUrl,
+      abstractText: `${row.proposalId}는 공식 원문 기준 테스트 제안입니다.`,
+    })),
+    logicalDevelopmentEvents: repoIds.map((proposalId) => ({
+      proposalId,
+      eventType: "proposal_published",
+      occurredAt: `${proposalCreatedDate}T01:00:00.000Z`,
+    })),
+    developmentEvents: weeklyItems,
+  };
+  const view = {
+    metadata: { generatedAt, reportDate, sourceMode: "snapshot" },
+    filters: {
+      periods: ["7d", "30d", "180d"],
+      evidence: ["all", "specification", "discussion", "implementation"],
+      domains: ["accounts-wallets"],
+      statuses: ["Draft"],
+    },
+    overview: {
+      weeklyUsableCount: { value: input.repositoryAdditions },
+      activeMagiciansThreadCount: { value: input.activeThreads },
+      rawPostCount: { value: input.rawPosts },
+      uniqueParticipantCount: { value: input.rawPosts },
+    },
+    monitoringScope: { monitoredProposalCount: proposalRows.length, detailedProposalCount: input.activeThreads, discussionThreadCount: input.activeThreads },
+    weeklyTimeline: { items: weeklyItems, totalUsableCount: input.repositoryAdditions, usableEventIds: weeklyItems.map((item) => item.eventId) },
+    developmentTrend: { weeks: [{ weekStart: reportDate, confirmedSpecificationChanges: input.repositoryAdditions }] },
+    topicActivityMap: { points: [], totalCurrent7d: input.repositoryAdditions },
+    developerActivity: {
+      rawPostCount: input.rawPosts,
+      activeThreadCount: input.activeThreads,
+      uniqueParticipantCount: input.rawPosts,
+      validTechnicalPostCount: null,
+      analyzedInsightCount: 0,
+      threads,
+      matrixPoints: [],
+      heatmapRows: threads.map((thread) => ({ proposalId: thread.proposalId, daily: thread.daily })),
+    },
+    lifecycleBoard: [{ stage: "Draft", proposals: proposalRows }],
+    proposalExplorer: { totalCurrent7d: input.repositoryAdditions, rows: proposalRows },
+    aaMatrix: { tracks: [] },
+    kgldBoard: { groups: { research_now: [], monitor: [], no_action: [] }, executiveKgldIds: [], boardKgldIds: [] },
+    evidenceQuality: {
+      rawEvents: input.repositoryAdditions,
+      usableEvents: input.repositoryAdditions,
+      unknownSemanticEvents: 0,
+      fallbackTimestamps: 0,
+      threadCollection: { full: input.activeThreads, partial: 0, failed: 0 },
+      discussionRelevance: "unclassified",
+      implementationEvidence: "not_collected",
+      weeklyRankingValidity: "valid",
+    },
+    technologyMapPostIds: [],
+  };
+  const presentation = __qualityTestHooks.buildDashboardV3Presentation(view as never, facts as never, { generatedAt, reportDate });
+  const html = __qualityTestHooks.renderDashboardV3(presentation);
+  return {
+    html,
+    api: { intelligenceSnapshot: { facts, views: { dashboardV2: view } } },
+  };
+}
+
+function proposalRowForDashboardV3(proposalId: string, index: number) {
+  return {
+    proposalId,
+    title: `${proposalId} Official Title`,
+    status: "Draft",
+    domainId: "accounts-wallets",
+    domain: "계정·권한",
+    topic: "Account Authorization",
+    counts: {
+      current7d: index === 0 ? 1 : 0,
+      current30d: index === 0 ? 1 : 0,
+      current180d: index === 0 ? 1 : 0,
+      rawPosts: 0,
+      participants: 0,
+      validTechnicalPostCount: null,
+    },
+    weeklyUsableEventIds: index === 0 ? [`event:${proposalId}:repo`] : [],
+    latestChangeAt: "2026-08-07T02:00:00.000Z",
+    evidenceIds: [`spec:${proposalId}`],
+    sourcePath: `EIPS/eip-${proposalId.split("-")[1]}.md`,
+    sourceUrl: `https://eips.ethereum.org/EIPS/eip-${proposalId.split("-")[1]}`,
+    evidenceState: "confirmed",
+    isAA: false,
+    kgldRelevance: false,
+    tags: [],
+  };
+}
+
+function dateOffset(date: string, offsetDays: number): string {
+  const value = new Date(`${date}T00:00:00.000Z`);
+  value.setUTCDate(value.getUTCDate() + offsetDays);
+  return value.toISOString().slice(0, 10);
 }
 
 function weeklySignalScenario(usableCount: number, rawCount: number) {
