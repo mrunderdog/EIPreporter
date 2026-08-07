@@ -64,6 +64,14 @@ test("generates and writes the Developer Intelligence HTML report", () => {
     assert.match(html, /class="dash-life-stack"/);
     assert.doesNotMatch(html, /class="atlas-node-map"/);
     assert.match(html, /class="dash-section-nav"/);
+    assert.match(html, /\.dash-section-nav\{position:sticky/);
+    assert.match(html, /\.dash-toolbar\{position:relative/);
+    assert.doesNotMatch(html, /\.dash-toolbar\{position:sticky/);
+    assert.match(html, /\.dash-section\{scroll-margin-top:calc\(var\(--dash-sticky-nav-height,58px\) \+ 32px\)/);
+    assert.match(html, /\.dash-domain-row\{[^}]*grid-template-columns:minmax\(220px,1\.15fr\)/);
+    assert.match(html, /\.dash-domain-copy\{min-width:220px;word-break:keep-all;overflow-wrap:normal\}/);
+    assert.match(html, /\.dash-signal-main small\{display:block[^}]*overflow:visible\}/);
+    assert.doesNotMatch(html, /\.dash-signal-main small\{[^}]*-webkit-line-clamp/);
     assert.doesNotMatch(visibleShell, /glance-strip/);
     assert.equal((html.match(/<nav class="dash-section-nav"[\s\S]*?<\/nav>/)?.[0].match(/<a /g) ?? []).length, 9);
     assert.doesNotMatch(
