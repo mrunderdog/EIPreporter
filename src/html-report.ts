@@ -860,10 +860,10 @@ function unknownNotLabeledEditorial(embeddedApi: unknown, visibleHtml: string): 
 }
 
 function weeklyEmptyStateValid(report: WeeklyRadarReport, embeddedApi: unknown, visibleHtml: string): boolean {
-  const meaningful = meaningfulConfirmedEventCount(report);
-  if (meaningful > 0) return true;
-  const weekly = dashboardFromApi(embeddedApi)?.executivePulse.weeklyDevelopmentTop3 ?? [];
-  return weekly.length === 0 && /확인 가능한 의미 변화 없음|확인된 의미 변화 없음/.test(visibleHtml) && /발생일 미확정 변화 \d+건/.test(visibleHtml);
+  void report;
+  const meaningfulRows = weeklyMeaningfulRowsFromApi(embeddedApi);
+  const emptyVisible = /최근 기간 공식 저장소 신규 반영이 없습니다|확인 가능한 의미 변화 없음|확인된 의미 변화 없음/.test(visibleHtml);
+  return meaningfulRows.length > 0 ? !emptyVisible : emptyVisible;
 }
 
 function discussionCountWindowConsistency(embeddedApi: unknown, visibleHtml: string): boolean {
@@ -1243,6 +1243,10 @@ function weeklyRepositoryAdditionsFromApi(embeddedApi: unknown): WeeklyRepositor
   return view ? buildDashboardV3Presentation(view, facts).weeklyRepositoryAdditions : [];
 }
 
+function weeklyMeaningfulRowsFromApi(embeddedApi: unknown): WeeklyRepositoryAdditionItem[] {
+  return weeklyRepositoryAdditionsFromApi(embeddedApi);
+}
+
 function weeklyRepositoryAdditionIds(embeddedApi: unknown): string[] {
   return weeklyRepositoryAdditionsFromApi(embeddedApi).map((item) => item.proposalId);
 }
@@ -1262,8 +1266,12 @@ function proposalVisibleSegment(visibleHtml: string, proposalId: string): string
 function weeklyRepositoryAdditionLabel(embeddedApi: unknown, visibleHtml: string): boolean {
   const items = weeklyRepositoryAdditionsFromApi(embeddedApi);
   const text = visibleTextOnly(visibleHtml);
-  return items.length > 0
-    && items.every((item) => proposalVisibleSegment(visibleHtml, item.proposalId).includes("공식 저장소 신규 반영"))
+  return items.every((item) => {
+    const segment = visibleTextOnly(proposalVisibleSegment(visibleHtml, item.proposalId));
+    return segment.includes("공식 저장소 신규 반영")
+      && segment.includes(`저장소 반영 ${item.repositoryAddedDateKst}`)
+      && (item.proposalCreatedDateKst ? segment.includes(`문서 작성 ${item.proposalCreatedDateKst}`) : segment.includes("문서 작성일 미확인"));
+  })
     && !/이번 주 작성된 Proposal|이번 주 신규 Proposal|이번 주 핵심 Proposal Top 5|신규 Proposal 5건/.test(text);
 }
 
@@ -1304,8 +1312,7 @@ function heroRepositoryCountConsistency(embeddedApi: unknown, visibleHtml: strin
   const rootCount = Number(visibleHtml.match(/data-weekly-repository-additions="(\d+)"/)?.[1] ?? NaN);
   const rowCount = (visibleHtml.match(/data-weekly-repository-addition(?:\s|=)/g) ?? []).length;
   const firstKpi = visibleHtml.match(/<section class="dash-kpi-strip"[\s\S]*?<\/section>/)?.[0] ?? "";
-  return expected > 0
-    && heroCount === expected
+  return heroCount === expected
     && rootCount === expected
     && rowCount === expected
     && new RegExp(`공식 저장소 신규 반영[\\s\\S]{0,160}<strong>${expected}건<\\/strong>`).test(firstKpi);
@@ -2102,11 +2109,17 @@ function magiciansCurrentWindowCards(embeddedApi: unknown, visibleHtml: string):
   if (!view || !facts) return false;
   const presentation = buildDashboardV3Presentation(view, facts);
   const segment = visibleHtml.match(/<section class="dash-panel dash-section" id="magicians"[\s\S]*?<\/section>/)?.[0] ?? "";
-  const cardHtml = (segment.match(/<article class="dash-thread-card[\s\S]*?<\/article>/g) ?? []).join(" ");
-  const renderedIds = cardHtml.match(/(?:EIP|ERC)-\d+/g) ?? [];
+  const cards = segment.match(/<article class="dash-thread-card[\s\S]*?<\/article>/g) ?? [];
+  const renderedIds = cards.map((card) => card.match(/<span class="dash-proposal-pill">([^<]+)<\/span>/)?.[1]).filter((id): id is string => Boolean(id));
+  const expectedIds = presentation.activeThreads.map((thread) => thread.proposalId);
+  const renderedPostTotal = cards.reduce((sum, card) => sum + Number(card.match(/<strong>(\d+)<span>원문 게시물<\/span><\/strong>/)?.[1] ?? 0), 0);
+  const expectedPostTotal = presentation.activeThreads.reduce((sum, thread) => sum + Number(thread.rawPostCount ?? 0), 0);
   return presentation.activeThreads.length === view.developerActivity.activeThreadCount
-    && presentation.activeThreads.every((thread) => renderedIds.includes(thread.proposalId) && isWithinTrailingDays(thread.latestActivityAt, view.metadata.reportDate, 7))
-    && !renderedIds.includes("EIP-8272");
+    && setEquals(new Set(renderedIds), new Set(expectedIds))
+    && renderedIds.length === expectedIds.length
+    && renderedPostTotal === expectedPostTotal
+    && expectedPostTotal === Number(view.developerActivity.rawPostCount ?? expectedPostTotal)
+    && presentation.activeThreads.every((thread) => isWithinTrailingDays(thread.latestActivityAt, view.metadata.reportDate, 7));
 }
 
 function magiciansCurrentWindowObserved(embeddedApi: unknown, visibleHtml: string): string {
@@ -2114,8 +2127,14 @@ function magiciansCurrentWindowObserved(embeddedApi: unknown, visibleHtml: strin
   const facts = intelligenceSnapshotFromApi(embeddedApi)?.facts as DashboardV3Facts | undefined;
   const presentation = view && facts ? buildDashboardV3Presentation(view, facts) : null;
   const segment = visibleHtml.match(/<section class="dash-panel dash-section" id="magicians"[\s\S]*?<\/section>/)?.[0] ?? "";
-  const cardHtml = (segment.match(/<article class="dash-thread-card[\s\S]*?<\/article>/g) ?? []).join(" ");
-  return JSON.stringify({ activeThreads: presentation?.activeThreads.map((thread) => thread.proposalId), renderedIds: cardHtml.match(/(?:EIP|ERC)-\d+/g) ?? [] });
+  const cards = segment.match(/<article class="dash-thread-card[\s\S]*?<\/article>/g) ?? [];
+  return JSON.stringify({
+    activeThreads: presentation?.activeThreads.map((thread) => ({ proposalId: thread.proposalId, rawPostCount: thread.rawPostCount, latestActivityAt: thread.latestActivityAt })) ?? [],
+    renderedCards: cards.map((card) => ({
+      proposalId: card.match(/<span class="dash-proposal-pill">([^<]+)<\/span>/)?.[1] ?? "missing",
+      rawPostCount: Number(card.match(/<strong>(\d+)<span>원문 게시물<\/span><\/strong>/)?.[1] ?? 0),
+    })),
+  });
 }
 
 function kgldCardComplete(visibleHtml: string): boolean {
@@ -3380,6 +3399,14 @@ export const __qualityTestHooks = {
   monitoringScopeReferenceCount,
   monitoringScopeWording,
   qualityCheck,
+  buildDashboardV3Presentation,
+  renderDashboardV3,
+  heroRepositoryCountConsistency,
+  magiciansCurrentWindowCards,
+  weeklyEmptyStateValid,
+  weeklyRepositoryAdditionLabel,
+  weeklyRepositoryAdditionsFromApi,
+  weeklyRepositoryAdditionObserved,
   parseLocalSpecificationMarkdown,
   proposalSummaryForV3,
   snapshotWithoutVitalik,
@@ -4057,6 +4084,7 @@ type DashboardV3Facts = {
   specificationEvidence?: Array<{ factId?: string; proposalId?: string; officialTitle?: string; abstractText?: string | null; motivationText?: string | null; specificationIntroText?: string | null; sourceUrl?: string }>;
   developmentEvents?: Array<{ eventId?: string; proposalId?: string; eventType?: string; occurredAt?: string; occurredAtSource?: string }>;
   logicalDevelopmentEvents?: Array<{ proposalId?: string; eventType?: string; occurredAt?: string }>;
+  discussionPosts?: Array<{ postId: string; proposalId: string; createdAt: string; username?: string | null; relevanceState?: string }>;
   vitalikBlogPosts?: Array<Record<string, unknown>>;
   vitalikBlogSourceAttempted?: boolean;
 };
@@ -4102,6 +4130,34 @@ type DirectionAbstract = {
   evidenceIds: string[];
 };
 
+function currentDeveloperActivityThreads(view: ReturnType<typeof buildDashboardV2View>, facts: DashboardV3Facts = {}) {
+  const canonicalPostIds = new Set(stringList(view.overview.rawPostCount.evidenceIds).map((id) => id.replace(/^post:/, "")));
+  if (canonicalPostIds.size === 0) {
+    return view.developerActivity.threads
+      .filter((thread) => thread.rawPostCount > 0 && isWithinTrailingDays(thread.latestActivityAt, view.metadata.reportDate, 7))
+      .sort((a, b) => b.rawPostCount - a.rawPostCount || String(b.latestActivityAt ?? "").localeCompare(String(a.latestActivityAt ?? "")) || compareProposalIds(a.proposalId, b.proposalId));
+  }
+  const postsByProposal = new Map<string, NonNullable<DashboardV3Facts["discussionPosts"]>>();
+  for (const post of facts.discussionPosts ?? []) {
+    if (!canonicalPostIds.has(String(post.postId))) continue;
+    postsByProposal.set(post.proposalId, [...(postsByProposal.get(post.proposalId) ?? []), post]);
+  }
+  const rows = view.developerActivity.threads.flatMap((thread) => {
+    const posts = postsByProposal.get(thread.proposalId) ?? [];
+    if (posts.length === 0) return [];
+    const latestActivityAt = posts.map((post) => post.createdAt).sort().at(-1) ?? thread.latestActivityAt;
+    return [{
+      ...thread,
+      rawPostCount: posts.length,
+      validTechnicalPostCount: posts.some((post) => post.relevanceState === "technical") ? posts.filter((post) => post.relevanceState === "technical").length : null,
+      uniqueParticipantCount: unique(posts.map((post) => post.username).filter(Boolean)).length,
+      latestActivityAt,
+      evidenceIds: posts.map((post) => `post:${post.postId}`),
+    }];
+  });
+  return rows.sort((a, b) => b.rawPostCount - a.rawPostCount || String(b.latestActivityAt ?? "").localeCompare(String(a.latestActivityAt ?? "")) || compareProposalIds(a.proposalId, b.proposalId));
+}
+
 function buildDashboardV3Presentation(view: ReturnType<typeof buildDashboardV2View>, facts: DashboardV3Facts = {}, snapshotMetadata: Record<string, unknown> = {}) {
   const publicDomainAudit = buildPublicDomainAudit(view, facts);
   const proposalById = new Map(view.proposalExplorer.rows.map((proposal) => [proposal.proposalId, proposal]));
@@ -4137,16 +4193,17 @@ function buildDashboardV3Presentation(view: ReturnType<typeof buildDashboardV2Vi
       evidenceIds: item.evidenceIds,
     };
   }).sort((a, b) => Date.parse(b.repositoryAddedAt) - Date.parse(a.repositoryAddedAt) || compareProposalIds(a.proposalId, b.proposalId));
-  const current7dThreadProposalIds = new Set(view.developerActivity.threads
-    .filter((thread) => thread.rawPostCount > 0 && isWithinTrailingDays(thread.latestActivityAt, view.metadata.reportDate, 7))
+  const activeThreads = currentDeveloperActivityThreads(view, facts);
+  const current7dThreadProposalIds = new Set(activeThreads
     .map((thread) => thread.proposalId));
+  const current7dRawPostsByProposal = new Map(activeThreads.map((thread) => [thread.proposalId, thread.rawPostCount]));
   const domains = view.filters.domains.map((domainId) => {
     const proposals = view.proposalExplorer.rows.filter((proposal) => proposal.domainId === domainId);
     const topics = view.topicActivityMap.points.filter((topic) => topic.domainId === domainId);
     const spec7d = proposals.reduce((sum, proposal) => sum + proposal.counts.current7d, 0);
     const spec30d = proposals.reduce((sum, proposal) => sum + proposal.counts.current30d, 0);
     const spec180d = proposals.reduce((sum, proposal) => sum + proposal.counts.current180d, 0);
-    const raw = proposals.filter((proposal) => current7dThreadProposalIds.has(proposal.proposalId)).reduce((sum, proposal) => sum + proposal.counts.rawPosts, 0);
+    const raw = proposals.reduce((sum, proposal) => sum + (current7dRawPostsByProposal.get(proposal.proposalId) ?? 0), 0);
     return {
       domainId,
       label: domainDisplayName(domainId),
@@ -4162,9 +4219,6 @@ function buildDashboardV3Presentation(view: ReturnType<typeof buildDashboardV2Vi
       topicIds: topics.map((topic) => topic.topicId),
     };
   }).sort((a, b) => b.confirmedChanges - a.confirmedChanges || b.rawPosts - a.rawPosts || a.label.localeCompare(b.label, "ko"));
-  const activeThreads = view.developerActivity.threads
-    .filter((thread) => thread.rawPostCount > 0 && isWithinTrailingDays(thread.latestActivityAt, view.metadata.reportDate, 7))
-    .sort((a, b) => b.rawPostCount - a.rawPostCount || String(b.latestActivityAt ?? "").localeCompare(String(a.latestActivityAt ?? "")) || compareProposalIds(a.proposalId, b.proposalId));
   const lifecycleStages = ["Draft", "Review", "Last Call", "Final", "Living", "Inactive", "Unknown"];
   const lifecycle = lifecycleStages.map((stage) => {
     const sourceStage = stage === "Inactive" ? "Stagnant / Withdrawn" : stage;
