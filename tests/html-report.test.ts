@@ -762,6 +762,39 @@ test("Vitalik facts do not change core projection and usable count one remains v
   assert.equal(snapshot.views.dashboardV2.proposalExplorer.totalCurrent7d, 1);
 });
 
+test("weekly summary language check allows official English terms with Korean prose", () => {
+  assert.equal(
+    __qualityTestHooks.weeklySummaryTextQuality("EIP-8368 Account Abstraction은 공식 원문 기준 계정·권한 및 EVM 실행 규칙 영역을 다루는 제안입니다. 구현·채택 여부는 이번 수집 범위에서 확인하지 않았습니다."),
+    true,
+  );
+  assert.equal(
+    __qualityTestHooks.weeklySummaryTextQuality("EIP ID와 Ethereum, EVM opcode/API를 포함하지만 설명 문장은 한국어로 제공합니다."),
+    true,
+  );
+});
+
+test("weekly summary language check rejects raw English abstract, markdown, and truncation", () => {
+  assert.equal(
+    __qualityTestHooks.weeklySummaryTextQuality("This proposal defines a standard interface for account validation in the Ethereum Virtual Machine and introduces a new opcode for contract execution."),
+    false,
+  );
+  assert.equal(__qualityTestHooks.weeklySummaryTextQuality("## Heading\n- [text](https://example.test)를 원문 그대로 노출합니다."), false);
+  assert.equal(__qualityTestHooks.weeklySummaryTextQuality("EIP-8368은 공식 원문 기준 계정·권한 관련 규칙을 다루는 제안입..."), false);
+});
+
+test("weekly summary generation falls back to neutral Korean when evidence is thin", () => {
+  const summary = __qualityTestHooks.proposalSummaryForV3({
+    proposalId: "EIP-9001",
+    title: "Sparse Official Title",
+    eventType: "new_proposal",
+    description: "Proposal file creation detected.",
+  } as never);
+
+  assert.match(summary, /EIP-9001 Sparse Official Title/);
+  assert.match(summary, /공식 저장소에 신규 반영됐습니다/);
+  assert.equal(__qualityTestHooks.weeklySummaryTextQuality(summary), true);
+});
+
 function visibleReportHtml(html: string): string {
   return html
     .replace(/<style>[\s\S]*?<\/style>/, "")

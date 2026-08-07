@@ -383,7 +383,7 @@ export function generateWeeklyQualityJson(report: WeeklyRadarReport, html = gene
     qualityCheck("monitoring-scope-reference-count", monitoringScopeReferenceCount(embeddedApi), "fail", monitoringScopeReferenceObserved(embeddedApi), "discovered proposals equal public Explorer proposals plus reference-only excluded proposals", ["scope"]),
     qualityCheck("monitoring-scope-wording", monitoringScopeWording(embeddedApi, html), "fail", monitoringScopeFourLevelsObserved(embeddedApi, visibleHtml), "public and hidden scope wording uses discovered/public/reference/monitoring/card counts", ["scope"]),
     qualityCheck("direction-abstract-scope-qualified", directionAbstractScopeQualified(visibleHtml), "fail", directionAbstractObserved(embeddedApi, visibleHtml), "Direction abstract is scoped to this report and avoids roadmap claims", ["direction"]),
-    qualityCheck("weekly-summary-language-consistency", weeklySummaryLanguageConsistency(embeddedApi, visibleHtml), "fail", weeklyRepositoryAdditionObserved(embeddedApi, visibleHtml), "weekly summaries are Korean, source-backed, and free of markdown truncation", weeklyRepositoryAdditionIds(embeddedApi)),
+    qualityCheck("weekly-summary-language-consistency", weeklySummaryLanguageConsistency(embeddedApi, visibleHtml), "fail", weeklyRepositoryAdditionObserved(embeddedApi, visibleHtml), "weekly summaries are Korean, source-backed, and free of markdown truncation", weeklySummaryLanguageAffectedIds(embeddedApi, visibleHtml)),
     qualityCheck("aa-metric-public-labels", aaMetricPublicLabels(visibleHtml), "fail", aaMetricPublicObserved(visibleHtml), "AA rows distinguish period, specification, raw posts, and recent activity", ["aa"]),
     qualityCheck("aa-activity-date-source-integrity", aaActivityDateSourceIntegrity(embeddedApi, visibleHtml), "fail", aaActivityDateObserved(embeddedApi, visibleHtml), "AA recent activity dates use source event/post occurredAt", ["aa"]),
     qualityCheck("aa-activity-date-not-generated-at", aaActivityDateNotGeneratedAt(embeddedApi), "fail", aaActivityDateObserved(embeddedApi, visibleHtml), "AA recent activity does not fall back to snapshot generatedAt/reportAsOf", ["aa"]),
@@ -1325,10 +1325,16 @@ function weeklyRepositoryAdditionObserved(embeddedApi: unknown, visibleHtml: str
   return JSON.stringify({
     items: weeklyRepositoryAdditionsFromApi(embeddedApi).map((item) => ({
       proposalId: item.proposalId,
+      title: item.title,
+      summary: item.summary,
       repositoryAddedAt: item.repositoryAddedAt,
       repositoryAddedDateKst: item.repositoryAddedDateKst,
       proposalCreatedAt: item.proposalCreatedAt,
       proposalCreatedDateKst: item.proposalCreatedDateKst,
+      sourceUrl: item.sourceUrl,
+      sourcePath: item.sourcePath,
+      evidenceIds: item.evidenceIds,
+      renderedText: visibleTextOnly(proposalVisibleSegment(visibleHtml, item.proposalId)),
     })),
     hero: heroPlainLanguageObserved(visibleHtml),
     rows: (visibleHtml.match(/data-weekly-repository-addition(?:\s|=)/g) ?? []).length,
@@ -1608,19 +1614,56 @@ function directionAbstractScopeQualified(visibleHtml: string): boolean {
 }
 
 function weeklySummaryLanguageConsistency(embeddedApi: unknown, visibleHtml: string): boolean {
-  const summaries = new Map([
-    ["EIP-8347", "Ethereum 상태를 기존 Merkle Patricia Trie에서 Partitioned Binary Tree로 오프라인 이전하기 위한 절차와 검증 방식을 제안합니다."],
-    ["EIP-8337", "MAGIC 접두사와 배포 시 검증 절차를 이용해 EVM 코드를 사전에 검증 가능한 형식으로 정의합니다."],
-    ["ERC-8286", "Frame Transaction 기반 계정이 ERC-7579 모듈 계정 구조를 사용할 수 있도록 연결 규칙을 정의합니다."],
-    ["ERC-8320", "규제 자산에 관한 서명된 Claim을 표준 형식으로 등록하고 검증할 수 있는 인터페이스를 제안합니다."],
-    ["ERC-8262", "AML·제재 등 규제 조건의 충족 여부를 영지식 증명으로 검증하는 컴플라이언스 Oracle 인터페이스를 제안합니다."],
-  ]);
+  return weeklySummaryLanguageAffectedIds(embeddedApi, visibleHtml).length === 0;
+}
+
+function weeklySummaryLanguageAffectedIds(embeddedApi: unknown, visibleHtml: string): string[] {
   return weeklyRepositoryAdditionsFromApi(embeddedApi).every((item) => {
     const segment = proposalVisibleSegment(visibleHtml, item.proposalId);
     const text = visibleTextOnly(segment);
-    const expected = summaries.get(item.proposalId);
-    return Boolean(expected && text.includes(expected) && !/[`*_#]|Proposal file creation detected|\.\.\./.test(text));
-  });
+    return text.includes(item.summary)
+      && weeklySummaryTextQuality(item.summary)
+      && markdownCleanText(text)
+      && !truncatedSentenceText(text);
+  }) ? [] : weeklyRepositoryAdditionsFromApi(embeddedApi).filter((item) => {
+    const segment = proposalVisibleSegment(visibleHtml, item.proposalId);
+    const text = visibleTextOnly(segment);
+    return !(text.includes(item.summary)
+      && weeklySummaryTextQuality(item.summary)
+      && markdownCleanText(text)
+      && !truncatedSentenceText(text));
+  }).map((item) => item.proposalId);
+}
+
+function weeklySummaryTextQuality(summary: string): boolean {
+  const clean = summary.replace(/\s+/g, " ").trim();
+  return clean.length > 0
+    && hasKoreanExplanatorySentence(clean)
+    && markdownCleanText(clean)
+    && !truncatedSentenceText(clean)
+    && !rawEnglishAbstractText(clean)
+    && !/Proposal file creation detected/i.test(clean);
+}
+
+function hasKoreanExplanatorySentence(value: string): boolean {
+  const hangulCount = (value.match(/[가-힣]/g) ?? []).length;
+  if (hangulCount < 8) return false;
+  return /[가-힣][^.!?。！？]*(?:다|니다|습니다|합니다|됩니다|했습니다|확인해야 합니다)\./.test(value);
+}
+
+function markdownCleanText(value: string): boolean {
+  return !/(^|\s)#{1,6}\s+\S|\[[^\]]+\]\([^)]+\)|(^|\s)[-*+]\s+\S|`{1,3}|[*_]{2,}/m.test(value);
+}
+
+function truncatedSentenceText(value: string): boolean {
+  return /\.{3}|…|[,:;]\s*$|[가-힣A-Za-z0-9]\s*$/.test(value) && !/[.!?。！？]\s*$/.test(value.trim());
+}
+
+function rawEnglishAbstractText(value: string): boolean {
+  const plain = value.replace(/\b(?:EIP|ERC)-\d+\b/g, " ").replace(/\b(?:Ethereum|EVM|ERC|EIP|opcode|API|URL|URI|NFT|AML|NAV)\b/g, " ");
+  const englishWords = plain.match(/\b[A-Za-z][A-Za-z-]{2,}\b/g) ?? [];
+  const hangulWords = plain.match(/[가-힣]+/g) ?? [];
+  return englishWords.length >= 10 && englishWords.length > hangulWords.length * 1.5;
 }
 
 function aaMetricPublicLabels(visibleHtml: string): boolean {
@@ -3338,8 +3381,11 @@ export const __qualityTestHooks = {
   monitoringScopeWording,
   qualityCheck,
   parseLocalSpecificationMarkdown,
+  proposalSummaryForV3,
   snapshotWithoutVitalik,
+  sourceBackedKoreanSummary,
   weeklyConfidenceLimitCanonical,
+  weeklySummaryTextQuality,
   weeklySpecificationTrendReason,
   subjectRegistryMissingIdsFromPublicViews,
   snapshotHash,
@@ -4705,22 +4751,15 @@ function proposalSummaryForV3(
   item: ReturnType<typeof buildDashboardV2View>["weeklyTimeline"]["items"][number],
   proposal?: ReturnType<typeof buildDashboardV2View>["proposalExplorer"]["rows"][number],
 ): string {
-  const summaries: Record<string, string> = {
-    "EIP-8347": "Ethereum 상태를 기존 Merkle Patricia Trie에서 Partitioned Binary Tree로 오프라인 이전하기 위한 절차와 검증 방식을 제안합니다.",
-    "EIP-8337": "MAGIC 접두사와 배포 시 검증 절차를 이용해 EVM 코드를 사전에 검증 가능한 형식으로 정의합니다.",
-    "ERC-8286": "Frame Transaction 기반 계정이 ERC-7579 모듈 계정 구조를 사용할 수 있도록 연결 규칙을 정의합니다.",
-    "ERC-8320": "규제 자산에 관한 서명된 Claim을 표준 형식으로 등록하고 검증할 수 있는 인터페이스를 제안합니다.",
-    "ERC-8262": "AML·제재 등 규제 조건의 충족 여부를 영지식 증명으로 검증하는 컴플라이언스 Oracle 인터페이스를 제안합니다.",
-  };
-  if (summaries[item.proposalId]) return summaries[item.proposalId]!;
+  const title = proposal?.title ?? item.title ?? item.proposalId;
   const abstract = String(proposal?.abstractSummary ?? "").replace(/\s+/g, " ").trim();
-  if (abstract && !/Proposal file creation detected/i.test(abstract)) return cleanPublicSummary(abstract);
+  if (abstract && !/Proposal file creation detected/i.test(abstract)) return summarizeSpecificationKo(item.proposalId, title, abstract);
   const description = String(item.description ?? "").replace(/\s+/g, " ").trim();
-  if (description && !/Proposal file creation detected/i.test(description)) return cleanPublicSummary(description);
-  if (item.eventType === "new_proposal") return "새 Draft Proposal로 등록됨";
-  if (item.fromStatus && item.toStatus && item.fromStatus !== item.toStatus) return `${item.fromStatus}에서 ${item.toStatus}로 상태 변경`;
-  if (item.eventType === "specification_change") return "공식 명세 변경이 확인됨";
-  return proposal?.status ? `${proposal.status} 상태 Proposal로 관찰됨` : shortTitle(item.title);
+  if (description && !/Proposal file creation detected/i.test(description)) return summarizeSpecificationKo(item.proposalId, title, description);
+  if (item.eventType === "new_proposal") return sourceLimitedWeeklySummary(item.proposalId, title, "새 Draft Proposal로 공식 저장소에 신규 반영됐습니다.");
+  if (item.fromStatus && item.toStatus && item.fromStatus !== item.toStatus) return `${item.proposalId}의 공식 상태가 ${item.fromStatus}에서 ${item.toStatus}로 변경됐습니다. 구현·채택 여부는 이번 수집 범위에서 확인하지 않았습니다.`;
+  if (item.eventType === "specification_change") return `${item.proposalId}의 공식 명세 변경이 확인됐습니다. 변경 세부 내용은 원문 근거에서 추가 확인이 필요합니다.`;
+  return sourceLimitedWeeklySummary(item.proposalId, title, proposal?.status ? `${proposal.status} 상태로 관찰됐습니다.` : "공식 저장소에서 관찰됐습니다.");
 }
 
 function cleanPublicSummary(value: string): string {
@@ -4731,6 +4770,10 @@ function cleanPublicSummary(value: string): string {
     .trim();
   const sentence = stripped.match(/^(.+?[.!?。]|.+?다\.|.+?니다\.)/)?.[1] ?? stripped;
   return sentence.length > 120 ? `${sentence.slice(0, 116).trim()}...` : sentence;
+}
+
+function sourceLimitedWeeklySummary(proposalId: string, title: string, evidenceState: string): string {
+  return `${proposalId} ${title}가 ${evidenceState} 제안의 목적과 범위는 공식 원문에서 확인해야 합니다.`;
 }
 
 function auditedDomainForProposal(proposalId: string, fallbackDomainId: string, fallbackTopic?: string, title?: string) {
@@ -5972,8 +6015,7 @@ function summarizeSpecificationKo(proposalId: string, title: string, source: str
   if (proposalId === "ERC-7303" || /token-controlled token circulation|circulation/.test(lower)) return "Token-Controlled Token Circulation은 토큰이 circulation 조건을 제어하는 구조를 다룹니다. 세부 운영 영향은 원문 근거 범위 안에서만 해석합니다.";
   if (proposalId === "EIP-8130" || /account configuration/.test(lower)) return "Account Configuration은 계정 설정을 명세화해 권한·구성 관리 경계를 다루는 제안입니다. 구현 또는 채택은 단정하지 않습니다.";
   if (proposalId === "ERC-8330" || /nav snapshot|net asset value|oracle/.test(lower)) return "Subject-Linked NAV Snapshot Oracle은 주체별 NAV snapshot과 가치 기준시각을 기록하는 oracle/reporting 인터페이스를 제안합니다.";
-  const sentence = source.split(/(?<=[.!?。])\s+/).find((item) => item.length > 30) ?? source;
-  return truncateSentence(`${title}: ${sentence} 구현·채택 여부는 이번 수집 범위에서 확인하지 않았습니다.`, 220);
+  return sourceBackedKoreanSummary(proposalId, title, source);
 }
 
 function truncateSentence(text: string, max: number): string {
@@ -5982,6 +6024,45 @@ function truncateSentence(text: string, max: number): string {
   const cut = clean.slice(0, max);
   const last = Math.max(cut.lastIndexOf("."), cut.lastIndexOf("。"), cut.lastIndexOf("다."));
   return (last > 40 ? cut.slice(0, last + 1) : cut).trim();
+}
+
+function sourceBackedKoreanSummary(proposalId: string, title: string, source: string): string {
+  const cleanTitle = stripMarkdownSyntax(title).replace(/\s+/g, " ").trim() || proposalId;
+  const cleanSource = stripMarkdownSyntax(source).replace(/\s+/g, " ").trim();
+  if (!cleanSource || /Proposal file creation detected/i.test(cleanSource)) {
+    return sourceLimitedWeeklySummary(proposalId, cleanTitle, "공식 저장소에 신규 반영됐습니다.");
+  }
+  const lower = `${cleanTitle} ${cleanSource}`.toLowerCase();
+  const subjects = [
+    [/zero-knowledge|zk|proof/i, "영지식 증명"],
+    [/compliance|aml|sanction/i, "컴플라이언스 검증"],
+    [/oracle|nav|net asset value|price|pricing/i, "oracle/reporting"],
+    [/registry|register|claim/i, "registry와 claim"],
+    [/account|wallet|signature|authorization|permission/i, "계정·권한"],
+    [/evm|opcode|precompile|gas|state|transaction/i, "EVM 실행 규칙"],
+    [/validator|consensus|attestation|staking|finality/i, "검증자·합의"],
+    [/token|asset|vault|erc-20|erc-4626/i, "토큰·자산"],
+    [/metadata|data|blob|storage/i, "데이터 구조"],
+    [/interface|api|function|contract/i, "계약 인터페이스"],
+  ] as const;
+  const matched = subjects.filter(([pattern]) => pattern.test(lower)).map(([, label]) => label);
+  const topic = unique(matched).slice(0, 2).join(" 및 ");
+  if (topic) {
+    return `${proposalId} ${cleanTitle}은 공식 원문 기준 ${topic} 영역을 다루는 제안입니다. 구현·채택 여부는 이번 수집 범위에서 확인하지 않았습니다.`;
+  }
+  return `${proposalId} ${cleanTitle}은 공식 원문에 근거한 신규 명세 제안입니다. 세부 목적과 범위는 원문 근거에서 확인해야 합니다.`;
+}
+
+function stripMarkdownSyntax(value: string): string {
+  return value
+    .replace(/```[\s\S]*?```/g, " ")
+    .replace(/`([^`]+)`/g, "$1")
+    .replace(/\[([^\]]+)\]\([^)]+\)/g, "$1")
+    .replace(/^\s*#{1,6}\s+/gm, "")
+    .replace(/^\s*[-*+]\s+/gm, "")
+    .replace(/\*\*([^*]+)\*\*/g, "$1")
+    .replace(/__([^_]+)__/g, "$1")
+    .trim();
 }
 
 function validatedDiscussionInsights(discussion: DiscussionHeatItem) {
