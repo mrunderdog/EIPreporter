@@ -1,6 +1,6 @@
 import { parseArgs, resolveDatabasePath } from "../config.ts";
 import { openDatabase } from "../db.ts";
-import { buildWeeklyReportWithDiscussionActivity, formatWeeklyReport } from "../report.ts";
+import { buildWeeklyReport, buildWeeklyReportWithDiscussionActivity, formatWeeklyReport } from "../report.ts";
 
 async function main(): Promise<void> {
   const args = parseArgs(process.argv.slice(2));
@@ -8,10 +8,13 @@ async function main(): Promise<void> {
   const db = openDatabase(databasePath);
 
   try {
-    const report = await buildWeeklyReportWithDiscussionActivity(db, new Date(), {
+    const options = {
       trendWindowDays: readDays(args["trend-days"], "--trend-days"),
       changeWindowDays: readDays(args["change-days"], "--change-days"),
-    });
+    };
+    const report = args["no-enrichment"] === true
+      ? buildWeeklyReport(db, new Date(), options)
+      : await buildWeeklyReportWithDiscussionActivity(db, new Date(), options);
     if (!report) {
       console.log("스냅샷이 없습니다. 먼저 `npm run collect`를 실행하세요.");
       return;
