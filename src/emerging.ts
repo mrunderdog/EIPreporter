@@ -86,6 +86,8 @@ export function buildOfficialRepoSignals(
         status: record.status,
         createdAt: record.created,
         lastActivityAt: lastEvent,
+        primaryProposalId: record.proposalId,
+        relatedProposalIds: extractRelatedProposalIds(`${record.title ?? ""} ${record.description ?? ""}`, record.proposalId),
         extractedEipIds: [record.proposalId],
         collectedAt: now.toISOString(),
         facts: {
@@ -211,7 +213,9 @@ function resolveEmergingIssues(signals: EmergingRawSignal[]): EmergingIssue[] {
     groups.set(key, list);
   }
   return [...groups.entries()].map(([issueId, sourceSignals]) => {
-    const eipIds = [...new Set(sourceSignals.flatMap((signal) => signal.extractedEipIds))].sort(compareProposalIds);
+    const primaryProposalId = primaryProposalIdForSignals(sourceSignals);
+    const relatedProposalIds = [...new Set(sourceSignals.flatMap((signal) => signal.relatedProposalIds ?? []).filter((id) => id !== primaryProposalId))].sort(compareProposalIds);
+    const eipIds = [...new Set([primaryProposalId, ...relatedProposalIds, ...sourceSignals.flatMap((signal) => signal.extractedEipIds).filter((id) => id !== primaryProposalId && !relatedProposalIds.includes(id))].filter((id): id is string => Boolean(id)))].sort(compareProposalIds);
     const preferred = sourceSignals.sort(compareSignalFreshness)[0]!;
     const sources = [...new Set(sourceSignals.map((signal) => signal.source))];
     const createdAt = minIso(sourceSignals.map((signal) => signal.createdAt));
@@ -219,6 +223,8 @@ function resolveEmergingIssues(signals: EmergingRawSignal[]): EmergingIssue[] {
     return {
       issueId,
       title: cleanTitle(preferred.title),
+      primaryProposalId,
+      relatedProposalIds,
       eipIds,
       status: "EARLY_SIGNAL",
       stage: inferStage(sourceSignals),
@@ -369,6 +375,10 @@ function magiciansTopicToSignal(value: unknown, now: Date): EmergingRawSignal[] 
   if (!id || !title) return [];
   const url = `https://ethereum-magicians.org/t/${slug ?? "-"}/${id}`;
   const posters = Array.isArray(record.posters) ? record.posters : [];
+  const identity = resolveProposalIdentity({
+    title,
+    labels: readStringArray(record.tags),
+  });
   return [{
     source: "ethereum_magicians",
     sourceId: String(id),
@@ -384,7 +394,9 @@ function magiciansTopicToSignal(value: unknown, now: Date): EmergingRawSignal[] 
       .map((poster) => readString((poster as Record<string, unknown>).user_id) ?? readString((poster as Record<string, unknown>).description))
       .filter((item): item is string => Boolean(item)),
     labels: readStringArray(record.tags),
-    extractedEipIds: extractProposalIds(`${title} ${readStringArray(record.tags).join(" ")}`),
+    primaryProposalId: identity.primaryProposalId,
+    relatedProposalIds: identity.relatedProposalIds,
+    extractedEipIds: identity.allProposalIds,
     collectedAt: now.toISOString(),
     facts: {
       sourceTopicId: id,
@@ -404,6 +416,14 @@ function githubPrToSignal(value: unknown, sourceRepo: SourceRepo, now: Date): Em
     ? record.labels.map((label) => readString((label as Record<string, unknown>).name)).filter((item): item is string => Boolean(item))
     : [];
   const body = readString(record.body) ?? "";
+  const identity = resolveProposalIdentity({
+    title,
+    body,
+    labels,
+    sourceRepo,
+    changedFiles: readChangedFiles(record),
+    frontmatterProposalId: readFrontmatterProposalId(record, sourceRepo),
+  });
   return [{
     source: "github_pr",
     sourceId: `${sourceRepo}#${number}`,
@@ -419,7 +439,9 @@ function githubPrToSignal(value: unknown, sourceRepo: SourceRepo, now: Date): Em
     participantCount: readString((record.user as Record<string, unknown> | undefined)?.login) ? 1 : undefined,
     authorLogins: [readString((record.user as Record<string, unknown> | undefined)?.login)].filter((item): item is string => Boolean(item)),
     labels,
-    extractedEipIds: extractProposalIds(`${title}\n${body}\n${labels.join(" ")}`),
+    primaryProposalId: identity.primaryProposalId,
+    relatedProposalIds: identity.relatedProposalIds,
+    extractedEipIds: identity.allProposalIds,
     collectedAt: now.toISOString(),
     facts: {
       pullNumber: number,
@@ -547,8 +569,9 @@ function activitySnapshotFromSignal(signal: EmergingRawSignal): EmergingActivity
 }
 
 function issueKey(signal: EmergingRawSignal): string {
+  if (signal.primaryProposalId) return `proposal:${signal.primaryProposalId.toUpperCase()}`;
   const ids = signal.extractedEipIds.map((id) => id.toUpperCase()).sort(compareProposalIds);
-  if (ids.length) return `proposal:${ids.join("+")}`;
+  if (ids.length === 1 && (titleStartsWithProposalId(signal.title, ids[0]) || titleProposalActionId(signal.title) === ids[0])) return `proposal:${ids[0]}`;
   return `topic:${normalizeTitle(signal.title)}`;
 }
 
@@ -605,6 +628,93 @@ export function extractProposalIds(text: string): string[] {
   const ids = [...text.matchAll(/\b(EIP|ERC)[-\s]?(\d{1,6})\b/gi)]
     .map((match) => `${match[1]!.toUpperCase()}-${Number(match[2])}`);
   return [...new Set(ids)].sort(compareProposalIds);
+}
+
+export function resolveProposalIdentity(input: {
+  title?: string;
+  body?: string;
+  labels?: string[];
+  sourceRepo?: SourceRepo;
+  frontmatterProposalId?: string;
+  filename?: string;
+  changedFiles?: string[];
+  metadataProposalId?: string;
+  discussionsToProposalId?: string;
+}): { primaryProposalId?: string; relatedProposalIds: string[]; allProposalIds: string[] } {
+  const text = [input.title, input.body, ...(input.labels ?? [])].filter(Boolean).join("\n");
+  const allProposalIds = extractProposalIds(text);
+  const primaryProposalId = [
+    normalizeProposalId(input.frontmatterProposalId),
+    proposalIdFromFilename(input.filename),
+    ...(input.changedFiles ?? []).map(proposalIdFromFilename),
+    normalizeProposalId(input.metadataProposalId),
+    normalizeProposalId(input.discussionsToProposalId),
+    titleLeadingProposalId(input.title ?? "") ?? titleProposalActionId(input.title ?? ""),
+  ].find((id): id is string => Boolean(id));
+  const relatedProposalIds = allProposalIds.filter((id) => id !== primaryProposalId).sort(compareProposalIds);
+  return {
+    primaryProposalId,
+    relatedProposalIds,
+    allProposalIds: [...new Set([primaryProposalId, ...relatedProposalIds].filter((id): id is string => Boolean(id)))].sort(compareProposalIds),
+  };
+}
+
+export function extractRelatedProposalIds(text: string, primaryProposalId?: string): string[] {
+  return extractProposalIds(text).filter((id) => id !== primaryProposalId).sort(compareProposalIds);
+}
+
+function primaryProposalIdForSignals(signals: EmergingRawSignal[]): string | undefined {
+  const counts = new Map<string, number>();
+  for (const signal of signals) {
+    if (!signal.primaryProposalId) continue;
+    counts.set(signal.primaryProposalId, (counts.get(signal.primaryProposalId) ?? 0) + 1);
+  }
+  return [...counts.entries()].sort((a, b) => b[1] - a[1] || compareProposalIds(a[0], b[0]))[0]?.[0];
+}
+
+function titleLeadingProposalId(title: string): string | undefined {
+  return normalizeProposalId(title.match(/^\s*(EIP|ERC)[-\s]?(\d{1,6})\b/i)?.slice(1, 3).join("-"));
+}
+
+function titleProposalActionId(title: string): string | undefined {
+  const match = title.match(/^\s*(?:add|draft|create|new)\s+(EIP|ERC)[-\s]?(\d{1,6})\b/i);
+  return match ? `${match[1]!.toUpperCase()}-${Number(match[2])}` : undefined;
+}
+
+function titleStartsWithProposalId(title: string, proposalId: string): boolean {
+  return titleLeadingProposalId(title) === proposalId;
+}
+
+function proposalIdFromFilename(value: string | undefined | null): string | undefined {
+  const match = String(value ?? "").match(/\b(eip|erc)-(\d{1,6})\.md\b/i);
+  return match ? `${match[1]!.toUpperCase()}-${Number(match[2])}` : undefined;
+}
+
+function normalizeProposalId(value: string | undefined | null): string | undefined {
+  if (!value) return undefined;
+  const match = String(value).match(/\b(EIP|ERC)?[-\s]?(\d{1,6})\b/i);
+  if (!match) return undefined;
+  const prefix = match[1]?.toUpperCase();
+  if (prefix === "EIP" || prefix === "ERC") return `${prefix}-${Number(match[2])}`;
+  return undefined;
+}
+
+function readChangedFiles(record: Record<string, unknown>): string[] {
+  const files = record.changedFiles ?? record.files;
+  if (!Array.isArray(files)) return [];
+  return files.map((file) => typeof file === "string" ? file : readString((file as Record<string, unknown>)?.filename)).filter((item): item is string => Boolean(item));
+}
+
+function readFrontmatterProposalId(record: Record<string, unknown>, sourceRepo?: SourceRepo): string | undefined {
+  const frontmatter = record.frontmatter;
+  if (frontmatter && typeof frontmatter === "object") {
+    const ercValue = readString((frontmatter as Record<string, unknown>).erc);
+    const eipValue = readString((frontmatter as Record<string, unknown>).eip);
+    const value = ercValue ?? eipValue;
+    const kind = ercValue || sourceRepo === "ethereum/ercs" ? "ERC" : "EIP";
+    return value && /^\d+$/.test(value) ? `${kind}-${value}` : value;
+  }
+  return readString(record.frontmatterProposalId);
 }
 
 function inferStage(signals: EmergingRawSignal[]): EmergingIssue["stage"] {

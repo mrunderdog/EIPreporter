@@ -502,6 +502,8 @@ export type EmergingRawSignal = {
   participantCount?: number;
   authorLogins?: string[];
   labels?: string[];
+  primaryProposalId?: string;
+  relatedProposalIds?: string[];
   extractedEipIds: string[];
   collectedAt: string;
   facts: Record<string, unknown>;
@@ -531,6 +533,8 @@ export type EmergingIssueStage = "DISCUSSION" | "PRE_MERGE" | "STANDARDIZING" | 
 export type EmergingIssue = {
   issueId: string;
   title: string;
+  primaryProposalId?: string;
+  relatedProposalIds?: string[];
   eipIds: string[];
   status: EmergingIssueStatus;
   stage: EmergingIssueStage;

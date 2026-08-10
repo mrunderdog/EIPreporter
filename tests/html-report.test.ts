@@ -74,7 +74,7 @@ test("generates and writes the Developer Intelligence HTML report", () => {
     assert.match(html, /\.dash-signal-main small\{display:block[^}]*overflow:visible\}/);
     assert.doesNotMatch(html, /\.dash-signal-main small\{[^}]*-webkit-line-clamp/);
     assert.doesNotMatch(visibleShell, /glance-strip/);
-    assert.equal((html.match(/<nav class="dash-section-nav"[\s\S]*?<\/nav>/)?.[0].match(/<a /g) ?? []).length, 10);
+    assert.equal((html.match(/<nav class="dash-section-nav"[\s\S]*?<\/nav>/)?.[0].match(/<a /g) ?? []).length, 11);
     assert.match(html, /WHAT'S HAPPENING NOW/);
     assert.match(html, /EMERGING SIGNALS/);
     assert.doesNotMatch(
@@ -251,6 +251,92 @@ test("generates and writes the Developer Intelligence HTML report", () => {
   }
 });
 
+test("renders proposal navigation, related proposals, and official URL policy", () => {
+  const db = openDatabase(":memory:");
+  try {
+    insertSnapshot(db, [
+      makeRecord("EIP-8363", "Draft", "hash-8363", "Tapered Issuance Burn", "Core"),
+      makeRecord("ERC-6551", "Final", "hash-6551", "Non-fungible Token Bound Accounts", "ERC"),
+      makeRecord("ERC-8216", "Draft", "hash-8216", "Slot-Based Equipment for ERC-6551 Accounts", "ERC"),
+    ]);
+    const report = buildWeeklyReport(db, new Date("2026-08-10T00:00:00.000Z"));
+    assert.ok(report);
+    report.ethereumTechRadar.emergingLayer = {
+      generatedAt: report.generatedAt,
+      sourceStatus: [],
+      rawSignals: [],
+      issues: [],
+      whatsHappeningNow: [{
+        issueId: "proposal:ERC-8216",
+        title: "Slot-Based Equipment for ERC-6551 Accounts",
+        primaryProposalId: "ERC-8216",
+        relatedProposalIds: ["ERC-6551"],
+        eipIds: ["ERC-8216", "ERC-6551"],
+        status: "HOT_ISSUE",
+        stage: "PRE_MERGE",
+        heatScore: 63,
+        confidenceScore: 72,
+        sources: ["github_pr", "ethereum_magicians"],
+        metrics: { replyCount: 18, viewCount: 900, participantCount: 6, velocity: [] },
+        scoreBreakdown: [],
+        sourceSignals: [
+          { source: "github_pr", sourceId: "ethereum/ercs#8216", sourceRepo: "ethereum/ercs", url: "https://github.com/ethereum/ercs/pull/8216", title: "Slot-Based Equipment for ERC-6551 Accounts", primaryProposalId: "ERC-8216", relatedProposalIds: ["ERC-6551"], extractedEipIds: ["ERC-8216", "ERC-6551"], collectedAt: report.generatedAt, facts: {} },
+          { source: "ethereum_magicians", sourceId: "8216-topic", url: "https://ethereum-magicians.org/t/slot-equipment/8216", title: "ERC-8216: Slot-Based Equipment", primaryProposalId: "ERC-8216", relatedProposalIds: [], extractedEipIds: ["ERC-8216"], collectedAt: report.generatedAt, facts: {} },
+        ],
+        summaries: { whatIsHappening: "GitHub PR과 Magicians 활동이 함께 확인됩니다.", whyMoving: "복수 출처에서 최근 activity가 있습니다.", whyItMatters: "참조와 subject를 분리해 확인해야 합니다.", watchNext: "PR merge와 thread activity를 확인합니다." },
+        facts: { sourceCount: 2 },
+      }],
+      emergingSignals: [{
+        issueId: "proposal:EIP-8363",
+        title: "Tapered Issuance Burn",
+        primaryProposalId: "EIP-8363",
+        relatedProposalIds: [],
+        eipIds: ["EIP-8363"],
+        status: "EARLY_SIGNAL",
+        stage: "DISCUSSION",
+        heatScore: 41,
+        confidenceScore: 57,
+        sources: ["ethereum_magicians"],
+        metrics: { velocity: [] },
+        scoreBreakdown: [],
+        sourceSignals: [{ source: "ethereum_magicians", sourceId: "8363-topic", url: "https://ethereum-magicians.org/t/tapered-issuance-burn/8363", title: "EIP-8363: Tapered Issuance Burn", primaryProposalId: "EIP-8363", relatedProposalIds: [], extractedEipIds: ["EIP-8363"], collectedAt: report.generatedAt, facts: {} }],
+        summaries: { whatIsHappening: "Magicians discussion is active.", whyMoving: "최근 토론 후보입니다.", whyItMatters: "issuance 관련 논의입니다.", watchNext: "공식 문서 여부를 확인합니다." },
+        facts: { sourceCount: 1 },
+      }],
+      decisionWatch: [{
+        issueId: "topic:future-issuance-policy-discussion",
+        title: "Future issuance policy discussion",
+        eipIds: [],
+        relatedProposalIds: [],
+        status: "EARLY_SIGNAL",
+        stage: "DISCUSSION",
+        heatScore: 36,
+        confidenceScore: 45,
+        sources: ["ethereum_magicians"],
+        metrics: { velocity: [] },
+        scoreBreakdown: [],
+        sourceSignals: [{ source: "ethereum_magicians", sourceId: "unnumbered", url: "https://ethereum-magicians.org/t/future-issuance-policy/999", title: "Future issuance policy discussion", extractedEipIds: [], collectedAt: report.generatedAt, facts: {} }],
+        summaries: { whatIsHappening: "번호 없는 토론입니다.", whyMoving: "최근 활동이 있습니다.", whyItMatters: "아직 공식 proposal 번호가 없습니다.", watchNext: "Magicians thread를 확인합니다." },
+        facts: { sourceCount: 1 },
+      }],
+      generatedBy: "deterministic_emerging_signal_engine",
+    };
+
+    const html = generateWeeklyHtml(report);
+    assert.match(html, /https:\/\/eips\.ethereum\.org\/EIPS\/eip-8363/);
+    assert.match(html, /https:\/\/ercs\.ethereum\.org\/ERCS\/erc-6551/);
+    assert.match(html, /https:\/\/ercs\.ethereum\.org\/ERCS\/erc-8216/);
+    assert.match(html, /Related[\s\S]*ERC-6551/);
+    assert.match(html, /설명 보기/);
+    assert.match(html, /GitHub PR/);
+    assert.match(html, /Magicians/);
+    assert.match(html, /UNNUMBERED DRAFT/);
+    assert.doesNotMatch(html, /eip-undefined|erc-undefined|eip-Future issuance/);
+  } finally {
+    db.close();
+  }
+});
+
 test("keeps Discussion Heat diagnostics out of the end-user IA", () => {
   const db = openDatabase(":memory:");
 
@@ -324,14 +410,14 @@ test("renders AA baseline proposals when optional metadata is null or uncollecte
     const html = generateWeeklyHtml(report);
     const visibleHtml = visibleReportHtml(html);
 
-    assert.match(html, /https:\/\/eips\.ethereum\.org\/EIPS\/eip-4337/);
+    assert.match(html, /https:\/\/ercs\.ethereum\.org\/ERCS\/erc-4337/);
     assert.match(visibleHtml, /Discussion source 미수집/);
     assert.doesNotMatch(visibleHtml, /href=""/);
     assert.doesNotMatch(visibleHtml, /\bnull\b|\bundefined\b/);
 
     const platformApi = JSON.parse(html.match(/<script type="application\/json" id="technology-platform-api">([\s\S]*?)<\/script>/)?.[1] ?? "{}");
     assert.equal(platformApi.intelligenceSnapshot.views.accountAbstraction.tracks.length, 12);
-    assert.match(html, /https:\/\/eips\.ethereum\.org\/EIPS\/eip-8286/);
+    assert.match(html, /https:\/\/ercs\.ethereum\.org\/ERCS\/erc-8286/);
     assert.match(html, /https:\/\/ethereum-magicians\.org\/t\/draft-erc-8286-modular-accounts-for-frame-transactions\/28695/);
   } finally {
     chdir(originalCwd);
@@ -1296,23 +1382,31 @@ function distributeCounts(total: number, buckets: number): number[] {
   return counts;
 }
 
-function makeRecord(): ProposalRecord {
+function makeRecord(
+  proposalId = "ERC-4626",
+  status = "Final",
+  rawContentHash = "hash",
+  title = "Tokenized Vaults",
+  category = "ERC",
+): ProposalRecord {
+  const [kind, rawNumber] = proposalId.split("-");
+  const number = Number(rawNumber);
   return {
-    proposalId: "ERC-4626",
-    kind: "ERC",
-    number: 4626,
-    title: "Tokenized Vaults",
-    status: "Final",
+    proposalId,
+    kind: kind as ProposalRecord["kind"],
+    number,
+    title,
+    status,
     proposalType: "Standards Track",
-    category: "ERC",
+    category,
     created: "2026-01-22",
     updated: null,
     discussionTo: null,
     discussionLinks: [],
-    sourceRepo: "ethereum/ercs",
-    sourcePath: "ERCS/erc-4626.md",
-    canonicalUrl: "https://example.test/ERC-4626",
-    rawContentHash: "hash",
+    sourceRepo: kind === "ERC" ? "ethereum/ercs" : "ethereum/EIPs",
+    sourcePath: kind === "ERC" ? `ERCS/erc-${number}.md` : `EIPS/eip-${number}.md`,
+    canonicalUrl: `https://example.test/${proposalId}`,
+    rawContentHash,
   };
 }
 

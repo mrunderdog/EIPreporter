@@ -5,6 +5,7 @@ import {
   buildEmergingLayer,
   detectEmergingAlerts,
   extractProposalIds,
+  resolveProposalIdentity,
 } from "../src/emerging.ts";
 import type { EmergingRawSignal } from "../src/types.ts";
 
@@ -186,6 +187,88 @@ test("negative regression does not mark simple noise as HOT", () => {
 
 test("extracts EIP and ERC ids without hardcoded proposal lists", () => {
   assert.deepEqual(extractProposalIds("Draft ERC 9007 and eip-9008"), ["ERC-9007", "EIP-9008"]);
+});
+
+test("entity resolution uses frontmatter primary and keeps title mentions as related references", () => {
+  const identity = resolveProposalIdentity({
+    title: "Slot-Based Equipment for ERC-6551 Accounts",
+    frontmatterProposalId: "ERC-8216",
+  });
+
+  assert.equal(identity.primaryProposalId, "ERC-8216");
+  assert.ok(identity.relatedProposalIds.includes("ERC-6551"));
+});
+
+test("entity resolution does not let title references override frontmatter primary", () => {
+  const identity = resolveProposalIdentity({
+    title: "Changes to EIP-1559 behavior",
+    frontmatterProposalId: "EIP-9999",
+  });
+
+  assert.equal(identity.primaryProposalId, "EIP-9999");
+  assert.ok(identity.relatedProposalIds.includes("EIP-1559"));
+});
+
+test("entity resolution can use title-leading proposal id when metadata is absent", () => {
+  const identity = resolveProposalIdentity({
+    title: "EIP-8363: Tapered Issuance Burn",
+  });
+
+  assert.equal(identity.primaryProposalId, "EIP-8363");
+  assert.deepEqual(identity.relatedProposalIds, []);
+});
+
+test("merges sources with the same primary proposal id", () => {
+  const layer = buildEmergingLayer({
+    now: new Date("2026-08-10T00:00:00.000Z"),
+    rawSignals: [
+      githubSignal({
+        sourceId: "ethereum/ercs#1",
+        title: "Slot-Based Equipment for ERC-6551 Accounts",
+        primaryProposalId: "ERC-8216",
+        relatedProposalIds: ["ERC-6551"],
+        extractedEipIds: ["ERC-8216", "ERC-6551"],
+      }),
+      magiciansSignal({
+        sourceId: "topic-8216",
+        title: "ERC-8216: Slot-Based Equipment",
+        primaryProposalId: "ERC-8216",
+        extractedEipIds: ["ERC-8216"],
+      }),
+    ],
+  });
+
+  assert.equal(layer.issues.length, 1);
+  assert.equal(layer.issues[0]?.primaryProposalId, "ERC-8216");
+  assert.deepEqual(new Set(layer.issues[0]?.sources), new Set(["github_pr", "ethereum_magicians"]));
+  assert.ok(layer.issues[0]?.relatedProposalIds?.includes("ERC-6551"));
+});
+
+test("does not merge separate proposals that only share a related reference", () => {
+  const layer = buildEmergingLayer({
+    now: new Date("2026-08-10T00:00:00.000Z"),
+    rawSignals: [
+      githubSignal({
+        sourceId: "ethereum/ercs#8216",
+        title: "Slot-Based Equipment for ERC-6551 Accounts",
+        primaryProposalId: "ERC-8216",
+        relatedProposalIds: ["ERC-6551"],
+        extractedEipIds: ["ERC-8216", "ERC-6551"],
+      }),
+      githubSignal({
+        sourceId: "ethereum/ercs#9000",
+        title: "Another extension for ERC-6551 Accounts",
+        primaryProposalId: "ERC-9000",
+        relatedProposalIds: ["ERC-6551"],
+        extractedEipIds: ["ERC-9000", "ERC-6551"],
+      }),
+    ],
+  });
+
+  assert.equal(layer.issues.length, 2);
+  assert.deepEqual(layer.issues.map((issue) => issue.primaryProposalId).sort(), ["ERC-8216", "ERC-9000"]);
+  assert.ok(layer.issues.every((issue) => issue.sources.length === 1));
+  assert.ok(layer.issues.every((issue) => issue.scoreBreakdown.find((part) => part.label === "Cross-source Spread")?.value === 0));
 });
 
 function magiciansSignal(overrides: Partial<EmergingRawSignal>): EmergingRawSignal {

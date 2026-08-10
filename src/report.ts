@@ -4,7 +4,7 @@ import { execFileSync } from "node:child_process";
 import { buildChartData } from "./chart-data.ts";
 import { buildAdoptionLayer, buildAdoptionLayerWithGithubSearch } from "./adoption.ts";
 import { buildDiscussionFallbackWhyItMatters, enrichDiscussionHeat, type FetchDiscussionOptions } from "./discussion-activity.ts";
-import { buildEmergingLayer, buildEmergingLayerWithSources } from "./emerging.ts";
+import { buildEmergingLayer, buildEmergingLayerWithSources, EMERGING_THRESHOLDS } from "./emerging.ts";
 import { getChangeEventsSince, getSnapshotRecords, listSnapshots } from "./db.ts";
 import type { AppDatabase } from "./db.ts";
 import { summarizeChanges } from "./diff.ts";
@@ -237,6 +237,7 @@ export async function buildWeeklyReportWithDiscussionActivity(
     limit: options.limit,
     fetchImpl: options.fetchImpl,
   });
+  report.ethereumTechRadar.signalLayer.discussionHeat = await promoteEmergingMagiciansDiscussions(report, options, generatedAt, db);
   report.ethereumTechRadar.watchlistLayer = buildWatchlistLayer(report);
   report.ethereumTechRadar.adoptionLayer = await buildAdoptionLayerWithGithubSearch(report, {
     token: process.env.GITHUB_TOKEN,
@@ -417,6 +418,7 @@ export async function buildWeeklyReportWithDiscussionPosts(
     limit: options.limit,
     fetchImpl: options.fetchImpl,
   });
+  report.ethereumTechRadar.signalLayer.discussionHeat = await promoteEmergingMagiciansDiscussions(report, options, generatedAt, db);
   report.ethereumTechRadar.watchlistLayer = buildWatchlistLayer(report);
   report.ethereumTechRadar.topicClusterLayer = buildTopicClusterLayer({
     themeGraph: buildThemeGraph(getSnapshotRecords(db, report.ethereumTechRadar.latestSnapshot.id)),
@@ -435,6 +437,79 @@ export async function buildWeeklyReportWithDiscussionPosts(
   report.ethereumTechRadar.intelligenceLayer = buildIntelligenceLayer({ report, mode: "normal" });
   report.ethereumTechRadar.ecosystemStateLayer = buildEcosystemStateLayer(report);
   return { ...report, chartData: buildChartData(report) };
+}
+
+async function promoteEmergingMagiciansDiscussions(
+  report: WeeklyRadarReport,
+  options: ReportWindowOptions & FetchDiscussionOptions,
+  generatedAt: Date,
+  db: AppDatabase,
+): Promise<DiscussionHeatItem[]> {
+  const existing = report.ethereumTechRadar.signalLayer.discussionHeat;
+  const existingUrls = new Set(existing.map((item) => item.discussionUrl).filter(Boolean));
+  const existingIds = new Set(existing.map((item) => item.proposalId));
+  const candidates = (report.ethereumTechRadar.emergingLayer?.issues ?? [])
+    .filter(shouldPromoteEmergingIssue)
+    .flatMap((issue) => issue.sourceSignals
+      .filter((signal) => signal.source === "ethereum_magicians" && signal.url && !existingUrls.has(signal.url))
+      .map((signal): DiscussionHeatItem | null => {
+        const proposalId = issue.primaryProposalId ?? signal.primaryProposalId;
+        if (!proposalId || existingIds.has(proposalId)) return null;
+        return {
+          proposalId,
+          title: issue.title,
+          status: signal.status ?? "Discussion",
+          theme: "Unclassified",
+          discussionUrl: signal.url,
+          discussionLinks: [signal.url],
+          discussionScore: Math.min(100, Math.round(issue.heatScore / 2)),
+          discussionActivityScore: Math.min(100, Math.round(issue.heatScore)),
+          discussionCollectionStatus: "url_confirmed",
+          discussionFetchAttempted: false,
+          discussionDiscovery: {
+            searchAttempted: true,
+            discoveryCompleted: true,
+            methodsTried: ["magicians_search"],
+            matchedBy: "magicians_search",
+            candidateUrls: [signal.url],
+            result: "url_confirmed",
+          },
+          activityLevel: "Unknown",
+          discussionSummaryFallback: "Emerging discovery에서 승격된 Magicians thread입니다.",
+          whyItMatters: issue.summaries.whyItMatters,
+          canonicalUrl: signal.url,
+        };
+      })
+      .filter((item): item is DiscussionHeatItem => Boolean(item)));
+  if (!candidates.length) return existing;
+  const promoted = await enrichDiscussionHeat(candidates, {
+    db,
+    now: generatedAt,
+    limit: candidates.length,
+    timeoutMs: options.timeoutMs,
+    cacheTtlHours: options.cacheTtlHours,
+    fetchImpl: options.fetchImpl,
+  });
+  return [...existing, ...promoted].sort((left, right) =>
+    (right.discussionActivityScore ?? right.discussionScore ?? 0) - (left.discussionActivityScore ?? left.discussionScore ?? 0)
+    || String(right.discussionLastActivityAt ?? "").localeCompare(String(left.discussionLastActivityAt ?? ""))
+    || left.proposalId.localeCompare(right.proposalId, undefined, { numeric: true })
+  ).slice(0, 240);
+}
+
+function shouldPromoteEmergingIssue(issue: NonNullable<WeeklyRadarReport["ethereumTechRadar"]["emergingLayer"]>["issues"][number]): boolean {
+  if (!issue.sourceSignals.some((signal) => signal.source === "ethereum_magicians")) return false;
+  if (issue.status !== "EARLY_SIGNAL") return true;
+  if (issue.heatScore >= EMERGING_THRESHOLDS.earlyHeat - 5) return true;
+  if ((issue.metrics.replyCount ?? 0) >= 12 || (issue.metrics.viewCount ?? 0) >= 700) return true;
+  if (issue.sources.length >= 2) return true;
+  const createdAt = Date.parse(issue.createdAt ?? "");
+  const lastActivityAt = Date.parse(issue.lastActivityAt ?? "");
+  const now = Date.now();
+  return Number.isFinite(createdAt) && Number.isFinite(lastActivityAt)
+    && now - createdAt <= 14 * DAY_MS
+    && now - lastActivityAt <= 3 * DAY_MS
+    && ((issue.metrics.replyCount ?? 0) >= 3 || (issue.metrics.viewCount ?? 0) >= 150);
 }
 
 type BackfilledWindows = {
