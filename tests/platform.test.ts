@@ -116,7 +116,8 @@ test("HTML renders theme-centric intelligence IA without proposal-centric dashbo
   assert.doesNotMatch(html, /Implementation and Lifecycle/);
   assert.doesNotMatch(html, /Business Relevance/);
   assert.doesNotMatch(html, /Evidence and Limitations/);
-  assert.equal((html.match(/<nav class="dash-section-nav"[\s\S]*?<\/nav>/)?.[0].match(/<a /g) ?? []).length, 9);
+  assert.equal((html.match(/<nav class="dash-section-nav"[\s\S]*?<\/nav>/)?.[0].match(/<a /g) ?? []).length, 10);
+  assert.match(html, /WHAT'S HAPPENING NOW/);
   assert.doesNotMatch(html, /DATA COLLECTION DEGRADED/);
   assert.doesNotMatch(html, /수집 신뢰도|근거 신뢰도/);
   assert.match(html, /Evidence & Data Quality/);
@@ -167,7 +168,7 @@ test("HTML keeps collection incidents out of the end-user IA", () => {
   assert.doesNotMatch(degradedHtml, /Unsupported Conclusions/);
   assert.doesNotMatch(degradedHtml, /Recovery Priorities/);
   assert.doesNotMatch(degradedHtml, /Executive Rating/);
-  assert.equal((degradedNav.match(/<a /g) ?? []).length, 9);
+  assert.equal((degradedNav.match(/<a /g) ?? []).length, 10);
   assert.match(degradedHtml, /Executive Pulse/);
   assert.match(degradedHtml, /Technology Landscape/);
   assert.match(degradedHtml, /KGLD Technology Watch/);

@@ -2,7 +2,7 @@ import { mkdirSync } from "node:fs";
 import { dirname } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { diffRecords } from "./diff.ts";
-import type { ChangeEvent, DiscussionHeatItem, ProposalChange, ProposalRecord, SnapshotInfo } from "./types.ts";
+import type { ChangeEvent, DiscussionHeatItem, EmergingActivitySnapshot, ProposalChange, ProposalRecord, SnapshotInfo } from "./types.ts";
 
 export type AppDatabase = DatabaseSync;
 
@@ -92,6 +92,26 @@ export function migrate(db: AppDatabase): void {
       fetched_at TEXT NOT NULL,
       activity_json TEXT NOT NULL
     );
+
+    CREATE TABLE IF NOT EXISTS emerging_activity_snapshots (
+      source TEXT NOT NULL,
+      source_id TEXT NOT NULL,
+      collected_at TEXT NOT NULL,
+      reply_count INTEGER,
+      view_count INTEGER,
+      participant_count INTEGER,
+      PRIMARY KEY (source, source_id, collected_at)
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_emerging_activity_lookup
+      ON emerging_activity_snapshots (source, source_id, collected_at);
+
+    CREATE TABLE IF NOT EXISTS emerging_alert_state (
+      issue_id TEXT PRIMARY KEY,
+      last_status TEXT NOT NULL,
+      last_heat_score INTEGER NOT NULL,
+      last_alerted_at TEXT NOT NULL
+    );
   `);
 
   addColumnIfMissing(db, "proposal_snapshots", "description", "TEXT");
@@ -102,6 +122,100 @@ export function migrate(db: AppDatabase): void {
   addColumnIfMissing(db, "change_events", "changed_sections_json", "TEXT");
   addColumnIfMissing(db, "change_events", "diff_summary", "TEXT");
   addColumnIfMissing(db, "change_events", "diff_evidence", "TEXT");
+}
+
+export function insertEmergingActivitySnapshots(db: AppDatabase, snapshots: EmergingActivitySnapshot[]): void {
+  if (!snapshots.length) return;
+  const insert = db.prepare(`
+    INSERT OR REPLACE INTO emerging_activity_snapshots (
+      source,
+      source_id,
+      collected_at,
+      reply_count,
+      view_count,
+      participant_count
+    ) VALUES (?, ?, ?, ?, ?, ?)
+  `);
+  db.exec("BEGIN");
+  try {
+    for (const snapshot of snapshots) {
+      insert.run(
+        snapshot.source,
+        snapshot.sourceId,
+        snapshot.collectedAt,
+        snapshot.replyCount ?? null,
+        snapshot.viewCount ?? null,
+        snapshot.participantCount ?? null,
+      );
+    }
+    const cutoff = new Date(Date.now() - 14 * 24 * 60 * 60 * 1000).toISOString();
+    db.prepare("DELETE FROM emerging_activity_snapshots WHERE collected_at < ?").run(cutoff);
+    db.exec("COMMIT");
+  } catch (error) {
+    db.exec("ROLLBACK");
+    throw error;
+  }
+}
+
+export function getEmergingActivitySnapshots(
+  db: AppDatabase,
+  source: string,
+  sourceId: string,
+  since: string,
+): EmergingActivitySnapshot[] {
+  const rows = db.prepare(`
+    SELECT
+      source,
+      source_id AS sourceId,
+      collected_at AS collectedAt,
+      reply_count AS replyCount,
+      view_count AS viewCount,
+      participant_count AS participantCount
+    FROM emerging_activity_snapshots
+    WHERE source = ? AND source_id = ? AND collected_at >= ?
+    ORDER BY collected_at ASC
+  `).all(source, sourceId, since) as EmergingActivitySnapshot[];
+  return rows.map((row) => ({
+    source: row.source,
+    sourceId: row.sourceId,
+    collectedAt: row.collectedAt,
+    replyCount: row.replyCount ?? undefined,
+    viewCount: row.viewCount ?? undefined,
+    participantCount: row.participantCount ?? undefined,
+  }));
+}
+
+export function getEmergingAlertState(
+  db: AppDatabase,
+  issueId: string,
+): { issueId: string; lastStatus: string; lastHeatScore: number; lastAlertedAt: string } | null {
+  const row = db.prepare(`
+    SELECT
+      issue_id AS issueId,
+      last_status AS lastStatus,
+      last_heat_score AS lastHeatScore,
+      last_alerted_at AS lastAlertedAt
+    FROM emerging_alert_state
+    WHERE issue_id = ?
+  `).get(issueId) as { issueId: string; lastStatus: string; lastHeatScore: number; lastAlertedAt: string } | undefined;
+  return row ?? null;
+}
+
+export function upsertEmergingAlertState(
+  db: AppDatabase,
+  issueId: string,
+  status: string,
+  heatScore: number,
+  alertedAt: string,
+): void {
+  db.prepare(`
+    INSERT INTO emerging_alert_state (issue_id, last_status, last_heat_score, last_alerted_at)
+    VALUES (?, ?, ?, ?)
+    ON CONFLICT(issue_id) DO UPDATE SET
+      last_status = excluded.last_status,
+      last_heat_score = excluded.last_heat_score,
+      last_alerted_at = excluded.last_alerted_at
+  `).run(issueId, status, heatScore, alertedAt);
 }
 
 export function getCachedDiscussionActivity(

@@ -468,6 +468,7 @@ export type WeeklyRadarReport = {
       discussionHeat: DiscussionHeatItem[];
       diffIntelligence: DiffIntelligenceItem[];
     };
+    emergingLayer?: EmergingLayer;
     narrativeLayer: NarrativeLayer;
     watchlistLayer?: WatchlistLayer;
     adoptionLayer?: AdoptionLayer;
@@ -482,6 +483,90 @@ export type WeeklyRadarReport = {
     candidates: KgldCandidate[];
   };
   chartData: WeeklyChartData;
+};
+
+export type EmergingSource = "official_repo" | "ethereum_magicians" | "github_pr";
+
+export type EmergingRawSignal = {
+  source: EmergingSource;
+  sourceId: string;
+  sourceRepo?: SourceRepo;
+  url: string;
+  title: string;
+  category?: string | null;
+  status?: string | null;
+  createdAt?: string | null;
+  lastActivityAt?: string | null;
+  replyCount?: number;
+  viewCount?: number;
+  participantCount?: number;
+  authorLogins?: string[];
+  labels?: string[];
+  extractedEipIds: string[];
+  collectedAt: string;
+  facts: Record<string, unknown>;
+};
+
+export type EmergingActivitySnapshot = {
+  source: EmergingSource;
+  sourceId: string;
+  collectedAt: string;
+  replyCount?: number;
+  viewCount?: number;
+  participantCount?: number;
+};
+
+export type EmergingVelocity = {
+  windowHours: 6 | 24 | 72 | 168;
+  replyDelta?: number;
+  viewDelta?: number;
+  participantDelta?: number;
+  replyGrowthPct?: number;
+  viewGrowthPct?: number;
+};
+
+export type EmergingIssueStatus = "EARLY_SIGNAL" | "HOT_ISSUE" | "DECISION_WATCH" | "IMPLEMENTATION_WATCH";
+export type EmergingIssueStage = "DISCUSSION" | "PRE_MERGE" | "STANDARDIZING" | "PRE_DECISION" | "IMPLEMENTATION" | "UNKNOWN";
+
+export type EmergingIssue = {
+  issueId: string;
+  title: string;
+  eipIds: string[];
+  status: EmergingIssueStatus;
+  stage: EmergingIssueStage;
+  heatScore: number;
+  heatChange?: number;
+  confidenceScore: number;
+  debateIntensity?: number;
+  sources: EmergingSource[];
+  createdAt?: string | null;
+  lastActivityAt?: string | null;
+  metrics: {
+    replyCount?: number;
+    viewCount?: number;
+    participantCount?: number;
+    velocity: EmergingVelocity[];
+  };
+  scoreBreakdown: ScoreBreakdownItem[];
+  sourceSignals: EmergingRawSignal[];
+  summaries: {
+    whatIsHappening: string;
+    whyMoving: string;
+    whyItMatters: string;
+    watchNext: string;
+  };
+  facts: Record<string, unknown>;
+};
+
+export type EmergingLayer = {
+  generatedAt: string;
+  sourceStatus: SourceCollectionDiagnostic[];
+  rawSignals: EmergingRawSignal[];
+  issues: EmergingIssue[];
+  whatsHappeningNow: EmergingIssue[];
+  emergingSignals: EmergingIssue[];
+  decisionWatch: EmergingIssue[];
+  generatedBy: "deterministic_emerging_signal_engine";
 };
 
 export type HistoricalInputDiagnostics = {

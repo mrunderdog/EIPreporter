@@ -131,6 +131,41 @@ Weekly Dashboard 발송:
 npm run send:weekly
 ```
 
+## Emerging Signal Detection
+
+EIPreporter now treats emerging intelligence as a source-first layer, separate from the existing Standards Weekly layer.
+
+Sources:
+- Official EIP/ERC repositories: merged proposal and weekly change activity.
+- Ethereum Magicians: recent public Discourse topics from `latest.json`, including topics without EIP/ERC numbers.
+- GitHub PR/draft activity: open PRs in `ethereum/EIPs` and `ethereum/ercs` before merge.
+
+Candidate resolution:
+- Explicit EIP/ERC numbers are the strongest merge key.
+- Unnumbered topics remain standalone issues.
+- Title normalization is conservative; the system prefers not merging over a false merge.
+
+Scoring:
+- Heat Score is 0-100 and represents activity/momentum only.
+- Heat uses velocity, participation, freshness, cross-source spread, decision proximity, and materiality hints.
+- Confidence Score represents source and metadata completeness.
+- Heat is not proposal quality, endorsement, or acceptance probability.
+
+Activity history:
+- `emerging_activity_snapshots` stores compact rolling source/topic counters.
+- Velocity windows use 6h, 24h, 72h, and 7d where prior snapshots exist.
+- Unknown metrics stay unknown; they are not treated as zero.
+
+Alerts:
+- `.github/workflows/emerging-scan.yml` runs every 6 hours.
+- Telegram alerts are sent only on meaningful transitions such as first HOT/DECISION classification or a large heat increase.
+- `emerging_alert_state` suppresses duplicate alerts for unchanged HOT issues.
+
+Known limitations:
+- P0 does not infer authority from hardcoded developer lists.
+- Decision proximity is scored only when explicit public labels/text are present.
+- Discussion content is not summarized with an LLM; all text is rule/template based.
+
 Telegram 메시지는 긴 표 대신 다음만 포함합니다.
 
 - 제목: Ethereum Developer Momentum Dashboard

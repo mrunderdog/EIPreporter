@@ -4,6 +4,7 @@ import { execFileSync } from "node:child_process";
 import { buildChartData } from "./chart-data.ts";
 import { buildAdoptionLayer, buildAdoptionLayerWithGithubSearch } from "./adoption.ts";
 import { buildDiscussionFallbackWhyItMatters, enrichDiscussionHeat, type FetchDiscussionOptions } from "./discussion-activity.ts";
+import { buildEmergingLayer, buildEmergingLayerWithSources } from "./emerging.ts";
 import { getChangeEventsSince, getSnapshotRecords, listSnapshots } from "./db.ts";
 import type { AppDatabase } from "./db.ts";
 import { summarizeChanges } from "./diff.ts";
@@ -149,6 +150,12 @@ export function buildWeeklyReport(
         discussionHeat: buildDiscussionHeat(analyses, recentEvents),
         diffIntelligence: buildDiffIntelligence(recentEvents),
       },
+      emergingLayer: buildEmergingLayer({
+        db,
+        now: generatedAt,
+        records,
+        recentEvents,
+      }),
       narrativeLayer: {
         weeklyNarrative: [],
         topStories: [],
@@ -214,6 +221,22 @@ export async function buildWeeklyReportWithDiscussionActivity(
       fetchImpl: options.fetchImpl,
     },
   );
+  report.ethereumTechRadar.emergingLayer = await buildEmergingLayerWithSources({
+    db,
+    now: generatedAt,
+    records: getSnapshotRecords(db, report.ethereumTechRadar.latestSnapshot.id),
+    recentEvents: [
+      ...report.ethereumTechRadar.recentChanges.newProposals,
+      ...report.ethereumTechRadar.recentChanges.statusChanges,
+      ...report.ethereumTechRadar.recentChanges.finalTransitions,
+      ...report.ethereumTechRadar.recentChanges.withdrawnTransitions,
+      ...report.ethereumTechRadar.recentChanges.contentHashChanges,
+    ],
+    githubToken: process.env.GITHUB_TOKEN,
+    timeoutMs: options.timeoutMs,
+    limit: options.limit,
+    fetchImpl: options.fetchImpl,
+  });
   report.ethereumTechRadar.watchlistLayer = buildWatchlistLayer(report);
   report.ethereumTechRadar.adoptionLayer = await buildAdoptionLayerWithGithubSearch(report, {
     token: process.env.GITHUB_TOKEN,
@@ -378,6 +401,22 @@ export async function buildWeeklyReportWithDiscussionPosts(
       fetchImpl: options.fetchImpl,
     },
   );
+  report.ethereumTechRadar.emergingLayer = await buildEmergingLayerWithSources({
+    db,
+    now: generatedAt,
+    records: getSnapshotRecords(db, report.ethereumTechRadar.latestSnapshot.id),
+    recentEvents: [
+      ...report.ethereumTechRadar.recentChanges.newProposals,
+      ...report.ethereumTechRadar.recentChanges.statusChanges,
+      ...report.ethereumTechRadar.recentChanges.finalTransitions,
+      ...report.ethereumTechRadar.recentChanges.withdrawnTransitions,
+      ...report.ethereumTechRadar.recentChanges.contentHashChanges,
+    ],
+    githubToken: process.env.GITHUB_TOKEN,
+    timeoutMs: options.timeoutMs,
+    limit: options.limit,
+    fetchImpl: options.fetchImpl,
+  });
   report.ethereumTechRadar.watchlistLayer = buildWatchlistLayer(report);
   report.ethereumTechRadar.topicClusterLayer = buildTopicClusterLayer({
     themeGraph: buildThemeGraph(getSnapshotRecords(db, report.ethereumTechRadar.latestSnapshot.id)),

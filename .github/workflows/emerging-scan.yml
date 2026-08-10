@@ -1,0 +1,69 @@
+name: EIPreporter Emerging Scan
+
+on:
+  schedule:
+    - cron: "0 */6 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  emerging-scan:
+    runs-on: ubuntu-latest
+    env:
+      GITHUB_TOKEN: ${{ github.token }}
+      TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+      TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+      EIPREPORTER_REPORT_URL: https://mrunderdog.github.io/EIPreporter/
+      EIP_OFFICIAL_REPO_PATH: .sources/EIPs
+      ERC_OFFICIAL_REPO_PATH: .sources/ERCs
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Checkout official EIPs source
+        uses: actions/checkout@v4
+        with:
+          repository: ethereum/EIPs
+          path: .sources/EIPs
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Checkout official ERCs source
+        uses: actions/checkout@v4
+        with:
+          repository: ethereum/ERCs
+          path: .sources/ERCs
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "26"
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Restore emerging state
+        uses: actions/cache/restore@v4
+        with:
+          path: |
+            data/eipreporter.sqlite
+          key: eipreporter-emerging-${{ runner.os }}-${{ github.run_id }}
+          restore-keys: |
+            eipreporter-emerging-${{ runner.os }}-
+
+      - name: Run emerging scan
+        run: npm run scan:emerging -- --limit 60 --timeout-ms 8000
+
+      - name: Save emerging state
+        if: ${{ always() }}
+        uses: actions/cache/save@v4
+        with:
+          path: |
+            data/eipreporter.sqlite
+          key: eipreporter-emerging-${{ runner.os }}-${{ github.run_id }}
