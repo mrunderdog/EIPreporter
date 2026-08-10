@@ -1421,10 +1421,8 @@ function domainCrossViewConsistency(embeddedApi: unknown): boolean {
     && presentation.domains.every((domain) => view.proposalExplorer.rows.filter((row) => row.domainId === domain.domainId).length === domain.monitoredProposals);
 }
 
-function knownDomainSemanticFixtures(embeddedApi: unknown): boolean {
-  const view = dashboardV2FromApi(embeddedApi);
-  if (!view) return false;
-  const expected = new Map([
+function knownDomainFixtureExpectations(): Map<string, string> {
+  return new Map([
     ["EIP-8198", "validators-consensus"],
     ["EIP-8298", "execution-state"],
     ["EIP-8253", "execution-state"],
@@ -1442,23 +1440,46 @@ function knownDomainSemanticFixtures(embeddedApi: unknown): boolean {
     ["ERC-8262", "identity-compliance"],
     ["ERC-8320", "identity-compliance"],
   ]);
-  return [...expected].every(([proposalId, domainId]) => view.proposalExplorer.rows.find((row) => row.proposalId === proposalId)?.domainId === domainId);
+}
+
+function knownDomainSemanticFixtures(embeddedApi: unknown): boolean {
+  return knownDomainRuntimeMismatches(embeddedApi).length === 0;
 }
 
 function knownDomainSemanticFixturesV4(embeddedApi: unknown): boolean {
   const view = dashboardV2FromApi(embeddedApi);
   if (!view || !knownDomainSemanticFixtures(embeddedApi)) return false;
-  return view.proposalExplorer.rows.find((row) => row.proposalId === "EIP-8198")?.domainId === "validators-consensus"
-    && view.proposalExplorer.rows.find((row) => row.proposalId === "EIP-8298")?.domainId === "execution-state";
+  const rows = new Map(view.proposalExplorer.rows.map((row) => [row.proposalId, row.domainId]));
+  return [
+    ["EIP-8198", "validators-consensus"],
+    ["EIP-8298", "execution-state"],
+  ].every(([proposalId, domainId]) => !rows.has(proposalId) || rows.get(proposalId) === domainId);
 }
 
 function knownDomainSemanticFixturesV3(embeddedApi: unknown, html: string): boolean {
   const view = dashboardV2FromApi(embeddedApi);
   if (!view || !knownDomainSemanticFixtures(embeddedApi)) return false;
   const erc8049 = view.proposalExplorer.rows.find((row) => row.proposalId === "ERC-8049");
+  if (!erc8049) return true;
   const erc8049Segments = html.match(/<[^>]+(?:ERC-8049|erc-8049)[\s\S]{0,900}>/gi)?.join(" ") ?? "";
   return erc8049?.domainId === "scaling-data"
     && !/\binteroperability\b|cross-chain|bridge|message bridge|cross-chain signature/i.test(erc8049Segments);
+}
+
+function knownDomainRuntimeMismatches(embeddedApi: unknown): Array<{ proposalId: string; expected: string; actual: string }> {
+  const view = dashboardV2FromApi(embeddedApi);
+  if (!view) return [{ proposalId: "dashboardV2", expected: "present", actual: "missing" }];
+  const expected = knownDomainFixtureExpectations();
+  return view.proposalExplorer.rows
+    .filter((row) => expected.has(row.proposalId))
+    .map((row) => ({ proposalId: row.proposalId, expected: expected.get(row.proposalId)!, actual: row.domainId }))
+    .filter((item) => item.actual !== item.expected);
+}
+
+function knownDomainClassifierRegression(): boolean {
+  return [...knownDomainFixtureExpectations()].every(([proposalId, domainId]) =>
+    publicDomainForProposal(proposalId, "unknown", undefined, proposalId).domainId === domainId
+  );
 }
 
 function domainCrossViewConsistencyV4(embeddedApi: unknown, html: string): boolean {
@@ -1478,8 +1499,12 @@ function domainCrossViewConsistencyV4(embeddedApi: unknown, html: string): boole
 
 function domainConsistencyObserved(embeddedApi: unknown): string {
   const view = dashboardV2FromApi(embeddedApi);
-  const ids = ["EIP-8198", "EIP-8298", "EIP-8253", "EIP-8333", "ERC-8049", "EIP-8151", "EIP-8173", "EIP-8295", "EIP-8182", "ERC-8325", "ERC-8217", "EIP-8347", "EIP-8337", "ERC-8286", "ERC-8262", "ERC-8320"];
-  return JSON.stringify(Object.fromEntries(ids.map((id) => [id, view?.proposalExplorer.rows.find((row) => row.proposalId === id)?.domainId ?? "missing"])));
+  const ids = [...knownDomainFixtureExpectations().keys()];
+  const rows = new Map(view?.proposalExplorer.rows.map((row) => [row.proposalId, row.domainId]) ?? []);
+  return JSON.stringify({
+    runtimeMismatches: knownDomainRuntimeMismatches(embeddedApi),
+    fixtures: Object.fromEntries(ids.map((id) => [id, rows.get(id) ?? "not_current_explorer"])),
+  });
 }
 
 function publicDomainSemanticAudit(embeddedApi: unknown): boolean {
@@ -1625,31 +1650,47 @@ function weeklySummaryLanguageConsistency(embeddedApi: unknown, visibleHtml: str
 }
 
 function weeklySummaryLanguageAffectedIds(embeddedApi: unknown, visibleHtml: string): string[] {
-  return weeklyRepositoryAdditionsFromApi(embeddedApi).every((item) => {
+  return weeklySummaryLanguageDiagnostics(embeddedApi, visibleHtml)
+    .filter((item) => !item.passed)
+    .map((item) => item.proposalId);
+}
+
+function weeklySummaryLanguageDiagnostics(embeddedApi: unknown, visibleHtml: string) {
+  return weeklyRepositoryAdditionsFromApi(embeddedApi).map((item) => {
     const segment = proposalVisibleSegment(visibleHtml, item.proposalId);
-    const text = visibleTextOnly(segment);
-    return text.includes(item.summary)
-      && weeklySummaryTextQuality(item.summary)
-      && markdownCleanText(text)
-      && !truncatedSentenceText(text);
-  }) ? [] : weeklyRepositoryAdditionsFromApi(embeddedApi).filter((item) => {
-    const segment = proposalVisibleSegment(visibleHtml, item.proposalId);
-    const text = visibleTextOnly(segment);
-    return !(text.includes(item.summary)
-      && weeklySummaryTextQuality(item.summary)
-      && markdownCleanText(text)
-      && !truncatedSentenceText(text));
-  }).map((item) => item.proposalId);
+    const renderedText = visibleTextOnly(segment);
+    const summaryBody = item.summary;
+    const normalizedSummary = summaryBody.replace(/\s+/g, " ").trim();
+    const checks = weeklySummaryBodyQualityChecks(summaryBody, item.proposalId, item.title);
+    return {
+      proposalId: item.proposalId,
+      title: item.title,
+      summaryBody,
+      renderedText,
+      normalizedSummary,
+      checks: { renderedIncludesSummary: renderedText.includes(summaryBody), ...checks },
+      passed: Object.values(checks).every(Boolean),
+    };
+  });
 }
 
 function weeklySummaryTextQuality(summary: string): boolean {
   const clean = summary.replace(/\s+/g, " ").trim();
-  return clean.length > 0
-    && hasKoreanExplanatorySentence(clean)
-    && markdownCleanText(clean)
-    && !truncatedSentenceText(clean)
-    && !rawEnglishAbstractText(clean)
-    && !/Proposal file creation detected/i.test(clean);
+  return Object.values(weeklySummaryBodyQualityChecks(clean)).every(Boolean);
+}
+
+function weeklySummaryBodyQualityChecks(summary: string, proposalId?: string, title?: string) {
+  const clean = summary.replace(/\s+/g, " ").trim();
+  return {
+    nonEmpty: clean.length > 0,
+    koreanSentence: hasKoreanExplanatorySentence(clean),
+    markdownClean: markdownCleanText(clean),
+    notTruncated: !truncatedSentenceText(clean),
+    noRawEnglish: !rawEnglishAbstractText(clean),
+    noTitleRepetition: !summaryRepeatsProposalHeading(clean, proposalId, title),
+    noInternalTaxonomyPhrase: !internalTaxonomyPhrase(clean),
+    noCreationPlaceholder: !/Proposal file creation detected/i.test(clean),
+  };
 }
 
 function hasKoreanExplanatorySentence(value: string): boolean {
@@ -1671,6 +1712,17 @@ function rawEnglishAbstractText(value: string): boolean {
   const englishWords = plain.match(/\b[A-Za-z][A-Za-z-]{2,}\b/g) ?? [];
   const hangulWords = plain.match(/[가-힣]+/g) ?? [];
   return englishWords.length >= 10 && englishWords.length > hangulWords.length * 1.5;
+}
+
+function summaryRepeatsProposalHeading(summary: string, proposalId?: string, title?: string): boolean {
+  const clean = summary.replace(/\s+/g, " ").trim();
+  const idTitle = proposalId && title ? `${proposalId} ${title}`.replace(/\s+/g, " ").trim() : "";
+  return Boolean(idTitle && clean.startsWith(idTitle))
+    || /^(?:EIP|ERC)-\d+\s+[A-Z][A-Za-z0-9 ,:;/()'._-]{8,}(?:은|는|이|가)\s/.test(clean);
+}
+
+function internalTaxonomyPhrase(value: string): boolean {
+  return /\b(?:tokens-finance|identity-compliance|execution-state|accounts-wallets|scaling-data|validators-consensus|governance-process|oracle\/reporting)\b/i.test(value);
 }
 
 function aaMetricPublicLabels(visibleHtml: string): boolean {
@@ -3403,6 +3455,12 @@ export const __qualityTestHooks = {
   renderDashboardV3,
   heroRepositoryCountConsistency,
   magiciansCurrentWindowCards,
+  knownDomainClassifierRegression,
+  knownDomainFixtureExpectations,
+  knownDomainRuntimeMismatches,
+  knownDomainSemanticFixtures,
+  knownDomainSemanticFixturesV3,
+  knownDomainSemanticFixturesV4,
   weeklyEmptyStateValid,
   weeklyRepositoryAdditionLabel,
   weeklyRepositoryAdditionsFromApi,
@@ -3412,6 +3470,9 @@ export const __qualityTestHooks = {
   snapshotWithoutVitalik,
   sourceBackedKoreanSummary,
   weeklyConfidenceLimitCanonical,
+  weeklySummaryLanguageAffectedIds,
+  weeklySummaryBodyQualityChecks,
+  weeklySummaryLanguageDiagnostics,
   weeklySummaryTextQuality,
   weeklySpecificationTrendReason,
   subjectRegistryMissingIdsFromPublicViews,
@@ -4838,7 +4899,9 @@ function cleanPublicSummary(value: string): string {
 }
 
 function sourceLimitedWeeklySummary(proposalId: string, title: string, evidenceState: string): string {
-  return `${proposalId} ${title}가 ${evidenceState} 제안의 목적과 범위는 공식 원문에서 확인해야 합니다.`;
+  void proposalId;
+  void title;
+  return `해당 Proposal은 ${evidenceState} 제안의 목적과 범위는 공식 원문에서 확인해야 합니다.`;
 }
 
 function auditedDomainForProposal(proposalId: string, fallbackDomainId: string, fallbackTopic?: string, title?: string) {
@@ -6079,7 +6142,7 @@ function summarizeSpecificationKo(proposalId: string, title: string, source: str
   if (proposalId === "ERC-6123" || /derivative|lifecycle/.test(lower)) return "Smart Derivative Contract는 파생계약의 lifecycle, event 처리, 계약 상태 전이를 표준화하려는 제안입니다. 구현·채택은 별도 근거가 필요합니다.";
   if (proposalId === "ERC-7303" || /token-controlled token circulation|circulation/.test(lower)) return "Token-Controlled Token Circulation은 토큰이 circulation 조건을 제어하는 구조를 다룹니다. 세부 운영 영향은 원문 근거 범위 안에서만 해석합니다.";
   if (proposalId === "EIP-8130" || /account configuration/.test(lower)) return "Account Configuration은 계정 설정을 명세화해 권한·구성 관리 경계를 다루는 제안입니다. 구현 또는 채택은 단정하지 않습니다.";
-  if (proposalId === "ERC-8330" || /nav snapshot|net asset value|oracle/.test(lower)) return "Subject-Linked NAV Snapshot Oracle은 주체별 NAV snapshot과 가치 기준시각을 기록하는 oracle/reporting 인터페이스를 제안합니다.";
+  if (proposalId === "ERC-8330" || /nav snapshot|net asset value|oracle/.test(lower)) return "해당 Proposal은 주체별 NAV snapshot과 가치 기준시각을 기록하는 보고 인터페이스를 제안합니다.";
   return sourceBackedKoreanSummary(proposalId, title, source);
 }
 
@@ -6101,10 +6164,10 @@ function sourceBackedKoreanSummary(proposalId: string, title: string, source: st
   const subjects = [
     [/zero-knowledge|zk|proof/i, "영지식 증명"],
     [/compliance|aml|sanction/i, "컴플라이언스 검증"],
-    [/oracle|nav|net asset value|price|pricing/i, "oracle/reporting"],
+    [/oracle|nav|net asset value|price|pricing/i, "가격 기준·보고"],
     [/registry|register|claim/i, "registry와 claim"],
     [/account|wallet|signature|authorization|permission/i, "계정·권한"],
-    [/evm|opcode|precompile|gas|state|transaction/i, "EVM 실행 규칙"],
+    [/evm|opcode|precompile|gas|state|transaction/i, "실행·상태"],
     [/validator|consensus|attestation|staking|finality/i, "검증자·합의"],
     [/token|asset|vault|erc-20|erc-4626/i, "토큰·자산"],
     [/metadata|data|blob|storage/i, "데이터 구조"],
@@ -6113,9 +6176,9 @@ function sourceBackedKoreanSummary(proposalId: string, title: string, source: st
   const matched = subjects.filter(([pattern]) => pattern.test(lower)).map(([, label]) => label);
   const topic = unique(matched).slice(0, 2).join(" 및 ");
   if (topic) {
-    return `${proposalId} ${cleanTitle}은 공식 원문 기준 ${topic} 영역을 다루는 제안입니다. 구현·채택 여부는 이번 수집 범위에서 확인하지 않았습니다.`;
+    return `해당 Proposal은 공식 원문 기준 ${topic} 영역을 다루는 제안입니다. 구현·채택 여부는 이번 수집 범위에서 확인하지 않았습니다.`;
   }
-  return `${proposalId} ${cleanTitle}은 공식 원문에 근거한 신규 명세 제안입니다. 세부 목적과 범위는 원문 근거에서 확인해야 합니다.`;
+  return "해당 Proposal은 공식 원문에 근거한 신규 명세 제안입니다. 세부 목적과 범위는 원문 근거에서 확인해야 합니다.";
 }
 
 function stripMarkdownSyntax(value: string): string {
