@@ -123,6 +123,56 @@ test("detects_fast_emerging_issue_before_official_repo_merge using historical-li
   assert.ok(issue.heatScore >= 65);
 });
 
+test("cold-start detects a strong historical-like EIP-8363 issue without previous snapshots", () => {
+  const db = openDatabase(":memory:");
+  const layer = buildEmergingLayer({
+    db,
+    now: new Date("2026-08-10T00:00:00.000Z"),
+    rawSignals: [
+      magiciansSignal({
+        sourceId: "8363-cold-start",
+        title: "EIP-8363: New protocol governance discussion",
+        createdAt: "2026-08-07T00:00:00.000Z",
+        replyCount: 42,
+        viewCount: 2500,
+        participantCount: 14,
+      }),
+      githubSignal({
+        sourceId: "ethereum/EIPs#8363-cold-start",
+        title: "Draft EIP-8363 protocol governance proposal",
+        replyCount: 7,
+        participantCount: 3,
+      }),
+    ],
+  });
+
+  const issue = layer.issues.find((item) => item.eipIds.includes("EIP-8363"));
+  assert.ok(issue);
+  assert.equal(issue.status, "HOT_ISSUE");
+  assert.ok(issue.scoreBreakdown.some((item) => item.label === "Absolute Activity" && item.value > 0));
+});
+
+test("7-day delta is the primary production velocity signal", () => {
+  const db = openDatabase(":memory:");
+  insertEmergingActivitySnapshots(db, [
+    { source: "ethereum_magicians", sourceId: "weekly", collectedAt: "2026-08-03T00:00:00.000Z", replyCount: 10, viewCount: 700, participantCount: 4 },
+  ]);
+
+  const layer = buildEmergingLayer({
+    db,
+    now: new Date("2026-08-10T00:00:00.000Z"),
+    rawSignals: [
+      magiciansSignal({ sourceId: "weekly", title: "EIP-9009: Weekly wallet UX activity", replyCount: 35, viewCount: 2400, participantCount: 12 }),
+    ],
+  });
+
+  const issue = layer.issues.find((item) => item.eipIds.includes("EIP-9009"));
+  const weeklyVelocity = issue?.metrics.velocity.find((item) => item.windowHours === 168);
+  assert.equal(weeklyVelocity?.replyDelta, 25);
+  assert.equal(weeklyVelocity?.participantDelta, 8);
+  assert.ok(issue?.scoreBreakdown.some((item) => item.label === "7-day Velocity" && item.value > 0));
+});
+
 test("negative regression does not mark simple noise as HOT", () => {
   const layer = buildEmergingLayer({
     now: new Date("2026-08-10T00:00:00.000Z"),

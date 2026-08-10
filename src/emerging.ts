@@ -176,10 +176,10 @@ export function detectEmergingAlerts(
 export function formatEmergingTelegramAlert(issue: EmergingIssue, reportUrl?: string): string {
   const eip = issue.eipIds[0] ?? "Unnumbered topic";
   const sourceNames = issue.sources.map(sourceLabel).join(" · ");
-  const velocity24 = issue.metrics.velocity.find((item) => item.windowHours === 24);
+  const velocity7d = issue.metrics.velocity.find((item) => item.windowHours === 168);
   const deltas = [
-    velocity24?.replyDelta !== undefined ? `+${velocity24.replyDelta} replies` : "",
-    velocity24?.viewDelta !== undefined ? `+${velocity24.viewDelta} views` : "",
+    velocity7d?.replyDelta !== undefined ? `+${velocity7d.replyDelta} replies` : "",
+    velocity7d?.viewDelta !== undefined ? `+${velocity7d.viewDelta} views` : "",
   ].filter(Boolean).join(" / ") || "activity delta unavailable";
   const lines = [
     "HOT ISSUE",
@@ -188,7 +188,7 @@ export function formatEmergingTelegramAlert(issue: EmergingIssue, reportUrl?: st
     "",
     `Heat ${issue.heatScore}${issue.heatChange ? ` +${issue.heatChange}` : ""}`,
     `Sources: ${sourceNames}`,
-    `24h: ${deltas}`,
+    `7d: ${deltas}`,
     "",
     "Why it is moving:",
     issue.summaries.whyMoving,
@@ -251,14 +251,37 @@ function resolveEmergingIssues(signals: EmergingRawSignal[]): EmergingIssue[] {
 function scoreEmergingIssues(issues: EmergingIssue[], db: AppDatabase | undefined, now: Date): EmergingIssue[] {
   return issues.map((issue) => {
     const velocity = issue.sourceSignals.flatMap((signal) => calculateVelocity(signal, db, now));
-    const velocityScore = Math.min(25, Math.max(...velocity.map(velocityPoints), 0));
+    const weeklyVelocity = velocity.find((item) => item.windowHours === 168);
+    const velocityScore = Math.min(25, Math.max(
+      weeklyVelocity ? velocityPoints(weeklyVelocity) : 0,
+      ...velocity.filter((item) => item.windowHours !== 168).map((item) => Math.round(velocityPoints(item) * 0.65)),
+      0,
+    ));
+    const absoluteActivityScore = absoluteActivityPoints(
+      issue.metrics.replyCount,
+      issue.metrics.viewCount,
+      issue.metrics.participantCount,
+    );
     const participationScore = participationPoints(issue.metrics.replyCount, issue.metrics.participantCount);
     const freshnessScore = freshnessPoints(issue.createdAt, issue.lastActivityAt, now);
     const spreadScore = Math.min(15, Math.max(0, (issue.sources.length - 1) * 8 + (issue.sources.includes("official_repo") ? 3 : 0)));
     const authorityScore = 0;
+    const githubPrActivityScore = issue.sources.includes("github_pr") ? 5 : 0;
+    const officialStatusScore = officialStatusPoints(issue);
     const decisionScore = decisionPoints(issue);
     const materialityScore = materialityPoints(`${issue.title} ${issue.sourceSignals.flatMap((signal) => signal.labels ?? []).join(" ")}`);
-    const heatScore = clampScore(velocityScore + participationScore + freshnessScore + spreadScore + authorityScore + decisionScore + materialityScore);
+    const heatScore = clampScore(
+      velocityScore
+      + absoluteActivityScore
+      + participationScore
+      + freshnessScore
+      + spreadScore
+      + authorityScore
+      + githubPrActivityScore
+      + officialStatusScore
+      + decisionScore
+      + materialityScore,
+    );
     const confidenceScore = clampScore(
       35
       + issue.sources.length * 12
@@ -267,7 +290,7 @@ function scoreEmergingIssues(issues: EmergingIssue[], db: AppDatabase | undefine
       + (issue.sourceSignals.some((signal) => signal.participantCount !== undefined) ? 8 : 0),
     );
     const status = classifyEmerging(issue, heatScore, decisionScore);
-    const heatChange = Math.max(...velocity.map((item) => item.windowHours === 24 ? (item.replyDelta ?? 0) + Math.floor((item.viewDelta ?? 0) / 100) : 0), 0);
+    const heatChange = Math.max(...velocity.map((item) => item.windowHours === 168 ? (item.replyDelta ?? 0) + Math.floor((item.viewDelta ?? 0) / 100) : 0), 0);
     return {
       ...issue,
       status,
@@ -276,11 +299,14 @@ function scoreEmergingIssues(issues: EmergingIssue[], db: AppDatabase | undefine
       confidenceScore,
       metrics: { ...issue.metrics, velocity },
       scoreBreakdown: [
-        { label: "Velocity", value: velocityScore, reason: "Rolling activity growth from stored snapshots." },
+        { label: "7-day Velocity", value: velocityScore, reason: "Weekly activity growth from stored snapshots; shorter windows are supporting signals only." },
+        { label: "Absolute Activity", value: absoluteActivityScore, reason: "Current replies, views, and participant breadth support cold-start detection." },
         { label: "Participation", value: participationScore, reason: "Replies and known participant breadth." },
         { label: "Freshness", value: freshnessScore, reason: "Recent creation or recent source activity." },
         { label: "Cross-source Spread", value: spreadScore, reason: `${issue.sources.length} independent source(s).` },
         { label: "Authority / Contributor", value: authorityScore, reason: "No stable public authority metadata accepted in P0." },
+        { label: "GitHub PR Activity", value: githubPrActivityScore, reason: "Open PR or draft activity is a production weekly signal." },
+        { label: "Official Status", value: officialStatusScore, reason: "Review, Last Call, Final, and Withdrawn states shape weekly priority." },
         { label: "Decision Proximity", value: decisionScore, reason: "Only explicit public decision-related labels/text are counted." },
         { label: "Materiality", value: materialityScore, reason: "Protocol-impact topic terms are treated as a small supporting signal." },
       ],
@@ -435,6 +461,15 @@ function velocityPoints(value: EmergingVelocity): number {
   return Math.min(25, Math.round(raw));
 }
 
+function absoluteActivityPoints(replies: number | undefined, views: number | undefined, participants: number | undefined): number {
+  let score = 0;
+  if (replies !== undefined) score += Math.min(10, Math.log2(1 + replies) * 1.9);
+  if (views !== undefined) score += Math.min(8, Math.log2(1 + views / 80) * 2.1);
+  if (participants !== undefined) score += Math.min(7, Math.log2(1 + participants) * 2.1);
+  const hasStrongFloor = (replies ?? 0) >= 20 || (views ?? 0) >= 1200 || (participants ?? 0) >= 8;
+  return hasStrongFloor ? Math.round(score) : Math.min(10, Math.round(score));
+}
+
 function participationPoints(replies: number | undefined, participants: number | undefined): number {
   let score = 0;
   if (replies !== undefined) score += Math.min(8, Math.log2(1 + replies) * 1.6);
@@ -461,6 +496,17 @@ function materialityPoints(text: string): number {
   return /(consensus|issuance|execution|security|account abstraction|gas|state growth|scaling|validator|governance|rwa|wallet)/i.test(text) ? 5 : 0;
 }
 
+function officialStatusPoints(issue: EmergingIssue): number {
+  const statuses = issue.sourceSignals
+    .map((signal) => signal.status?.toLowerCase())
+    .filter((status): status is string => Boolean(status));
+  if (statuses.some((status) => status.includes("last call"))) return 7;
+  if (statuses.some((status) => status.includes("review"))) return 5;
+  if (statuses.some((status) => status.includes("final") || status.includes("withdrawn"))) return 4;
+  if (statuses.some((status) => status.includes("draft"))) return 2;
+  return 0;
+}
+
 function classifyEmerging(issue: EmergingIssue, heat: number, decisionScore: number): EmergingIssue["status"] {
   if (decisionScore > 0 && heat >= EMERGING_THRESHOLDS.decisionHeat) return "DECISION_WATCH";
   if (issue.stage === "IMPLEMENTATION" && heat >= EMERGING_THRESHOLDS.decisionHeat) return "IMPLEMENTATION_WATCH";
@@ -470,10 +516,10 @@ function classifyEmerging(issue: EmergingIssue, heat: number, decisionScore: num
 
 function summarizeIssue(issue: EmergingIssue, velocity: EmergingVelocity[]): EmergingIssue["summaries"] {
   const sourceText = issue.sources.map(sourceLabel).join(" + ");
-  const velocity24 = velocity.find((item) => item.windowHours === 24);
+  const velocity7d = velocity.find((item) => item.windowHours === 168);
   const moving = [
-    velocity24?.replyDelta !== undefined && velocity24.replyDelta > 0 ? `24시간 댓글 +${velocity24.replyDelta}` : "",
-    velocity24?.viewDelta !== undefined && velocity24.viewDelta > 0 ? `24시간 조회 +${velocity24.viewDelta}` : "",
+    velocity7d?.replyDelta !== undefined && velocity7d.replyDelta > 0 ? `7일 댓글 +${velocity7d.replyDelta}` : "",
+    velocity7d?.viewDelta !== undefined && velocity7d.viewDelta > 0 ? `7일 조회 +${velocity7d.viewDelta}` : "",
     issue.sources.length > 1 ? "복수 출처에서 동시에 포착" : "",
   ].filter(Boolean).join(", ");
   return {

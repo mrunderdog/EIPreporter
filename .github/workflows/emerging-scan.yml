@@ -1,8 +1,6 @@
 name: EIPreporter Emerging Scan
 
 on:
-  schedule:
-    - cron: "0 */6 * * *"
   workflow_dispatch:
 
 permissions:
@@ -53,12 +51,14 @@ jobs:
         with:
           path: |
             data/eipreporter.sqlite
-          key: eipreporter-emerging-${{ runner.os }}-${{ github.run_id }}
+            data/historical-git-cache.json
+            data/adoption-evidence-cache.json
+          key: eipreporter-data-${{ runner.os }}-${{ github.run_id }}
           restore-keys: |
-            eipreporter-emerging-${{ runner.os }}-
+            eipreporter-data-${{ runner.os }}-
 
       - name: Run emerging scan
-        run: npm run scan:emerging -- --limit 60 --timeout-ms 8000
+        run: npm run scan:emerging -- --limit 60 --timeout-ms 8000 --no-telegram
 
       - name: Save emerging state
         if: ${{ always() }}
@@ -66,4 +66,6 @@ jobs:
         with:
           path: |
             data/eipreporter.sqlite
-          key: eipreporter-emerging-${{ runner.os }}-${{ github.run_id }}
+            data/historical-git-cache.json
+            data/adoption-evidence-cache.json
+          key: eipreporter-data-${{ runner.os }}-${{ github.run_id }}

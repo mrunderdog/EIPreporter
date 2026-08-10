@@ -91,11 +91,13 @@ jobs:
         run: npm run typecheck
 
       - name: Collect EIP and ERC proposals
-        run: |
-          npm run collect -- --trend-days 180 --change-days 7 --snapshot-out reports/input/weekly-current.snapshot.json --diagnostics-out reports/input/weekly-current.collection.json
+        run: npm run collect -- --trend-days 180 --change-days 7
 
-      - name: Run collection preflight
-        run: npm run ci:preflight -- --snapshot reports/input/weekly-current.snapshot.json
+      - name: Run emerging scan
+        run: npm run scan:emerging -- --limit 60 --timeout-ms 8000 --no-telegram
+
+      - name: Generate weekly HTML report
+        run: npm run report:html -- --trend-days 180 --change-days 7
 
       - name: Save persistent report state
         if: ${{ always() }}
@@ -106,9 +108,6 @@ jobs:
             data/historical-git-cache.json
             data/adoption-evidence-cache.json
           key: eipreporter-data-${{ runner.os }}-${{ github.run_id }}
-
-      - name: Generate weekly HTML report
-        run: npm run report:html -- --snapshot reports/input/weekly-current.snapshot.json
 
       - name: Determine report date
         id: report-date

@@ -133,7 +133,7 @@ npm run send:weekly
 
 ## Emerging Signal Detection
 
-EIPreporter now treats emerging intelligence as a source-first layer, separate from the existing Standards Weekly layer.
+EIPreporter treats emerging intelligence as a source-first layer inside the weekly intelligence report. Production operation is weekly, not real-time or 6-hour alerting.
 
 Sources:
 - Official EIP/ERC repositories: merged proposal and weekly change activity.
@@ -147,18 +147,22 @@ Candidate resolution:
 
 Scoring:
 - Heat Score is 0-100 and represents activity/momentum only.
-- Heat uses velocity, participation, freshness, cross-source spread, decision proximity, and materiality hints.
+- Heat uses 7-day velocity, current absolute activity, participation, freshness, cross-source spread, GitHub PR/draft activity, official status, decision proximity, and materiality hints.
+- 6h, 24h, and 72h windows may remain in the data model, but weekly production scoring does not depend on them being present.
+- Cold start uses current absolute activity, freshness, participation, and cross-source spread so a strong issue can be detected before a previous weekly snapshot exists.
 - Confidence Score represents source and metadata completeness.
 - Heat is not proposal quality, endorsement, or acceptance probability.
 
 Activity history:
 - `emerging_activity_snapshots` stores compact rolling source/topic counters.
-- Velocity windows use 6h, 24h, 72h, and 7d where prior snapshots exist.
+- Velocity windows use 7d as the primary production signal where prior snapshots exist.
 - Unknown metrics stay unknown; they are not treated as zero.
 
 Alerts:
-- `.github/workflows/emerging-scan.yml` runs every 6 hours.
-- Telegram alerts are sent only on meaningful transitions such as first HOT/DECISION classification or a large heat increase.
+- `.github/workflows/weekly-report.yml` runs weekly, collects official standards data, runs Emerging Scan with `--no-telegram`, then generates one combined emerging + standards intelligence report.
+- `.github/workflows/emerging-scan.yml` has no schedule. It is `workflow_dispatch` only for development, validation, and manual re-collection.
+- Operational Telegram is sent once, after the Weekly Report completes.
+- Manual Emerging Scan defaults to `--no-telegram`.
 - `emerging_alert_state` suppresses duplicate alerts for unchanged HOT issues.
 
 Known limitations:
@@ -182,7 +186,19 @@ npm run send:weekly -- --report-path reports/weekly-2026-06-12.html
 
 ## GitHub Actions
 
-`.github/workflows/weekly-report.yml`은 매주 월요일 오전 9시 KST 기준으로 수집, 테스트, HTML 생성, Telegram 발송을 실행합니다. Repository secrets에 `TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHAT_ID`를 등록해야 합니다.
+Weekly Report:
+- Runs automatically once per week.
+- Restores the shared `data/eipreporter.sqlite` state/cache.
+- Collects official EIP/ERC data.
+- Runs Emerging Scan in the same workflow and same DB with `--no-telegram`.
+- Generates one combined Ethereum Weekly Intelligence Report covering emerging issues and standards activity.
+- Sends Telegram only once after the final weekly report is ready.
+- Deploys the validated HTML report to GitHub Pages.
+
+Emerging Scan:
+- Has no cron schedule.
+- Runs only through `workflow_dispatch`.
+- Exists for development, validation, manual re-collection, and incident diagnosis.
 
 ## 검증
 

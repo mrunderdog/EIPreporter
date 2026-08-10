@@ -3,6 +3,7 @@ import { readFileSync } from "node:fs";
 import test from "node:test";
 
 const workflow = readFileSync(".github/workflows/weekly-report.yml", "utf8");
+const emergingWorkflow = readFileSync(".github/workflows/emerging-scan.yml", "utf8");
 
 test("weekly workflow deploys only the validated report through Pages", () => {
   assert.match(workflow, /^\s{2}weekly-report:\n/m);
@@ -24,4 +25,28 @@ test("Pages site is prepared after strict quality and deploy job does not rebuil
   assert.match(workflow, /cp "\$report_path" _site\/index\.html/);
   assert.match(workflow, /test -s "_site\/index\.html"/);
   assert.doesNotMatch(deployJob, /actions\/checkout|npm ci|npm run collect|npm run report:html|quality|send:weekly/i);
+});
+
+test("weekly workflow runs emerging scan before weekly report generation using shared state", () => {
+  const collectIndex = workflow.indexOf("Collect EIP and ERC proposals");
+  const emergingIndex = workflow.indexOf("Run emerging scan");
+  const reportIndex = workflow.indexOf("Generate weekly HTML report");
+  const saveIndex = workflow.indexOf("Save persistent report state");
+  const sendIndex = workflow.indexOf("Send weekly report to Telegram");
+
+  assert.ok(collectIndex >= 0, "official collection step is present");
+  assert.ok(emergingIndex > collectIndex, "emerging scan runs after official collection");
+  assert.ok(reportIndex > emergingIndex, "weekly report is generated after emerging scan");
+  assert.ok(saveIndex > reportIndex, "shared DB/cache state is saved after report generation");
+  assert.ok(sendIndex > saveIndex, "only the completed weekly report is sent to Telegram");
+  assert.match(workflow, /npm run scan:emerging -- --limit 60 --timeout-ms 8000 --no-telegram/);
+  assert.match(workflow, /key: eipreporter-data-\$\{\{ runner\.os \}\}-\$\{\{ github\.run_id \}\}/);
+  assert.match(workflow, /data\/eipreporter\.sqlite/);
+});
+
+test("manual emerging workflow has no schedule and defaults to no Telegram", () => {
+  assert.doesNotMatch(emergingWorkflow, /^\s{2}schedule:/m);
+  assert.match(emergingWorkflow, /^\s{2}workflow_dispatch:/m);
+  assert.match(emergingWorkflow, /npm run scan:emerging -- --limit 60 --timeout-ms 8000 --no-telegram/);
+  assert.match(emergingWorkflow, /key: eipreporter-data-\$\{\{ runner\.os \}\}-\$\{\{ github\.run_id \}\}/);
 });
