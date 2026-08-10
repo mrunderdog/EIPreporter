@@ -772,7 +772,7 @@ test("Vitalik facts do not change core projection and usable count one remains v
 
 test("weekly summary language check allows official English terms with Korean prose", () => {
   assert.equal(
-    __qualityTestHooks.weeklySummaryTextQuality("EIP-8368 Account Abstraction은 공식 원문 기준 계정·권한 및 EVM 실행 규칙 영역을 다루는 제안입니다. 구현·채택 여부는 이번 수집 범위에서 확인하지 않았습니다."),
+    __qualityTestHooks.weeklySummaryTextQuality("해당 Proposal은 공식 원문 기준 계정·권한 및 EVM 실행 규칙 영역을 다루는 제안입니다. 구현·채택 여부는 이번 수집 범위에서 확인하지 않았습니다."),
     true,
   );
   assert.equal(
@@ -790,6 +790,25 @@ test("weekly summary language check rejects raw English abstract, markdown, and 
   assert.equal(__qualityTestHooks.weeklySummaryTextQuality("EIP-8368은 공식 원문 기준 계정·권한 관련 규칙을 다루는 제안입..."), false);
 });
 
+test("weekly summary language checks body separately from official title and proposal id", () => {
+  const api = weeklySummaryApi({
+    proposalId: "EIP-8372",
+    title: "Normalized state gas limit",
+    summary: "해당 Proposal은 공식 원문 기준 실행·상태 영역을 다루는 제안입니다. 구현·채택 여부는 이번 수집 범위에서 확인하지 않았습니다.",
+  });
+  const html = `<button data-weekly-repository-addition><span>EIP-8372</span><strong>Normalized state gas limit</strong><small>해당 Proposal은 공식 원문 기준 실행·상태 영역을 다루는 제안입니다. 구현·채택 여부는 이번 수집 범위에서 확인하지 않았습니다.</small></button>`;
+
+  assert.deepEqual(__qualityTestHooks.weeklySummaryLanguageAffectedIds(api, html), []);
+  assert.equal(__qualityTestHooks.weeklySummaryLanguageDiagnostics(api, html)[0].passed, true);
+});
+
+test("weekly summary language allows technical nouns but rejects taxonomy phrases and raw body", () => {
+  assert.equal(__qualityTestHooks.weeklySummaryTextQuality("해당 Proposal은 EVM opcode/API와 gas 규칙을 다루며, 설명 문장은 한국어로 제공합니다."), true);
+  assert.equal(__qualityTestHooks.weeklySummaryTextQuality("해당 Proposal은 공식 원문 기준 oracle/reporting 영역을 다루는 제안입니다."), false);
+  assert.equal(__qualityTestHooks.weeklySummaryTextQuality("해당 Proposal은 공식 원문 기준 execution-state 영역을 다루는 제안입니다."), false);
+  assert.equal(__qualityTestHooks.weeklySummaryTextQuality("This proposal normalizes state gas limit handling and defines EVM behavior for oracle reporting integrations across clients."), false);
+});
+
 test("weekly summary generation falls back to neutral Korean when evidence is thin", () => {
   const summary = __qualityTestHooks.proposalSummaryForV3({
     proposalId: "EIP-9001",
@@ -798,9 +817,41 @@ test("weekly summary generation falls back to neutral Korean when evidence is th
     description: "Proposal file creation detected.",
   } as never);
 
-  assert.match(summary, /EIP-9001 Sparse Official Title/);
+  assert.doesNotMatch(summary, /EIP-9001 Sparse Official Title/);
   assert.match(summary, /공식 저장소에 신규 반영됐습니다/);
   assert.equal(__qualityTestHooks.weeklySummaryTextQuality(summary), true);
+});
+
+test("known-domain runtime fixtures ignore rolling-window exclusions but keep classifier invariant", () => {
+  assert.equal(__qualityTestHooks.knownDomainClassifierRegression(), true);
+
+  const inside = knownDomainApi([
+    { proposalId: "EIP-8151", domainId: "accounts-wallets" },
+    { proposalId: "EIP-8198", domainId: "validators-consensus" },
+  ]);
+  assert.equal(__qualityTestHooks.knownDomainSemanticFixtures(inside), true);
+  assert.equal(__qualityTestHooks.knownDomainSemanticFixturesV4(inside), true);
+
+  const agedOut = knownDomainApi([
+    { proposalId: "EIP-8198", domainId: "validators-consensus" },
+  ], ["EIP-8151"]);
+  assert.equal(__qualityTestHooks.knownDomainSemanticFixtures(agedOut), true);
+  assert.deepEqual(__qualityTestHooks.knownDomainRuntimeMismatches(agedOut), []);
+
+  const sourceOnly = knownDomainApi([], ["EIP-8151"]);
+  assert.equal(__qualityTestHooks.knownDomainSemanticFixtures(sourceOnly), true);
+  assert.equal(__qualityTestHooks.knownDomainClassifierRegression(), true);
+});
+
+test("known-domain runtime fixtures fail current Explorer domain mismatch across dates", () => {
+  const wrong = knownDomainApi([
+    { proposalId: "EIP-8151", domainId: "interoperability" },
+  ], [], "2026-08-17T00:00:00.000Z");
+
+  assert.equal(__qualityTestHooks.knownDomainSemanticFixtures(wrong), false);
+  assert.deepEqual(__qualityTestHooks.knownDomainRuntimeMismatches(wrong), [
+    { proposalId: "EIP-8151", expected: "accounts-wallets", actual: "interoperability" },
+  ]);
 });
 
 test("weekly repository addition quality uses canonical rows and empty state", () => {
@@ -971,6 +1022,7 @@ function proposalRowForDashboardV3(proposalId: string, index: number) {
     sourcePath: `EIPS/eip-${proposalId.split("-")[1]}.md`,
     sourceUrl: `https://eips.ethereum.org/EIPS/eip-${proposalId.split("-")[1]}`,
     evidenceState: "confirmed",
+    abstractSummary: `${proposalId}는 공식 원문 기준 테스트 제안입니다.`,
     isAA: false,
     kgldRelevance: false,
     tags: [],
@@ -1161,6 +1213,67 @@ function monitoringScopeApi(input: { discovered: number; publicCount: number; ex
           monitoringScope: {
             monitoredProposalCount: input.monitored,
             detailedProposalCount: input.cards,
+          },
+        },
+      },
+    },
+  };
+}
+
+function weeklySummaryApi(input: { proposalId: string; title: string; summary: string }) {
+  const fixture = dashboardV3QualityFixture({ repositoryAdditions: 1, rawPosts: 0, activeThreads: 0 });
+  const view = fixture.api.intelligenceSnapshot.views.dashboardV2;
+  const row = view.proposalExplorer.rows[0];
+  row.proposalId = input.proposalId;
+  row.title = input.title;
+  row.sourcePath = `EIPS/eip-${input.proposalId.split("-")[1]}.md`;
+  row.sourceUrl = `https://eips.ethereum.org/EIPS/eip-${input.proposalId.split("-")[1]}`;
+  row.abstractSummary = "This proposal normalizes state gas limit handling.";
+  row.evidenceIds = [`spec:${input.proposalId}`];
+  const item = view.weeklyTimeline.items[0];
+  item.proposalId = input.proposalId;
+  item.title = input.title;
+  item.sourcePath = row.sourcePath;
+  item.sourceUrl = row.sourceUrl;
+  item.evidenceIds = [`event:${input.proposalId}:repo`];
+  view.lifecycleBoard[0].proposals = [row];
+  fixture.api.intelligenceSnapshot.facts.specificationEvidence[0].proposalId = input.proposalId;
+  fixture.api.intelligenceSnapshot.facts.specificationEvidence[0].officialTitle = input.title;
+  fixture.api.intelligenceSnapshot.facts.specificationEvidence[0].abstractText = row.abstractSummary;
+  fixture.api.intelligenceSnapshot.facts.logicalDevelopmentEvents[0].proposalId = input.proposalId;
+  assert.equal(__qualityTestHooks.weeklyRepositoryAdditionsFromApi(fixture.api)[0]?.summary, input.summary);
+  return fixture.api;
+}
+
+function knownDomainApi(
+  rows: Array<{ proposalId: string; domainId: string }>,
+  sourceOnlyIds: string[] = [],
+  generatedAt = "2026-08-10T00:00:00.000Z",
+) {
+  return {
+    intelligenceSnapshot: {
+      metadata: { generatedAt, reportDate: generatedAt.slice(0, 10) },
+      facts: {
+        specificationEvidence: [...rows.map((row) => row.proposalId), ...sourceOnlyIds].map((proposalId) => ({
+          factId: `spec:${proposalId}`,
+          proposalId,
+          officialTitle: `${proposalId} title`,
+        })),
+      },
+      views: {
+        dashboardV2: {
+          proposalExplorer: {
+            rows: rows.map((row) => ({
+              proposalId: row.proposalId,
+              title: `${row.proposalId} title`,
+              status: "Draft",
+              domainId: row.domainId,
+              domain: row.domainId,
+              topic: "fixture",
+              counts: { current7d: 0, current30d: 0, current180d: 0, rawPosts: 0, participants: 0 },
+              weeklyUsableEventIds: [],
+              evidenceIds: [`spec:${row.proposalId}`],
+            })),
           },
         },
       },
