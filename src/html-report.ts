@@ -218,7 +218,7 @@ export function generateWeeklyQualityJson(report: WeeklyRadarReport, html = gene
     qualityCheck("discussion-summary-completeness", !/핵심 쟁점 자동 요약 불가|제기된 반대 자동 요약 불가|대안 자동 요약 불가|미해결 문제 자동 요약 불가/.test(visibleHtml), "fail", "auto summary rows", "hidden when no quality summary"),
     qualityCheck("discussion-category-deduplication", discussionCategoriesDeduped(embeddedApi), "fail", "discussion categories", "same sentence appears in one category only"),
     qualityCheck("discussion-relevance-filter", true, "warning", "metadata-only discussion relevance", "low-information posts excluded from rendered analysis"),
-    qualityCheck("discussion-language-rendering", !/Sorry, more my stupid question then|stupid question|\+1\b|thanks\b/i.test(visibleHtml), "fail", "visible discussion text", "low-information English snippets hidden"),
+    qualityCheck("discussion-language-rendering", discussionLanguageRenderingClean(visibleHtml), "fail", "visible discussion text", "low-information English snippets hidden"),
     qualityCheck("parent-child-ranking-exclusivity", parentChildRankingExclusive(embeddedApi, visibleHtml), "fail", "weekly topic rows", "domain rows are not ranked with child topics"),
     qualityCheck("generic-topic-not-published", !/검토 중인 주제|id\":\"topic\"|\"displayName\":\"검토 중인 주제\"/.test(html), "fail", "generic topic", "not published outside appendix fallback"),
     qualityCheck("topic-coherence", topicCoherenceValid(atlas), "warning", "topic rows", "related trends have >=2 proposals and specific labels"),
@@ -332,7 +332,7 @@ export function generateWeeklyQualityJson(report: WeeklyRadarReport, html = gene
     qualityCheck("final-f03-technology-map-canonical-consistency", finalTechnologyMapCanonicalConsistency(embeddedApi, visibleHtml), "fail", finalTechnologyMapObserved(embeddedApi), "technology_map_set, domain union, view, HTML agree"),
     qualityCheck("final-f04-aa-metric-dictionary-window", finalAaMetricDictionaryWindow(embeddedApi), "fail", finalAaMetricDictionaryObserved(embeddedApi), "AA metric dictionary windows match current30d/all aggregate semantics"),
     qualityCheck("final-f05-aa-metric-dictionary-unit", finalAaMetricDictionaryUnit(embeddedApi), "fail", finalAaMetricDictionaryObserved(embeddedApi), "AA metric dictionary units match track/proposal/assignment/thread/post semantics"),
-    qualityCheck("final-f06-aa-metric-source-path", finalAaMetricSourcePath(embeddedApi), "fail", finalAaMetricDictionaryObserved(embeddedApi), "AA metric sourcePath resolves to canonical values"),
+    qualityCheck("final-f06-aa-metric-source-lineage", finalAaMetricSourceLineage(embeddedApi), "fail", finalAaMetricDictionaryObserved(embeddedApi), "AA metric source lineage resolves to public canonical fields"),
     qualityCheck("final-f07-aa-last-milestone-latest", finalAaLastMilestoneLatest(embeddedApi), "fail", finalAaLastMilestoneObserved(embeddedApi), "AA lastMilestone uses latest recentSignal activity"),
     qualityCheck("final-f08-aa-last-milestone-lineage", finalAaLastMilestoneLineage(embeddedApi), "fail", finalAaLastMilestoneObserved(embeddedApi), "AA lastMilestone has sourceUrl and evidenceFactIds"),
     qualityCheck("final-f09-aa-discussion-source-visible", finalAaDiscussionSourceVisible(embeddedApi, visibleHtml), "fail", "AA discussion source links", "AA baseline with discussionSourceUrl renders Magicians link"),
@@ -2385,12 +2385,40 @@ function discussionScopeUnionConsistency(embeddedApi: unknown): boolean {
 
 function discussionValidityClassification(embeddedApi: unknown): boolean {
   const dashboard = dashboardFromApi(embeddedApi);
+  if (!dashboard) return false;
   const counts = [
-    dashboard?.developerAttention?.summary.validTechnicalPosts,
-    ...(dashboard?.developerAttention?.activity ?? []).map((item) => item.validTechnicalPostCount),
-    dashboard?.dataQuality?.discussionCollection.validTechnicalPostCount,
+    dashboard.developerAttention?.summary.validTechnicalPosts,
+    ...(dashboard.developerAttention?.activity ?? []).map((item) => item.validTechnicalPostCount),
+    dashboard.dataQuality?.discussionCollection.validTechnicalPostCount,
   ];
-  return counts.length > 0 && counts.every((value) => value === null || typeof value === "number");
+  if (counts.length === 0 || !counts.every((value) => value == null || typeof value === "number")) return false;
+  const hasExplicitValidCount = counts.some((value) => typeof value === "number");
+  const analysisCount = (dashboard.dataQuality?.discussionCollection.analyzedPostCount ?? 0)
+    + (dashboard.developerAttention?.summary.validatedInsights ?? 0)
+    + (dashboard.developerAttention?.activity ?? []).reduce((sum, item) => sum + (item.analyzedInsightCount ?? 0), 0);
+  const relevanceState = dashboard.dashboardV2?.evidenceQuality?.discussionRelevance
+    ?? (dashboard.dataQuality as { discussionRelevance?: string } | undefined)?.discussionRelevance;
+  if (relevanceState === "unclassified" || (relevanceState !== "classified" && analysisCount === 0)) {
+    return !hasExplicitValidCount;
+  }
+  return true;
+}
+
+function discussionLanguageRenderingClean(visibleHtml: string): boolean {
+  const discussionSegments = visibleHtml
+    .split(/<\/(?:p|li|article|tr)>/i)
+    .filter((segment) => segment.trim().length > 0);
+  return discussionSegments.every((segment) => {
+    const text = segment
+      .replace(/<dt>[^<]*(?:replies|views|조회|댓글)[^<]*<\/dt>\s*<dd>[+-]?\d+<\/dd>/gi, "")
+      .replace(/(?:7일 조회|24h replies|24h views)\s*[+-]?\d+/gi, "")
+      .replace(/<[^>]+>/g, " ")
+      .replace(/\s+/g, " ")
+      .trim();
+    if (!text) return true;
+    if (/Sorry,\s*more my stupid question then|stupid question/i.test(text)) return false;
+    return !/^(?:thanks|thank you|\+1|sorry|bump)\b[.!?]?\s*$/i.test(text);
+  });
 }
 
 function weeklyUsableIdsFromDashboard(dashboard: ReturnType<typeof dashboardFromApi> | undefined): string[] {
@@ -3488,6 +3516,7 @@ export const __qualityTestHooks = {
   finalGoldenFixtureDateScope,
   finalGoldenObserved,
   finalTechnologyMapCanonicalConsistency,
+  allClaimsHaveSources,
   buildWeeklySignalCopy,
   coreProjection,
   coverSingularPluralAffectedIds,
@@ -3495,6 +3524,8 @@ export const __qualityTestHooks = {
   coverSingularPluralObserved,
   currentWindowFallbackHandled,
   currentWindowFallbackObserved,
+  discussionLanguageRenderingClean,
+  discussionValidityClassification,
   goldenFixtureInputHash,
   inputSnapshotHash,
   monitoringScopeReferenceCount,
@@ -3577,12 +3608,15 @@ function finalAaMetricDictionaryUnit(embeddedApi: unknown): boolean {
     && defs.get("aa.trackAssignments")?.unit === "assignment";
 }
 
-function finalAaMetricSourcePath(embeddedApi: unknown): boolean {
+function finalAaMetricSourceLineage(embeddedApi: unknown): boolean {
   const snapshot = intelligenceSnapshotFromApi(embeddedApi);
   if (!snapshot) return false;
   return aaMetricDefinitions(embeddedApi)
     .filter((metric) => !metric.deprecated && metric.metricId !== "aa.trackCount")
-    .every((metric) => resolveMetricSourcePath(snapshot, String(metric.sourcePath)).value !== undefined);
+    .every((metric) => {
+      if (typeof metric.sourcePath === "string") return resolveMetricSourcePath(snapshot, metric.sourcePath).value !== undefined;
+      return typeof metric.sourceFactType === "string" && typeof metric.filterRule === "string";
+    });
 }
 
 function resolveMetricSourcePath(snapshot: ReturnType<typeof buildIntelligenceSnapshot>, path: string): { value: unknown } {
@@ -3777,7 +3811,7 @@ function pruneDebugSnapshots(debugDirectory: string, keepPath: string): void {
 export function generateWeeklyHtml(report: WeeklyRadarReport): string {
   const platform = getTechnologyPlatformLayer(report);
   const atlas = buildTechnologyAtlas(report);
-  const platformApi = technologyPlatformApi(report, platform, atlas);
+  const platformApi = publicHtmlPlatformApi(technologyPlatformApi(report, platform, atlas));
   const dashboardV2 = platformApi.intelligenceSnapshot.views.dashboardV2;
   const platformApiJson = JSON.stringify(platformApi).replace(/</g, "\\u003c").replace(/--/g, "\\u002d\\u002d");
   return `<!doctype html>
@@ -4571,7 +4605,7 @@ function renderEmergingSourceActions(issue: EmergingIssue): string {
   const actions = [
     primary ? `<button type="button" class="dash-link-button" data-open-proposal="${escapeHtml(primary)}">설명 보기</button>` : "",
     primary ? proposalLink(primary, "공식 문서") : "",
-    ...issue.sourceSignals.slice(0, 3).map((signal) => `<a href="${escapeHtml(signal.url)}" target="_blank" rel="noopener noreferrer">${escapeHtml(emergingSourceLabel(signal.source))}</a>`),
+    ...issue.sourceSignals.slice(0, 3).map((signal) => `<a href="${escapeHtml(publicHtmlString(signal.url) ?? proposalUrl(primary ?? ""))}" target="_blank" rel="noopener noreferrer">${escapeHtml(emergingSourceLabel(signal.source))}</a>`),
   ].filter(Boolean);
   return actions.join("");
 }
@@ -4579,7 +4613,7 @@ function renderEmergingSourceActions(issue: EmergingIssue): string {
 function renderProposalDetails(proposalId: string | undefined, issue: EmergingIssue): string {
   if (!proposalId) return "";
   const official = localSpecificationEvidence(proposalId);
-  const sourceLinks = issue.sourceSignals.slice(0, 4).map((signal) => `<a href="${escapeHtml(signal.url)}" target="_blank" rel="noopener noreferrer">${escapeHtml(emergingSourceLabel(signal.source))}</a>`).join(" ");
+  const sourceLinks = issue.sourceSignals.slice(0, 4).map((signal) => `<a href="${escapeHtml(publicHtmlString(signal.url) ?? proposalUrl(proposalId))}" target="_blank" rel="noopener noreferrer">${escapeHtml(emergingSourceLabel(signal.source))}</a>`).join(" ");
   const purpose = official.abstractText ?? official.motivationText ?? official.specificationIntroText;
   return `<details class="dash-proposal-details" id="${escapeHtml(proposalAnchorId(proposalId))}"><summary>설명 보기</summary>
     <dl>
@@ -4595,6 +4629,10 @@ function renderProposalDetails(proposalId: string | undefined, issue: EmergingIs
 
 function proposalDetailTrigger(proposalId: string, label = proposalId): string {
   return `<button type="button" class="dash-proposal-pill dash-proposal-button" data-open-proposal="${escapeHtml(proposalId)}">${escapeHtml(label)}</button>`;
+}
+
+function publicEvidenceId(evidenceIds: string[] | undefined, fallbackId: string): string {
+  return evidenceIds?.find((id) => id.trim().length > 0) ?? `proposal:${fallbackId}`;
 }
 
 function emergingSourceLabel(source: string): string {
@@ -4614,7 +4652,7 @@ function formatUnknownNumber(value: number | undefined): string {
 
 function renderDashboardV3WeeklyBrief(p: DashboardV3Presentation): string {
   const view = p.view;
-  const rows = p.weeklyRepositoryAdditions.map((item) => `<button type="button" class="dash-signal-row dash-filterable" data-kind="proposal" data-weekly-repository-addition data-repository-added-date-kst="${escapeHtml(item.repositoryAddedDateKst)}" data-proposal-created-date-kst="${escapeHtml(item.proposalCreatedDateKst ?? "")}" data-open-proposal="${escapeHtml(item.proposalId)}" ${filterAttrsForProposalId(view, item.proposalId)} data-evidence-id="${escapeHtml(item.evidenceIds[0] ?? item.sourcePath)}" data-source-path="${escapeHtml(item.sourcePath)}">
+  const rows = p.weeklyRepositoryAdditions.map((item) => `<button type="button" class="dash-signal-row dash-filterable" data-kind="proposal" data-weekly-repository-addition data-repository-added-date-kst="${escapeHtml(item.repositoryAddedDateKst)}" data-proposal-created-date-kst="${escapeHtml(item.proposalCreatedDateKst ?? "")}" data-open-proposal="${escapeHtml(item.proposalId)}" ${filterAttrsForProposalId(view, item.proposalId)} data-evidence-id="${escapeHtml(publicEvidenceId(item.evidenceIds, item.proposalId))}">
     <span class="dash-proposal-pill">${escapeHtml(item.proposalId)}</span>
     <span class="dash-signal-main"><strong>${escapeHtml(item.title)}</strong><small>${escapeHtml(visibleWeeklySummary(item.summary))}</small></span>
     <span class="dash-signal-meta"><em>${escapeHtml(item.eventLabelKo)}</em><em>저장소 반영 ${escapeHtml(item.repositoryAddedDateKst)}</em><em>${item.proposalCreatedDateKst ? `문서 작성 ${escapeHtml(item.proposalCreatedDateKst)}` : "문서 작성일 미확인"}</em><em>${escapeHtml(item.domainLabelKo)}</em></span>
@@ -4766,7 +4804,7 @@ function visibleWeeklySummary(summary: string): string {
 function renderDashboardV3Magicians(p: DashboardV3Presentation): string {
   const view = p.view;
   const maxPosts = Math.max(1, ...p.activeThreads.map((thread) => thread.rawPostCount));
-  const cards = p.activeThreads.map((thread, index) => `<article class="dash-thread-card dash-filterable ${index === 0 ? "dash-thread-featured" : ""}" ${filterAttrsForProposalId(view, thread.proposalId, ["discussion"])} data-kind="proposal" data-evidence-id="${escapeHtml(thread.evidenceIds[0] ?? thread.sourcePath)}" data-source-path="${escapeHtml(thread.sourcePath)}">
+  const cards = p.activeThreads.map((thread, index) => `<article class="dash-thread-card dash-filterable ${index === 0 ? "dash-thread-featured" : ""}" ${filterAttrsForProposalId(view, thread.proposalId, ["discussion"])} data-kind="proposal" data-evidence-id="${escapeHtml(publicEvidenceId(thread.evidenceIds, thread.proposalId))}">
     <div class="dash-thread-head"><span class="dash-proposal-pill">${escapeHtml(thread.proposalId)}</span><span class="dash-state">${escapeHtml(collectionLabel(thread.collectionStatus))}</span></div>
     <h3>${escapeHtml(thread.title)}</h3>
     <div class="dash-thread-metrics"><strong>${thread.rawPostCount}<span>원문 게시물</span></strong><em>${thread.uniqueParticipantCount}명 참여</em><em>최근 게시 ${escapeHtml(shortDate(thread.latestActivityAt))}</em></div>
@@ -4862,7 +4900,7 @@ function renderDashboardV3Explorer(p: DashboardV3Presentation): string {
     .slice()
     .sort((a, b) => b.counts.current7d - a.counts.current7d || String(b.latestChangeAt ?? "").localeCompare(String(a.latestChangeAt ?? "")) || compareProposalIds(a.proposalId, b.proposalId));
   const rows = explorerRows
-    .map((proposal, index) => `<tr class="dash-filterable dash-explorer-row" data-kind="proposal" data-explorer-row data-page-index="${index}" data-open-proposal="${escapeHtml(proposal.proposalId)}" ${filterAttrsForProposal(proposal)} data-evidence-id="${escapeHtml(proposal.evidenceIds[0] ?? proposal.sourcePath)}" data-source-path="${escapeHtml(proposal.sourcePath)}">
+    .map((proposal, index) => `<tr class="dash-filterable dash-explorer-row" data-kind="proposal" data-explorer-row data-page-index="${index}" data-open-proposal="${escapeHtml(proposal.proposalId)}" ${filterAttrsForProposal(proposal)} data-evidence-id="${escapeHtml(publicEvidenceId(proposal.evidenceIds, proposal.proposalId))}">
       <td><span class="dash-proposal-pill">${escapeHtml(proposal.proposalId)}</span></td>
       <td><strong>${escapeHtml(proposal.title)}</strong></td>
       <td>${escapeHtml(publicDomainForProposal(proposal.proposalId, proposal.domainId, proposal.topic, proposal.title).labelKo)}</td>
@@ -4872,7 +4910,7 @@ function renderDashboardV3Explorer(p: DashboardV3Presentation): string {
       <td>${renderProposalTagsV3(proposal)}</td>
       <td><button type="button" data-open-proposal="${escapeHtml(proposal.proposalId)}">자세히</button></td>
     </tr>`).join("");
-  const cards = explorerRows.map((proposal, index) => `<button type="button" class="dash-mobile-proposal dash-filterable dash-explorer-card" data-kind="proposal" data-explorer-row data-page-index="${index}" data-open-proposal="${escapeHtml(proposal.proposalId)}" ${filterAttrsForProposal(proposal)} data-evidence-id="${escapeHtml(proposal.evidenceIds[0] ?? proposal.sourcePath)}" data-source-path="${escapeHtml(proposal.sourcePath)}">
+  const cards = explorerRows.map((proposal, index) => `<button type="button" class="dash-mobile-proposal dash-filterable dash-explorer-card" data-kind="proposal" data-explorer-row data-page-index="${index}" data-open-proposal="${escapeHtml(proposal.proposalId)}" ${filterAttrsForProposal(proposal)} data-evidence-id="${escapeHtml(publicEvidenceId(proposal.evidenceIds, proposal.proposalId))}">
     <span><b>${escapeHtml(proposal.proposalId)}</b><em>${escapeHtml(proposal.status)}</em></span>
     <strong>${escapeHtml(proposal.title)}</strong>
     <small>${escapeHtml(publicDomainForProposal(proposal.proposalId, proposal.domainId, proposal.topic, proposal.title).labelKo)} · <span data-period-label>최근 7일</span> 명세 활동 <span data-period-value>${proposal.counts.current7d}</span>건 · ${escapeHtml(discussionCountTextKo(proposal.counts.rawPosts))}</small>
@@ -4924,7 +4962,7 @@ function renderDashboardV3Evidence(p: DashboardV3Presentation): string {
 
 function renderDashboardV3Appendix(p: DashboardV3Presentation): string {
   return `<section class="dash-section dash-panel dash-appendix" id="proposal-appendix">
-    <details><summary>Proposal 근거 appendix</summary><p>전체 Proposal 근거와 sourcePath는 embedded canonical dashboard view 및 Inspector의 근거 정보에 보존됩니다. Explorer page size ${Math.min(12, p.view.proposalExplorer.rows.length)}건부터 탐색합니다.</p></details>
+    <details><summary>Proposal 근거 appendix</summary><p>전체 Proposal 근거는 embedded canonical dashboard view 및 Inspector의 공식 출처 정보에 보존됩니다. Explorer page size ${Math.min(12, p.view.proposalExplorer.rows.length)}건부터 탐색합니다.</p></details>
   </section>`;
 }
 
@@ -4971,7 +5009,7 @@ function renderSmallMultiple(label: string, weeks: Array<Record<string, number |
 }
 
 function renderWeeklyTimeline(view: ReturnType<typeof buildDashboardV2View>): string {
-  const rows = view.weeklyTimeline.items.slice(0, 5).map((item) => `<li class="timeline-entry v2-filterable" tabindex="0" data-kind="proposal" data-open-proposal="${escapeHtml(item.proposalId)}" ${filterAttrsForProposalId(view, item.proposalId)} data-evidence-id="${escapeHtml(item.evidenceIds[0] ?? item.sourcePath)}" data-source-path="${escapeHtml(item.sourcePath)}"><div><b>${proposalAnchor(item.proposalId, item.title)}</b><p>${escapeHtml(item.description)}</p></div><span>${escapeHtml(eventTypeKo(item.eventType))}</span><span>${escapeHtml(shortDate(item.occurredAt))}</span><span>${proposalBadgesForId(view, item.proposalId)}</span><button type="button" data-open-proposal="${escapeHtml(item.proposalId)}">Inspector</button></li>`).join("");
+  const rows = view.weeklyTimeline.items.slice(0, 5).map((item) => `<li class="timeline-entry v2-filterable" tabindex="0" data-kind="proposal" data-open-proposal="${escapeHtml(item.proposalId)}" ${filterAttrsForProposalId(view, item.proposalId)} data-evidence-id="${escapeHtml(publicEvidenceId(item.evidenceIds, item.proposalId))}"><div><b>${proposalAnchor(item.proposalId, item.title)}</b><p>${escapeHtml(item.description)}</p></div><span>${escapeHtml(eventTypeKo(item.eventType))}</span><span>${escapeHtml(shortDate(item.occurredAt))}</span><span>${proposalBadgesForId(view, item.proposalId)}</span><button type="button" data-open-proposal="${escapeHtml(item.proposalId)}">Inspector</button></li>`).join("");
   return `<section class="research-section v2-section" id="weekly-overview"><div class="section-head"><h2>이번 주 관찰 신호</h2><p>핵심 Proposal ${view.weeklyTimeline.totalUsableCount}건을 compact signal list로 표시합니다.</p></div>${rows ? `<ol class="v2-timeline">${rows}</ol>` : `<p class="empty">최근 기간 confirmed usable event가 없습니다.</p>`}<details><summary>제외된 이벤트 ${view.weeklyTimeline.excluded.rawExcludedCount}건</summary><p>unknown semantic ${view.weeklyTimeline.excluded.unknownSemanticEvents}건 · timestamp 미확정 ${view.weeklyTimeline.excluded.fallbackTimestampEvents}건</p></details></section>`;
 }
 
@@ -4982,7 +5020,7 @@ function renderTopicActivityMap(view: ReturnType<typeof buildDashboardV2View>): 
   const quiet = view.topicActivityMap.points.filter((point) => !active.includes(point));
   const maxSpec = Math.max(1, ...active.map((point) => point.current7dConfirmedChanges));
   const maxPosts = Math.max(1, ...active.map((point) => point.rawPostCount));
-  const rows = active.map((point) => `<article class="topic-row v2-filterable" data-kind="topic" data-open-topic="${escapeHtml(point.topicId)}" data-topic-open="topic/${escapeHtml(point.topicId)}" ${filterAttrsForTopic(point)} data-evidence-id="${escapeHtml(point.evidenceIds[0] ?? point.sourcePath)}" data-source-path="${escapeHtml(point.sourcePath)}"><div><h3>${escapeHtml(point.name)}</h3><p>${escapeHtml(domainDisplayName(point.domainId))} · ${point.uniqueProposalCount} proposals · ${escapeHtml(stateLabel(point.evidenceState))}</p></div><div class="topic-bars"><span>spec ${point.current7dConfirmedChanges}</span><i style="--w:${Math.round(point.current7dConfirmedChanges / maxSpec * 100)}%"></i><span>raw ${point.rawPostCount}</span><i class="discussion" style="--w:${Math.round(point.rawPostCount / maxPosts * 100)}%"></i></div><button type="button" data-open-topic="${escapeHtml(point.topicId)}">Inspector</button></article>`).join("");
+  const rows = active.map((point) => `<article class="topic-row v2-filterable" data-kind="topic" data-open-topic="${escapeHtml(point.topicId)}" data-topic-open="topic/${escapeHtml(point.topicId)}" ${filterAttrsForTopic(point)} data-evidence-id="${escapeHtml(publicEvidenceId(point.evidenceIds, point.topicId))}"><div><h3>${escapeHtml(point.name)}</h3><p>${escapeHtml(domainDisplayName(point.domainId))} · ${point.uniqueProposalCount} proposals · ${escapeHtml(stateLabel(point.evidenceState))}</p></div><div class="topic-bars"><span>spec ${point.current7dConfirmedChanges}</span><i style="--w:${Math.round(point.current7dConfirmedChanges / maxSpec * 100)}%"></i><span>raw ${point.rawPostCount}</span><i class="discussion" style="--w:${Math.round(point.rawPostCount / maxPosts * 100)}%"></i></div><button type="button" data-open-topic="${escapeHtml(point.topicId)}">Inspector</button></article>`).join("");
   return `<section class="research-section v2-section" id="topic-map"><div class="section-head"><h2>Active Topics</h2><p>Topic Activity Rows는 confirmed changes와 raw discussion posts를 직접 비교합니다.</p></div><div class="topic-rows">${rows || '<p class="empty">선택 기간 활동 Topic 없음</p>'}</div>${quiet.length ? `<details><summary>Quiet topics ${quiet.length}개</summary><p>${escapeHtml(quiet.map((topic) => topic.name).join(", "))}</p></details>` : ""}</section>`;
 }
 
@@ -4997,7 +5035,7 @@ function renderLifecycleBoard(view: ReturnType<typeof buildDashboardV2View>): st
     .filter((proposal) => proposal.counts.current7d > 0)
     .sort((a, b) => b.counts.current7d - a.counts.current7d || compareProposalIds(a.proposalId, b.proposalId))
     .slice(0, 5)
-    .map((proposal) => `<button class="recent-proposal v2-filterable" type="button" data-kind="proposal" data-open-proposal="${escapeHtml(proposal.proposalId)}" ${filterAttrsForProposal(proposal)} data-evidence-id="${escapeHtml(proposal.evidenceIds[0] ?? proposal.sourcePath)}" data-source-path="${escapeHtml(proposal.sourcePath)}"><b>${escapeHtml(proposal.proposalId)}</b><span>${escapeHtml(shortTitle(proposal.title))}</span><em>${proposal.counts.current7d} change</em></button>`)
+    .map((proposal) => `<button class="recent-proposal v2-filterable" type="button" data-kind="proposal" data-open-proposal="${escapeHtml(proposal.proposalId)}" ${filterAttrsForProposal(proposal)} data-evidence-id="${escapeHtml(publicEvidenceId(proposal.evidenceIds, proposal.proposalId))}"><b>${escapeHtml(proposal.proposalId)}</b><span>${escapeHtml(shortTitle(proposal.title))}</span><em>${proposal.counts.current7d} change</em></button>`)
     .join("");
   return `<section class="research-section v2-section" id="lifecycle-board"><div class="section-head"><h2>Lifecycle Summary</h2><p>전체 Proposal은 Explorer에서 탐색하고, 여기서는 stage 분포와 최근 NEW/MOVED만 봅니다.</p></div><div class="lifecycle-summary"><div class="life-stack" aria-label="Lifecycle stacked bar">${segments}</div><p class="life-counts">${counts}</p></div>${recent ? `<div class="recent-proposals">${recent}</div>` : ""}<p class="empty is-hidden" data-empty-state>필터 결과가 없습니다.</p></section>`;
 }
@@ -5008,7 +5046,7 @@ function renderMagiciansActivity(view: ReturnType<typeof buildDashboardV2View>):
   const heatRows = rows.map((row) => `<tr class="v2-filterable" ${filterAttrsForProposalId(view, row.proposalId)}><th>${proposalAnchor(row.proposalId, row.collectionStatus === "posts_fully_collected" ? row.title : null)}</th>${days.map((date) => { const cell = row.daily.find((day) => day.date === date); return `<td tabindex="0" data-open-proposal="${escapeHtml(row.proposalId)}" title="${escapeHtml(date)} raw posts ${(cell?.rawPostCount ?? 0)}">${cell?.rawPostCount ?? 0}</td>`; }).join("")}</tr>`).join("");
   const activeThreads = view.developerActivity.threads.filter((thread) => thread.rawPostCount > 0).sort((a, b) => b.rawPostCount - a.rawPostCount);
   const maxPosts = Math.max(1, ...activeThreads.map((thread) => thread.rawPostCount));
-  const threads = activeThreads.map((thread) => `<article class="thread-row v2-filterable" ${filterAttrsForProposalId(view, thread.proposalId)} data-evidence-id="${escapeHtml(thread.evidenceIds[0] ?? thread.sourcePath)}" data-source-path="${escapeHtml(thread.sourcePath)}"><div><h3>${proposalAnchor(thread.proposalId, thread.collectionStatus === "posts_fully_collected" ? thread.title : null)}</h3><p>${escapeHtml(collectionLabel(thread.collectionStatus))} · latest ${escapeHtml(shortDate(thread.latestActivityAt))}</p></div><div class="activity-bar"><i style="--w:${Math.round(thread.rawPostCount / maxPosts * 100)}%"></i><span>${thread.rawPostCount} raw posts</span></div><span>${thread.uniqueParticipantCount} participants</span><button type="button" data-open-proposal="${escapeHtml(thread.proposalId)}">Inspector</button></article>`).join("");
+  const threads = activeThreads.map((thread) => `<article class="thread-row v2-filterable" ${filterAttrsForProposalId(view, thread.proposalId)} data-evidence-id="${escapeHtml(publicEvidenceId(thread.evidenceIds, thread.proposalId))}"><div><h3>${proposalAnchor(thread.proposalId, thread.collectionStatus === "posts_fully_collected" ? thread.title : null)}</h3><p>${escapeHtml(collectionLabel(thread.collectionStatus))} · latest ${escapeHtml(shortDate(thread.latestActivityAt))}</p></div><div class="activity-bar"><i style="--w:${Math.round(thread.rawPostCount / maxPosts * 100)}%"></i><span>${thread.rawPostCount} raw posts</span></div><span>${thread.uniqueParticipantCount} participants</span><button type="button" data-open-proposal="${escapeHtml(thread.proposalId)}">Inspector</button></article>`).join("");
   const validity = view.developerActivity.validTechnicalPostCount == null
     ? "최근 7일 raw activity 수집됨 · relevance 미분류 · analyzed insights 0건"
     : `최근 7일 valid technical posts ${view.developerActivity.validTechnicalPostCount}건 · analyzed insights ${view.developerActivity.analyzedInsightCount}건`;
@@ -5016,12 +5054,12 @@ function renderMagiciansActivity(view: ReturnType<typeof buildDashboardV2View>):
 }
 
 function renderProposalExplorer(view: ReturnType<typeof buildDashboardV2View>): string {
-  const rows = view.proposalExplorer.rows.map((proposal, index) => `<tr class="v2-filterable explorer-row" data-kind="proposal" data-explorer-row data-page-index="${index}" ${filterAttrsForProposal(proposal)} data-evidence-id="${escapeHtml(proposal.evidenceIds[0] ?? proposal.sourcePath)}" data-source-path="${escapeHtml(proposal.sourcePath)}"><td>${proposalAnchor(proposal.proposalId, proposal.title)}</td><td>${escapeHtml(proposal.domain)}<br><small>${escapeHtml(proposal.topic)}</small></td><td>${escapeHtml(proposal.status)}</td><td data-sort-value="${proposal.counts.current7d}">${proposal.counts.current7d}</td><td>${proposal.counts.validTechnicalPostCount == null ? `${proposal.counts.rawPosts} raw` : proposal.counts.validTechnicalPostCount}</td><td>${proposal.isAA ? "AA" : ""}${proposal.kgldRelevance ? " KGLD" : ""}</td><td><button type="button" data-open-proposal="${escapeHtml(proposal.proposalId)}">Detail</button></td></tr>`).join("");
+  const rows = view.proposalExplorer.rows.map((proposal, index) => `<tr class="v2-filterable explorer-row" data-kind="proposal" data-explorer-row data-page-index="${index}" ${filterAttrsForProposal(proposal)} data-evidence-id="${escapeHtml(publicEvidenceId(proposal.evidenceIds, proposal.proposalId))}"><td>${proposalAnchor(proposal.proposalId, proposal.title)}</td><td>${escapeHtml(proposal.domain)}<br><small>${escapeHtml(proposal.topic)}</small></td><td>${escapeHtml(proposal.status)}</td><td data-sort-value="${proposal.counts.current7d}">${proposal.counts.current7d}</td><td>${proposal.counts.validTechnicalPostCount == null ? `${proposal.counts.rawPosts} raw` : proposal.counts.validTechnicalPostCount}</td><td>${proposal.isAA ? "AA" : ""}${proposal.kgldRelevance ? " KGLD" : ""}</td><td><button type="button" data-open-proposal="${escapeHtml(proposal.proposalId)}">Detail</button></td></tr>`).join("");
   return `<section class="research-section v2-section" id="proposal-explorer"><div class="section-head"><h2>Proposal Explorer</h2><p>전체 Proposal ${view.proposalExplorer.rows.length}건은 검색, 상태, Topic 필터와 페이지 단위로 탐색합니다.</p></div><div class="table-wrap explorer-wrap"><table class="table explorer-table" data-sortable><thead><tr><th data-sort="id">Proposal / Title</th><th>Domain / Topic</th><th data-sort="status">Status</th><th data-sort="changes">Selected period changes</th><th data-sort="posts">Raw discussion</th><th>AA / KGLD</th><th>Detail</th></tr></thead><tbody>${rows || '<tr><td colspan="7">Proposal 없음</td></tr>'}</tbody></table></div><div class="pager"><button type="button" data-show-more>더 보기</button><span data-page-state>20 rows</span></div></section>`;
 }
 
 function renderAaMatrix(view: ReturnType<typeof buildDashboardV2View>): string {
-  const tracks = view.aaMatrix.tracks.map((track) => `<tr class="v2-filterable" data-aa="true" data-kind="aa" data-open-aa="${escapeHtml(track.id)}" data-domain="accounts-wallets" data-status="all" data-kgld="false" data-search="${escapeHtml(`${track.name} ${track.proposalIds.join(" ")}`)}" data-evidence-id="${escapeHtml(track.evidenceIds?.[0] ?? track.id)}" data-source-path="views.accountAbstraction.tracks[trackId=${escapeHtml(track.id)}]"><th><button type="button" data-open-aa="${escapeHtml(track.id)}">${escapeHtml(track.name)}</button><small>${escapeHtml(track.proposalIds.join(", ") || "baseline not linked")}</small></th><td>${metricCell(track.specification30d)}</td><td>${metricCell(track.discussion30d)}</td><td>${metricCell(track.implementation)}</td><td><span class="state unavailable">미수집</span></td><td><span class="state unavailable">미수집</span></td></tr>`).join("");
+  const tracks = view.aaMatrix.tracks.map((track) => `<tr class="v2-filterable" data-aa="true" data-kind="aa" data-open-aa="${escapeHtml(track.id)}" data-domain="accounts-wallets" data-status="all" data-kgld="false" data-search="${escapeHtml(`${track.name} ${track.proposalIds.join(" ")}`)}" data-evidence-id="${escapeHtml(track.evidenceIds?.[0] ?? track.id)}"><th><button type="button" data-open-aa="${escapeHtml(track.id)}">${escapeHtml(track.name)}</button><small>${escapeHtml(track.proposalIds.join(", ") || "baseline not linked")}</small></th><td>${metricCell(track.specification30d)}</td><td>${metricCell(track.discussion30d)}</td><td>${metricCell(track.implementation)}</td><td><span class="state unavailable">미수집</span></td><td><span class="state unavailable">미수집</span></td></tr>`).join("");
   const baseline = view.aaMatrix.tracks.flatMap((track) => track.baselineProposals ?? []);
   const recent = view.aaMatrix.tracks.flatMap((track) => track.recentSignals ?? []);
   const hasBaselineMissing = view.aaMatrix.tracks.some((track) => (track.baselineProposals?.length ?? 0) === 0);
@@ -5035,7 +5073,7 @@ function renderKgldBoard(view: ReturnType<typeof buildDashboardV2View>): string 
     ["Monitor", view.kgldBoard.groups.monitor],
     ["No Action", view.kgldBoard.groups.no_action],
   ] as const;
-  return `<section class="research-section v2-section" id="kgld-board"><div class="section-head"><h2>KGLD Watch</h2><p>Research Now, Monitor, No Action만 action 기준으로 정리합니다.</p></div><div class="kgld-action-grid">${columns.map(([label, items]) => items.length ? `<section><h3>${label}</h3>${items.map((item) => `<article class="kgld-watch-item v2-filterable" data-kgld="true" data-aa="false" data-domain="kgld" data-status="all" data-search="${escapeHtml(`${item.proposalId} ${item.title} ${item.internalAction}`)}" data-open-proposal="${escapeHtml(item.proposalId)}" data-evidence-id="${escapeHtml(item.evidenceIds?.[0] ?? `spec:${item.proposalId}`)}" data-source-path="views.kgldWatch.groups"><b>${proposalAnchor(item.proposalId, item.title)}</b><p><b>Affected process:</b> ${escapeHtml(item.affectedKgldProcess)}</p><p><b>Action:</b> ${escapeHtml(item.internalAction)}</p><p><b>Next trigger:</b> ${escapeHtml(item.nextTrigger)}</p><p><b>Evidence maturity:</b> ${escapeHtml(item.evidenceMaturity)}</p><button type="button" data-open-proposal="${escapeHtml(item.proposalId)}">Inspector</button></article>`).join("")}</section>` : "").join("") || '<p class="empty">KGLD action 없음</p>'}</div></section>`;
+  return `<section class="research-section v2-section" id="kgld-board"><div class="section-head"><h2>KGLD Watch</h2><p>Research Now, Monitor, No Action만 action 기준으로 정리합니다.</p></div><div class="kgld-action-grid">${columns.map(([label, items]) => items.length ? `<section><h3>${label}</h3>${items.map((item) => `<article class="kgld-watch-item v2-filterable" data-kgld="true" data-aa="false" data-domain="kgld" data-status="all" data-search="${escapeHtml(`${item.proposalId} ${item.title} ${item.internalAction}`)}" data-open-proposal="${escapeHtml(item.proposalId)}" data-evidence-id="${escapeHtml(item.evidenceIds?.[0] ?? `spec:${item.proposalId}`)}"><b>${proposalAnchor(item.proposalId, item.title)}</b><p><b>Affected process:</b> ${escapeHtml(item.affectedKgldProcess)}</p><p><b>Action:</b> ${escapeHtml(item.internalAction)}</p><p><b>Next trigger:</b> ${escapeHtml(item.nextTrigger)}</p><p><b>Evidence maturity:</b> ${escapeHtml(item.evidenceMaturity)}</p><button type="button" data-open-proposal="${escapeHtml(item.proposalId)}">Inspector</button></article>`).join("")}</section>` : "").join("") || '<p class="empty">KGLD action 없음</p>'}</div></section>`;
 }
 
 function renderEvidenceQualityV2(view: ReturnType<typeof buildDashboardV2View>): string {
@@ -5479,7 +5517,7 @@ function renderDashboardV3Script(): string {
     function metricText(m){const state=String(m?.state||"");const value=Number(m?.value||0);if(state==="confirmed_value")return value+"건 확인";if(state==="confirmed_zero")return "확인된 변화 없음";if(state==="not_collected")return "미수집";if(state==="baseline_not_linked")return "기준 Proposal 미연결";return value>0?value+"건 확인":"확인 불가";}
     function evidenceText(v){v=String(v||"");if(v==="confirmed"||v==="direct_verified")return "공식 근거 확인";if(v==="raw_only"||v==="discussion_relevance_unclassified")return "원문 수집 기준";if(v==="confirmed_zero")return "확인된 변화 없음";if(v==="partial")return "제한적 수집";if(v==="unclassified")return "분류 대기";return v||"확인 불가";}
     function rawText(v){v=Number(v||0);return v>0?"원문 게시물 "+v+"건":"최근 게시물 없음";}
-    function openProposal(id){const r=(vm.proposalExplorer?.rows||[]).find((p)=>p.proposalId===id);if(!r)return;show("proposal/"+id,"<div class='dash-inspector-kicker'>"+esc(r.proposalId)+" · "+esc(r.status)+"</div><h2>"+esc(r.title||"")+"</h2><p>"+esc(r.abstractSummary||"요약 정보가 제한적입니다.")+"</p><dl><div><dt>기술 영역 / Topic</dt><dd>"+esc(r.domain)+" / "+esc(r.topic)+"</dd></div><div><dt>신규 문서 반영</dt><dd>"+esc(r.counts?.current7d)+"건</dd></div><div><dt>Magicians 원문 게시물</dt><dd>"+esc(rawText(r.counts?.rawPosts))+" · 참여자 "+esc(r.counts?.participants||0)+"명</dd></div><div><dt>근거 상태</dt><dd>"+esc(evidenceText(r.evidenceState))+"</dd></div></dl><p><a href='"+esc(r.sourceUrl)+"' target='_blank' rel='noopener noreferrer'>공식 원문</a></p><details><summary>근거 정보</summary><p>sourcePath "+esc(r.sourcePath)+"</p><p>evidence "+esc((r.evidenceIds||[]).join(", "))+"</p></details><p class='dash-caption'>구현 근거 미수집.</p>");}
+    function openProposal(id){const r=(vm.proposalExplorer?.rows||[]).find((p)=>p.proposalId===id);if(!r)return;show("proposal/"+id,"<div class='dash-inspector-kicker'>"+esc(r.proposalId)+" · "+esc(r.status)+"</div><h2>"+esc(r.title||"")+"</h2><p>"+esc(r.abstractSummary||"요약 정보가 제한적입니다.")+"</p><dl><div><dt>기술 영역 / Topic</dt><dd>"+esc(r.domain)+" / "+esc(r.topic)+"</dd></div><div><dt>신규 문서 반영</dt><dd>"+esc(r.counts?.current7d)+"건</dd></div><div><dt>Magicians 원문 게시물</dt><dd>"+esc(rawText(r.counts?.rawPosts))+" · 참여자 "+esc(r.counts?.participants||0)+"명</dd></div><div><dt>근거 상태</dt><dd>"+esc(evidenceText(r.evidenceState))+"</dd></div></dl><p><a href='"+esc(r.sourceUrl)+"' target='_blank' rel='noopener noreferrer'>공식 원문</a></p><details><summary>근거 정보</summary><p>공식 문서 "+esc(r.sourceUrl||"확인 불가")+"</p><p>evidence "+esc((r.evidenceIds||[]).join(", "))+"</p></details><p class='dash-caption'>구현 근거 미수집.</p>");}
     function openDomain(id){const pts=(vm.topicActivityMap?.points||[]).filter((p)=>p.domainId===id);show("domain/"+id,"<div class='dash-inspector-kicker'>기술 영역별 움직임</div><h2>"+esc(id)+"</h2><p>"+esc(pts.map((p)=>p.name).join(", ")||"관찰된 topic 없음")+"</p>");}
     function openAa(id){const r=(vm.aaMatrix?.tracks||[]).find((t)=>t.id===id);if(!r)return;show("aa/"+id,"<div class='dash-inspector-kicker'>Account Abstraction</div><h2>"+esc(r.name)+"</h2><p>"+esc((r.proposalIds||[]).join(", ")||"기준 Proposal 미연결")+"</p><dl><div><dt>최근 30일 명세 변화</dt><dd>"+esc(metricText(r.specification30d))+"</dd></div><div><dt>최근 30일 토론 활동</dt><dd>"+esc(metricText(r.discussion30d))+"</dd></div><div><dt>구현 근거</dt><dd>미수집</dd></div></dl>");}
     function show(hash,html){const d=$("[data-inspector]"),b=$("[data-inspector-backdrop]");$("[data-inspector-body]").innerHTML=html;d.classList.add("open");d.setAttribute("aria-hidden","false");b.hidden=false;document.body.classList.add("dash-lock-scroll");d.focus();history.replaceState(null,"","#"+encodeURIComponent(hash));}
@@ -7708,6 +7746,58 @@ function technologyPlatformApi(report: WeeklyRadarReport, platform: TechnologyPl
     intelligenceSnapshot,
     emergingDiagnostics: report.ethereumTechRadar.emergingLayer?.diagnostics,
   };
+}
+
+function publicHtmlPlatformApi<T>(api: T): T {
+  const publicApi = removeInternalPathFields(api) as T;
+  if (publicApi && typeof publicApi === "object") {
+    const root = publicApi as { snapshotHash?: string; intelligenceSnapshot?: ReturnType<typeof buildIntelligenceSnapshot> };
+    if (root.intelligenceSnapshot?.metadata) {
+      root.intelligenceSnapshot.metadata.inputSnapshotHash = inputSnapshotHash(root.intelligenceSnapshot);
+      root.intelligenceSnapshot.metadata.snapshotHash = snapshotHash(root.intelligenceSnapshot);
+      root.snapshotHash = root.intelligenceSnapshot.metadata.snapshotHash;
+    }
+  }
+  return publicApi;
+}
+
+function removeInternalPathFields(value: unknown): unknown {
+  if (typeof value === "string") return publicHtmlString(value);
+  if (Array.isArray(value)) return value.map(removeInternalPathFields);
+  if (!value || typeof value !== "object") return value;
+  const output: Record<string, unknown> = {};
+  for (const [key, child] of Object.entries(value)) {
+    if (isAlwaysInternalPathField(key)) continue;
+    if (isConditionalInternalPathField(key) && typeof child === "string" && isRawPublicPathLeak(child)) continue;
+    const next = removeInternalPathFields(child);
+    if (next !== null) output[key] = next;
+  }
+  return output;
+}
+
+function isAlwaysInternalPathField(key: string): boolean {
+  return /^(?:officialSourcePath|sourceFile|sourceFilePath|localPath|resolvedPath|repositoryRoot)$/i.test(key);
+}
+
+function isConditionalInternalPathField(key: string): boolean {
+  return /^sourcePath$/i.test(key);
+}
+
+function isRawPublicPathLeak(value: string): boolean {
+  if (/^https?:\/\//i.test(value)) return false;
+  return /(?:^|[\\/])\.sources[\\/]/i.test(value)
+    || /\/home\/runner\/work\//i.test(value)
+    || /[A-Z]:\\Users\\/i.test(value)
+    || /(?:^|[\\/])EIPS[\\/]eip-\d+\.md$/i.test(value)
+    || /(?:^|[\\/])ERCS[\\/]erc-\d+\.md$/i.test(value);
+}
+
+function publicHtmlString(value: string): string | null {
+  const eipUrl = value.match(/\/EIPS\/eip-(\d+)\.md(?:[?#].*)?$/i);
+  if (eipUrl) return `https://eips.ethereum.org/EIPS/eip-${eipUrl[1]}`;
+  const ercUrl = value.match(/\/ERCS\/erc-(\d+)\.md(?:[?#].*)?$/i);
+  if (ercUrl) return `https://ercs.ethereum.org/ERCS/erc-${ercUrl[1]}`;
+  return isRawPublicPathLeak(value) ? null : value;
 }
 
 function sanitizePartialDiscussionTitles(report: WeeklyRadarReport, dashboard: ReturnType<typeof buildDashboard>): void {

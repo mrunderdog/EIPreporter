@@ -10,6 +10,33 @@ import { __qualityTestHooks, generateWeeklyDebugJson, generateWeeklyHtml, weekly
 import { buildWeeklyReport } from "../src/report.ts";
 import type { ChangeEvent, EmergingIssue, ProposalRecord, WeeklyRadarReport } from "../src/types.ts";
 
+function assertHtmlDoesNotContain(html: string, forbidden: string | RegExp, context: string): void {
+  const match = typeof forbidden === "string" ? html.indexOf(forbidden) : html.search(forbidden);
+  if (match < 0) return;
+  const label = typeof forbidden === "string" ? forbidden : forbidden.toString();
+  const start = Math.max(0, match - 200);
+  const end = Math.min(html.length, match + 200);
+  assert.fail([
+    `Forbidden public HTML content: ${label}`,
+    `Context: ${context}`,
+    `Found near: ${JSON.stringify(html.slice(start, end))}`,
+  ].join("\n"));
+}
+
+function assertNoPublicPathLeakage(html: string, context: string): void {
+  const forbidden: Array<string | RegExp> = [
+    ".sources/",
+    ".sources\\",
+    "/home/runner/work/",
+    "C:\\Users\\",
+    /(?:^|[^/:])EIPS\/eip-\d+\.md/i,
+    /(?:^|[^/:])ERCS\/erc-\d+\.md/i,
+    /(?:^|[^:])EIPS\\eip-\d+\.md/i,
+    /(?:^|[^:])ERCS\\erc-\d+\.md/i,
+  ];
+  for (const pattern of forbidden) assertHtmlDoesNotContain(html, pattern, context);
+}
+
 test("generates and writes the Developer Intelligence HTML report", () => {
   const db = openDatabase(":memory:");
   const directory = mkdtempSync(join(tmpdir(), "eipreporter-html-"));
@@ -239,7 +266,8 @@ test("generates and writes the Developer Intelligence HTML report", () => {
     assert.match(signalHtml, /이번 주 공식 저장소 반영/);
     assert.doesNotMatch(signalHtml, /class="top-signal"/);
     assert.doesNotMatch(signalHtml, /Recent proposal content changed; section-level diff not available\.|최근 proposal content가 변경됐으며 section-level diff는 사용할 수 없습니다\./);
-    assert.doesNotMatch(signalHtml, /ERCS\/erc-4626\.md/);
+    assertHtmlDoesNotContain(signalHtml, /ERCS\/erc-4626\.md/, "signal diff intelligence must not expose raw changedFiles");
+    assertNoPublicPathLeakage(signalHtml, "signal HTML public path leakage");
 
     const outputPath = writeWeeklyHtmlReport(report, directory);
     assert.equal(outputPath, join(directory, "weekly-2026-06-12.html"));
@@ -589,6 +617,60 @@ This proposal defines a source-first emerging proposal fixture with enough publi
   }
 });
 
+test("public HTML hides raw source paths when official source file is absent or present", () => {
+  const directory = mkdtempSync(join(tmpdir(), "eipreporter-public-source-"));
+  const previousEipPath = process.env.EIP_OFFICIAL_REPO_PATH;
+  const previousErcPath = process.env.ERC_OFFICIAL_REPO_PATH;
+  try {
+    const eipRoot = join(directory, "EIPs");
+    const ercRoot = join(directory, "ERCs");
+    mkdirSync(join(eipRoot, "EIPS"), { recursive: true });
+    mkdirSync(join(ercRoot, "ERCS"), { recursive: true });
+    process.env.EIP_OFFICIAL_REPO_PATH = eipRoot;
+    process.env.ERC_OFFICIAL_REPO_PATH = ercRoot;
+
+    const absentHtml = htmlForOfficialSourceFixture();
+    assert.match(absentHtml, /https:\/\/ercs\.ethereum\.org\/ERCS\/erc-4626/);
+    assertNoPublicPathLeakage(absentHtml, "official source absent fixture");
+    const absentApi = embeddedPlatformApi(absentHtml);
+    const absentFact = absentApi.intelligenceSnapshot.facts.specificationEvidence.find((fact: { proposalId?: string }) => fact.proposalId === "ERC-4626");
+    assert.equal(absentFact.officialSourceState, "official_file_not_found");
+    assert.equal(absentFact.officialSourcePath, undefined);
+
+    writeFileSync(join(ercRoot, "ERCS", "erc-4626.md"), `---
+eip: 4626
+title: Tokenized Vaults
+status: Final
+---
+
+# ERC-4626: Tokenized Vaults
+
+## Abstract
+
+This standard describes tokenized Vaults for a single underlying ERC-20 token.
+
+## Specification
+
+Vault implementations MUST expose deposit, mint, withdraw, and redeem flows.
+`, { encoding: "utf8" });
+
+    const presentHtml = htmlForOfficialSourceFixture();
+    assert.match(presentHtml, /https:\/\/ercs\.ethereum\.org\/ERCS\/erc-4626/);
+    assertNoPublicPathLeakage(presentHtml, "official source present fixture");
+    const presentApi = embeddedPlatformApi(presentHtml);
+    const presentFact = presentApi.intelligenceSnapshot.facts.specificationEvidence.find((fact: { proposalId?: string }) => fact.proposalId === "ERC-4626");
+    assert.equal(presentFact.officialSourceState, "official_body_parsed");
+    assert.equal(presentFact.officialSourcePath, undefined);
+    assert.match(presentFact.abstractText, /tokenized Vaults/);
+  } finally {
+    if (previousEipPath === undefined) delete process.env.EIP_OFFICIAL_REPO_PATH;
+    else process.env.EIP_OFFICIAL_REPO_PATH = previousEipPath;
+    if (previousErcPath === undefined) delete process.env.ERC_OFFICIAL_REPO_PATH;
+    else process.env.ERC_OFFICIAL_REPO_PATH = previousErcPath;
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
 test("preflight diagnostics allow external emerging drafts but block real specification failures", () => {
   const diagnostics = __qualityTestHooks.specificationPreflightDiagnostics(
     ["EIP-9001", "EIP-9002", "EIP-8037", "EIP-9004", "topic:magicians:77", "EIP-9006"],
@@ -707,6 +789,89 @@ test("quality check not_applicable serializes as parseable UTF-8 JSON", () => {
   assert.equal(parsed.checks[0].failureReason, "");
   assert.match(json, /한국어 유지/);
   assert.doesNotMatch(json, /\bundefined\b/);
+});
+
+test("discussion language quality rejects raw low-information discussion text without flagging metrics or titles", () => {
+  const publicDiscussion = `
+    <article>
+      <h3>EIP-8363: Tapered Issuance Burn</h3>
+      <dl><div><dt>24h replies</dt><dd>+1</dd></div></dl>
+      <p><b>What's happening</b>Magicians에서 EIP-8363 관련 activity가 포착됐습니다.</p>
+      <small>7일 조회 +1</small>
+    </article>
+  `;
+  const rawCopiedPost = `<article><p>Sorry, more my stupid question then</p></article>`;
+
+  assert.equal(__qualityTestHooks.discussionLanguageRenderingClean(publicDiscussion), true);
+  assert.equal(__qualityTestHooks.discussionLanguageRenderingClean(rawCopiedPost), false);
+});
+
+test("discussion validity quality keeps unclassified raw activity separate from valid technical counts", () => {
+  const unclassified = {
+    intelligenceSnapshot: {
+      views: {
+        developerAttention: {
+          summary: { rawPosts: 4, validTechnicalPosts: null, validatedInsights: 0 },
+          activity: [{ proposalId: "topic:wallets", rawPostCount: 4, validTechnicalPostCount: null, analyzedInsightCount: 0 }],
+        },
+        dataQuality: {
+          discussionRelevance: "unclassified",
+          discussionCollection: { recent7dPostCount: 4, analyzedPostCount: 0, validTechnicalPostCount: null },
+        },
+      },
+    },
+  };
+  const copiedRawAsValid = {
+    intelligenceSnapshot: {
+      views: {
+        developerAttention: {
+          summary: { rawPosts: 4, validTechnicalPosts: 4, validatedInsights: 0 },
+          activity: [{ proposalId: "topic:wallets", rawPostCount: 4, validTechnicalPostCount: 4, analyzedInsightCount: 0 }],
+        },
+        dataQuality: {
+          discussionRelevance: "unclassified",
+          discussionCollection: { recent7dPostCount: 4, analyzedPostCount: 0, validTechnicalPostCount: 4 },
+        },
+      },
+    },
+  };
+
+  assert.equal(__qualityTestHooks.discussionValidityClassification(unclassified), true);
+  assert.equal(__qualityTestHooks.discussionValidityClassification(copiedRawAsValid), false);
+});
+
+test("public claim source quality preserves nullable source date slots", () => {
+  const sourcedClaim = {
+    intelligenceSnapshot: {
+      views: {
+        focusProgress: [{
+          topicId: "wallet-authorization-evolution",
+          evidenceClaims: [{
+            verified: true,
+            sourceUrls: ["https://eips.ethereum.org/EIPS/eip-8141", "https://ercs.ethereum.org/ERCS/erc-7562"],
+            sourceDates: ["2026-05-12T12:05:10-05:00", null],
+          }],
+        }],
+      },
+    },
+  };
+  const missingSourceDateSlot = {
+    intelligenceSnapshot: {
+      views: {
+        focusProgress: [{
+          topicId: "wallet-authorization-evolution",
+          evidenceClaims: [{
+            verified: true,
+            sourceUrls: ["https://eips.ethereum.org/EIPS/eip-8141", "https://ercs.ethereum.org/ERCS/erc-7562"],
+            sourceDates: ["2026-05-12T12:05:10-05:00"],
+          }],
+        }],
+      },
+    },
+  };
+
+  assert.equal(__qualityTestHooks.allClaimsHaveSources(sourcedClaim), true);
+  assert.equal(__qualityTestHooks.allClaimsHaveSources(missingSourceDateSlot), false);
 });
 
 test("subject registry check reports actual missing public IDs", () => {
@@ -1293,6 +1458,22 @@ function weeklySignalScenario(usableCount: number, rawCount: number) {
   } finally {
     db.close();
   }
+}
+
+function htmlForOfficialSourceFixture(): string {
+  const db = openDatabase(":memory:");
+  try {
+    insertSnapshot(db, [makeRecord("ERC-4626", "Final", "hash-4626", "Tokenized Vaults", "ERC")]);
+    const report = buildWeeklyReport(db, new Date("2026-06-12T12:00:00.000Z"));
+    assert.ok(report);
+    return generateWeeklyHtml(report);
+  } finally {
+    db.close();
+  }
+}
+
+function embeddedPlatformApi(html: string) {
+  return JSON.parse(html.match(/<script type="application\/json" id="technology-platform-api">([\s\S]*?)<\/script>/)?.[1] ?? "{}");
 }
 
 function canonicalQualityFixture(input: {
