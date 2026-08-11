@@ -393,6 +393,44 @@ test("renders top-N hidden emerging candidates in full Emerging view and collaps
   }
 });
 
+test("renders every meaningful emerging issue status in the full Emerging view", () => {
+  const db = openDatabase(":memory:");
+  try {
+    insertSnapshot(db, [
+      makeRecord("EIP-9400", "Draft", "hash-hot", "Hot Fixture", "Core"),
+      makeRecord("EIP-9401", "Draft", "hash-early", "Early Fixture", "Core"),
+      makeRecord("EIP-9402", "Draft", "hash-decision", "Decision Fixture", "Core"),
+    ]);
+    const report = buildWeeklyReport(db, new Date("2026-08-10T00:00:00.000Z"));
+    assert.ok(report);
+    const hot = emergingIssue("EIP-9400", 90, 0, "HOT_ISSUE");
+    const early = emergingIssue("EIP-9401", 51, 1, "EARLY_SIGNAL");
+    const decision = emergingIssue("EIP-9402", 72, 2, "DECISION_WATCH");
+    report.ethereumTechRadar.emergingLayer = {
+      generatedAt: report.generatedAt,
+      sourceStatus: [],
+      rawSignals: [hot, early, decision].flatMap((issue) => issue.sourceSignals),
+      issues: [hot, decision, early],
+      whatsHappeningNow: [hot],
+      emergingSignals: [early],
+      decisionWatch: [decision],
+      generatedBy: "deterministic_emerging_signal_engine",
+    };
+
+    const html = generateWeeklyHtml(report);
+    const mainSection = html.match(/<div class="dash-emerging-grid">([\s\S]*?)<div class="dash-emerging-split/)?.[1] ?? "";
+    const fullSection = html.match(/<details class="dash-compact-details dash-emerging-full" id="emerging-full">([\s\S]*?)<\/details>/)?.[1] ?? "";
+
+    assert.match(mainSection, /EIP-9400/);
+    assert.match(fullSection, /Emerging 후보 전체 3건 보기/);
+    assert.match(fullSection, /EIP-9400[\s\S]*HOT_ISSUE/);
+    assert.match(fullSection, /EIP-9401[\s\S]*EARLY_SIGNAL/);
+    assert.match(fullSection, /EIP-9402[\s\S]*DECISION_WATCH/);
+  } finally {
+    db.close();
+  }
+});
+
 test("keeps Discussion Heat diagnostics out of the end-user IA", () => {
   const db = openDatabase(":memory:");
 
@@ -1720,14 +1758,14 @@ function makeRecord(
   };
 }
 
-function emergingIssue(proposalId: string, heatScore: number, index: number): EmergingIssue {
+function emergingIssue(proposalId: string, heatScore: number, index: number, status: EmergingIssue["status"] = "EARLY_SIGNAL"): EmergingIssue {
   return {
     issueId: `proposal:${proposalId}`,
     title: index === 7 ? "Full list only candidate 7" : `Emerging fixture ${index}`,
     primaryProposalId: proposalId,
     relatedProposalIds: [],
     eipIds: [proposalId],
-    status: "EARLY_SIGNAL",
+    status,
     stage: "DISCUSSION",
     heatScore,
     confidenceScore: 50,

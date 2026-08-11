@@ -4531,10 +4531,11 @@ function renderEmergingIntelligence(report?: WeeklyRadarReport): string {
   const hot = layer?.whatsHappeningNow ?? [];
   const emerging = layer?.emergingSignals ?? [];
   const decision = layer?.decisionWatch ?? [];
+  const fullIssues = emergingFullIssueUniverse(layer);
   const hotCards = hot.slice(0, 5).map(renderEmergingIssueCard).join("");
   const emergingRows = emerging.slice(0, 6).map(renderEmergingIssueRow).join("");
   const decisionRows = decision.slice(0, 6).map(renderEmergingIssueRow).join("");
-  const fullRows = (layer?.issues ?? []).map(renderEmergingFullRow).join("");
+  const fullRows = fullIssues.map(renderEmergingFullRow).join("");
   const splitClass = decision.length ? "dash-emerging-split" : "dash-emerging-split dash-emerging-split-full";
   const sourceStatus = layer?.sourceStatus.map((status) => `${status.sourceName}: ${status.result}`).join(" · ") ?? "Emerging source scan not available in this snapshot.";
   return `<section class="dash-panel dash-section dash-emerging" id="now" data-filter-scope="emerging">
@@ -4544,9 +4545,33 @@ function renderEmergingIntelligence(report?: WeeklyRadarReport): string {
       <section id="emerging-signals"><h3>EMERGING SIGNALS</h3><div class="dash-emerging-list">${emergingRows || `<p class="dash-empty">HOT 임계값 아래의 성장 후보가 없습니다.</p>`}</div></section>
       ${decision.length ? `<section id="decision-watch"><h3>DECISION WATCH</h3><div class="dash-emerging-list">${decisionRows}</div></section>` : ""}
     </div>
-    <details class="dash-compact-details dash-emerging-full"><summary>Emerging 후보 전체 ${layer?.issues.length ?? 0}건 보기</summary><div class="dash-local-scroll"><table class="dash-compact-table"><thead><tr><th>Proposal</th><th>Status</th><th>Heat</th><th>Confidence</th><th>Sources</th><th>Activity</th></tr></thead><tbody>${fullRows || `<tr><td colspan="6">이번 observation window에서 확인된 Emerging 후보가 없습니다.</td></tr>`}</tbody></table></div></details>
+    <details class="dash-compact-details dash-emerging-full" id="emerging-full"><summary>Emerging 후보 전체 ${fullIssues.length}건 보기</summary><div class="dash-local-scroll"><table class="dash-compact-table"><thead><tr><th>Proposal</th><th>Status</th><th>Heat</th><th>Confidence</th><th>Sources</th><th>Activity</th></tr></thead><tbody>${fullRows || `<tr><td colspan="6">이번 observation window에서 확인된 Emerging 후보가 없습니다.</td></tr>`}</tbody></table></div></details>
     <p class="dash-caption">Source status: ${escapeHtml(sourceStatus)}</p>
   </section>`;
+}
+
+function emergingFullIssueUniverse(layer: WeeklyRadarReport["ethereumTechRadar"]["emergingLayer"] | undefined): EmergingIssue[] {
+  if (!layer) return [];
+  const meaningfulStatuses = new Set(["HOT_ISSUE", "EARLY_SIGNAL", "DECISION_WATCH", "IMPLEMENTATION_WATCH"]);
+  const canonical = layer.issues.filter((issue) => meaningfulStatuses.has(issue.status));
+  if (canonical.length > 0) return canonical;
+  const byId = new Map<string, EmergingIssue>();
+  for (const issue of [...layer.whatsHappeningNow, ...layer.emergingSignals, ...layer.decisionWatch]) {
+    if (meaningfulStatuses.has(issue.status)) byId.set(issue.issueId, issue);
+  }
+  return [...byId.values()].sort((a, b) =>
+    b.heatScore - a.heatScore
+    || b.confidenceScore - a.confidenceScore
+    || latestEmergingActivityMs(b) - latestEmergingActivityMs(a)
+    || a.issueId.localeCompare(b.issueId)
+  );
+}
+
+function latestEmergingActivityMs(issue: EmergingIssue): number {
+  const timestamps = issue.sourceSignals
+    .map((signal) => Date.parse(signal.lastActivityAt ?? signal.createdAt ?? signal.collectedAt))
+    .filter(Number.isFinite);
+  return timestamps.length ? Math.max(...timestamps) : 0;
 }
 
 function renderEmergingIssueCard(issue: EmergingIssue): string {
@@ -4588,12 +4613,13 @@ function renderEmergingIssueRow(issue: EmergingIssue): string {
 function renderEmergingFullRow(issue: EmergingIssue): string {
   const primary = issue.primaryProposalId ?? issue.eipIds[0];
   const proposal = primary ? proposalDetailTrigger(primary, primary) : `<span class="dash-proposal-pill dash-unlinked">UNNUMBERED</span>`;
+  const sourceActions = renderEmergingSourceActions(issue);
   const activity = [
     issue.metrics.replyCount !== undefined ? `replies ${issue.metrics.replyCount}` : "",
     issue.metrics.viewCount !== undefined ? `views ${issue.metrics.viewCount}` : "",
     issue.metrics.participantCount !== undefined ? `participants ${issue.metrics.participantCount}` : "",
   ].filter(Boolean).join(" · ") || "activity metadata unavailable";
-  return `<tr><td>${proposal}<br><strong>${escapeHtml(issue.title)}</strong></td><td>${escapeHtml(issue.status)}</td><td>${issue.heatScore}</td><td>${issue.confidenceScore}</td><td>${issue.sources.map((source) => escapeHtml(emergingSourceLabel(source))).join(", ")}</td><td>${escapeHtml(activity)}</td></tr>`;
+  return `<tr data-emerging-issue="${escapeHtml(issue.issueId)}" data-emerging-status="${escapeHtml(issue.status)}"><td>${proposal}<br><strong>${escapeHtml(issue.title)}</strong></td><td>${escapeHtml(issue.status)}</td><td>${issue.heatScore}</td><td>${issue.confidenceScore}</td><td>${issue.sources.map((source) => escapeHtml(emergingSourceLabel(source))).join(", ")}${sourceActions ? `<div class="dash-emerging-row-actions">${sourceActions}</div>` : ""}</td><td>${escapeHtml(activity)}</td></tr>`;
 }
 
 function renderRelatedProposalIds(issue: EmergingIssue, primary: string | undefined): string[] {
