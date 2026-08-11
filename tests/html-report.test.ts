@@ -1,5 +1,5 @@
 ﻿import assert from "node:assert/strict";
-import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { chdir, cwd } from "node:process";
@@ -552,6 +552,107 @@ Tokenized Vaults MUST implement ERC-20 to represent shares. The vault interface 
   assert.match(parsed.abstractText ?? "", /tokenized Vaults/);
   assert.match(parsed.specificationIntroText ?? "", /MUST implement ERC-20/);
   assert.equal(parsed.parseState, "body_parsed");
+});
+
+test("classifies missing official files separately from title-only body parsing", () => {
+  const directory = mkdtempSync(join(tmpdir(), "eipreporter-official-source-"));
+  const previousEipPath = process.env.EIP_OFFICIAL_REPO_PATH;
+  try {
+    mkdirSync(join(directory, "EIPS"), { recursive: true });
+    process.env.EIP_OFFICIAL_REPO_PATH = directory;
+
+    const missing = __qualityTestHooks.localSpecificationEvidence("EIP-8363");
+    assert.equal(missing.parseState, "title_only");
+    assert.equal(missing.officialSourceState, "official_file_not_found");
+    assert.match(missing.officialSourcePath ?? "", /EIPS[\\/]eip-8363\.md$/);
+
+    writeFileSync(join(directory, "EIPS", "eip-8363.md"), `---
+eip: 8363
+title: Generic Emerging Fixture
+status: Draft
+---
+
+# EIP-8363: Generic Emerging Fixture
+
+## Abstract
+
+This proposal defines a source-first emerging proposal fixture with enough public prose to count as parsed body evidence.
+`, { encoding: "utf8" });
+
+    const parsed = __qualityTestHooks.localSpecificationEvidence("EIP-8363");
+    assert.equal(parsed.parseState, "body_parsed");
+    assert.equal(parsed.officialSourceState, "official_body_parsed");
+  } finally {
+    if (previousEipPath === undefined) delete process.env.EIP_OFFICIAL_REPO_PATH;
+    else process.env.EIP_OFFICIAL_REPO_PATH = previousEipPath;
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+test("preflight diagnostics allow external emerging drafts but block real specification failures", () => {
+  const diagnostics = __qualityTestHooks.specificationPreflightDiagnostics(
+    ["EIP-9001", "EIP-9002", "EIP-8037", "EIP-9004", "topic:magicians:77", "EIP-9006"],
+    [
+      {
+        proposalId: "EIP-9001",
+        parseState: "title_only",
+        officialSourceState: "official_file_not_found",
+        sourceUrl: "https://ethereum-magicians.org/t/example/9001",
+      },
+      {
+        proposalId: "EIP-9002",
+        parseState: "title_only",
+        officialSourceState: "official_file_not_found",
+        sourceUrl: "https://github.com/ethereum/EIPs/pull/9002",
+      },
+      {
+        proposalId: "EIP-8037",
+        parseState: "title_only",
+        officialSourceState: "official_file_title_only",
+      },
+      {
+        proposalId: "EIP-9004",
+        parseState: "fetch_failed",
+        officialSourceState: "official_file_parse_failed",
+      },
+      {
+        proposalId: "topic:magicians:77",
+        parseState: "title_only",
+        officialSourceState: "external_source_only",
+        sourceUrl: "https://ethereum-magicians.org/t/unnumbered-topic/77",
+      },
+      {
+        proposalId: "EIP-9006",
+        parseState: "body_parsed",
+        officialSourceState: "official_body_parsed",
+      },
+    ],
+  );
+
+  assert.deepEqual(diagnostics.officialMissingWithFallbackIds, ["EIP-9001", "EIP-9002"]);
+  assert.deepEqual(diagnostics.externalSourceOnlyIds, ["topic:magicians:77"]);
+  assert.deepEqual(diagnostics.bodyParsedIds, ["EIP-9006"]);
+  assert.deepEqual(diagnostics.officialTitleOnlyIds, ["EIP-8037"]);
+  assert.deepEqual(diagnostics.parseFailedIds, ["EIP-9004"]);
+  assert.deepEqual(diagnostics.requiredBodyTitleOnlyIds, ["EIP-8037"]);
+  assert.deepEqual(diagnostics.blockingIds, ["EIP-8037", "EIP-9004"]);
+});
+
+test("preflight diagnostics keep missing specification evidence as an integrity failure input", () => {
+  const diagnostics = __qualityTestHooks.specificationPreflightDiagnostics(
+    ["EIP-9010", "topic:magicians:missing"],
+    [
+      {
+        proposalId: "EIP-9010",
+        parseState: "title_only",
+        officialSourceState: "official_file_not_found",
+      },
+    ],
+  );
+
+  assert.deepEqual(diagnostics.officialMissingWithFallbackIds, ["EIP-9010"]);
+  assert.deepEqual(diagnostics.missingEvidenceIds, ["topic:magicians:missing"]);
+  assert.deepEqual(diagnostics.blockingIds, []);
 });
 
 test("applies exact golden fixtures only when reportAsOf and input hash match", () => {

@@ -44,6 +44,15 @@ import { buildWatchlistLayer } from "./watchlist.ts";
 const DASHBOARD_TITLE = "Ethereum Technology Intelligence Platform";
 const SEP = " · ";
 const WEEKLY_USABLE_EVENT_CONFIDENCE_THRESHOLD = 0.6;
+const REQUIRED_SPECIFICATION_BODY_IDS = ["ERC-8183", "EIP-8037", "EIP-8151", "ERC-7303", "EIP-8130", "ERC-6123", "ERC-8226", "ERC-8330", "ERC-8328", "ERC-8161"] as const;
+
+type OfficialSpecificationSourceState =
+  | "official_body_parsed"
+  | "official_file_title_only"
+  | "official_file_parse_failed"
+  | "official_file_not_found"
+  | "official_repository_unavailable"
+  | "external_source_only";
 
 type ReportMode = "normal" | "partial" | "incident";
 type WeeklySignalMode = "empty" | "single" | "multiple" | "non_ranking";
@@ -438,20 +447,14 @@ export function validateWeeklyCollectionPreflight(report: WeeklyRadarReport): vo
   const dashboard = buildDashboard(report, atlas);
   const snapshot = buildIntelligenceSnapshot(report, atlas, dashboard);
   const publicSubjects = snapshot.monitoringUniverse.subjectRegistry.filter((subject) => !subject.roles.includes("excluded"));
-  const specs = new Map(snapshot.facts.specificationEvidence.map((fact) => [fact.proposalId, fact]));
-  const titleOnlyIds = publicSubjects
-    .map((subject) => specs.get(subject.proposalId))
-    .filter((fact): fact is NonNullable<typeof fact> => Boolean(fact && fact.parseState === "title_only"))
-    .map((fact) => fact.proposalId);
-  const missingSpecIds = publicSubjects.filter((subject) => !specs.has(subject.proposalId)).map((subject) => subject.proposalId);
+  const specDiagnostics = specificationPreflightDiagnostics(publicSubjects.map((subject) => subject.proposalId), snapshot.facts.specificationEvidence);
   const sourceAvailability = officialSourceAvailability();
   const backfill = report.ethereumTechRadar.historicalInputDiagnostics?.gitBackfillDiagnostics;
   const failures: string[] = [];
 
-  if (missingSpecIds.length) failures.push(`missing specification evidence: ${missingSpecIds.join(",")}`);
-  if (sourceAvailability.eipAvailable || sourceAvailability.ercAvailable) {
-    if (titleOnlyIds.length) failures.push(`title_only public specification evidence: ${titleOnlyIds.join(",")}`);
-  }
+  if (specDiagnostics.missingEvidenceIds.length) failures.push(`missing specification evidence: ${specDiagnostics.missingEvidenceIds.join(",")}`);
+  if (specDiagnostics.parseFailedIds.length) failures.push(`official specification parse/read failed: ${specDiagnostics.parseFailedIds.join(",")}`);
+  if (specDiagnostics.requiredBodyTitleOnlyIds.length) failures.push(`required-body official specification title_only: ${specDiagnostics.requiredBodyTitleOnlyIds.join(",")}`);
   if (backfill && backfill.successRate < 0.9) {
     failures.push(`historical backfill success ${backfill.successRate}; requested=${backfill.requestedTargets}; succeeded=${backfill.successfulTargets}; failed=${backfill.failedTargets}; rateLimited=${backfill.rateLimitedCount}; failedProposalIds=${backfill.failedProposalIds.join(",")}; failureCodes=${backfill.failureCodes.join(",")}`);
   }
@@ -472,17 +475,62 @@ export function validateWeeklyCollectionPreflight(report: WeeklyRadarReport): vo
   }
 
   if (failures.length) {
-    const bodyParsedCount = snapshot.facts.specificationEvidence.filter((fact) => fact.parseState === "body_parsed").length;
     const fetchedAtCount = snapshot.facts.specificationEvidence.filter((fact) => Boolean(fact.fetchedAt)).length;
     throw new Error([
       "Collection preflight failed.",
       `officialSources: EIPs=${sourceAvailability.eipPath ?? "missing"} ERCs=${sourceAvailability.ercPath ?? "missing"}`,
-      `specificationEvidence: total=${snapshot.facts.specificationEvidence.length}; body_parsed=${bodyParsedCount}; title_only=${titleOnlyIds.length}; fetchedAt=${fetchedAtCount}`,
+      `specificationEvidence: total=${snapshot.facts.specificationEvidence.length}; body_parsed=${specDiagnostics.bodyParsedIds.length}; official_missing_with_fallback=${specDiagnostics.officialMissingWithFallbackIds.length}; external_source_only=${specDiagnostics.externalSourceOnlyIds.length}; official_title_only=${specDiagnostics.officialTitleOnlyIds.length}; parse_failed=${specDiagnostics.parseFailedIds.length}; blocking=${specDiagnostics.blockingIds.length}; fetchedAt=${fetchedAtCount}`,
+      `specificationEvidenceIds: official_missing_with_fallback=${specDiagnostics.officialMissingWithFallbackIds.join(",") || "none"}; external_source_only=${specDiagnostics.externalSourceOnlyIds.join(",") || "none"}; official_title_only=${specDiagnostics.officialTitleOnlyIds.join(",") || "none"}; parse_failed=${specDiagnostics.parseFailedIds.join(",") || "none"}; blocking=${specDiagnostics.blockingIds.join(",") || "none"}`,
       `discovered=${snapshot.monitoringUniverse.scope.discoveredProposalCount}; monitored=${snapshot.monitoringUniverse.scope.monitoredProposalCount}; detailed=${snapshot.monitoringUniverse.scope.detailedProposalCount}; discussionThreads=${snapshot.monitoringUniverse.scope.discussionThreadCount}`,
       `backfill: requested=${backfill?.requestedTargets ?? 0}; succeeded=${backfill?.successfulTargets ?? 0}; failed=${backfill?.failedTargets ?? 0}; rateLimited=${backfill?.rateLimitedCount ?? 0}`,
       ...failures,
     ].join("\n"));
   }
+}
+
+function specificationPreflightDiagnostics(publicProposalIds: string[], specificationEvidence: Array<Record<string, unknown>>) {
+  const requiredBodyIds = new Set(REQUIRED_SPECIFICATION_BODY_IDS);
+  const publicIds = new Set(publicProposalIds);
+  const facts = specificationEvidence.filter((fact) => typeof fact.proposalId === "string" && publicIds.has(fact.proposalId));
+  const factIds = new Set(facts.map((fact) => String(fact.proposalId)));
+  const byState = (state: OfficialSpecificationSourceState) => facts
+    .filter((fact) => officialSourceStateForFact(fact) === state)
+    .map((fact) => String(fact.proposalId));
+  const missingEvidenceIds = publicProposalIds.filter((id) => !factIds.has(id));
+  const bodyParsedIds = byState("official_body_parsed");
+  const officialMissingWithFallbackIds = byState("official_file_not_found");
+  const externalSourceOnlyIds = byState("external_source_only");
+  const officialTitleOnlyIds = byState("official_file_title_only");
+  const parseFailedIds = facts
+    .filter((fact) => officialSourceStateForFact(fact) === "official_file_parse_failed" || fact.parseState === "fetch_failed")
+    .map((fact) => String(fact.proposalId));
+  const requiredBodyTitleOnlyIds = officialTitleOnlyIds.filter((id) => requiredBodyIds.has(id as typeof REQUIRED_SPECIFICATION_BODY_IDS[number]));
+  const blockingIds = unique([...parseFailedIds, ...requiredBodyTitleOnlyIds]).sort(compareProposalIds);
+  return {
+    missingEvidenceIds,
+    bodyParsedIds,
+    officialMissingWithFallbackIds,
+    externalSourceOnlyIds,
+    officialTitleOnlyIds,
+    parseFailedIds,
+    requiredBodyTitleOnlyIds,
+    blockingIds,
+  };
+}
+
+function officialSourceStateForFact(fact: Record<string, unknown>): OfficialSpecificationSourceState {
+  const explicit = fact.officialSourceState;
+  if (explicit === "official_body_parsed"
+    || explicit === "official_file_title_only"
+    || explicit === "official_file_parse_failed"
+    || explicit === "official_file_not_found"
+    || explicit === "official_repository_unavailable"
+    || explicit === "external_source_only") {
+    return explicit;
+  }
+  if (fact.parseState === "body_parsed") return "official_body_parsed";
+  if (fact.parseState === "fetch_failed") return "official_file_parse_failed";
+  return "external_source_only";
 }
 
 function officialSourceAvailability() {
@@ -3137,7 +3185,7 @@ function specificationBodyCoverage(embeddedApi: unknown): boolean {
   const publicIds = snapshot?.monitoringUniverse.subjectRegistry
     .filter((subject) => !subject.roles.includes("excluded"))
     .map((subject) => subject.proposalId) ?? [];
-  const requiredBodyIds = ["ERC-8183", "EIP-8037", "EIP-8151", "ERC-7303", "EIP-8130", "ERC-6123", "ERC-8226", "ERC-8330", "ERC-8328", "ERC-8161"]
+  const requiredBodyIds = [...REQUIRED_SPECIFICATION_BODY_IDS]
     .filter((id) => specs.has(id));
   return publicIds.every((id) => specs.has(id))
     && requiredBodyIds.every((id) => specs.get(id)?.parseState === "body_parsed");
@@ -3467,6 +3515,8 @@ export const __qualityTestHooks = {
   weeklyRepositoryAdditionsFromApi,
   weeklyRepositoryAdditionObserved,
   parseLocalSpecificationMarkdown,
+  localSpecificationEvidence,
+  specificationPreflightDiagnostics,
   proposalSummaryForV3,
   snapshotWithoutVitalik,
   sourceBackedKoreanSummary,
@@ -7276,6 +7326,8 @@ function specificationEvidenceFacts(atlas: TechnologyAtlas, publicProposalIds: s
       bodyContentHash: createHash("sha256").update(hashBase).digest("hex"),
       contentHash: createHash("sha256").update(hashBase).digest("hex"),
       parseState: local.parseState,
+      officialSourceState: local.officialSourceState,
+      officialSourcePath: local.officialSourcePath,
     };
   });
 }
@@ -7370,15 +7422,46 @@ function localSpecificationEvidence(proposalId: string): {
   motivationText: string | null;
   specificationIntroText: string | null;
   parseState: "body_parsed" | "title_only" | "fetch_failed";
+  officialSourceState: OfficialSpecificationSourceState;
+  officialSourcePath: string | null;
 } {
-  const path = localProposalMarkdownPath(proposalId);
-  if (!path) return { officialTitle: null, status: null, abstractText: null, motivationText: null, specificationIntroText: null, parseState: "title_only" };
+  const source = resolveOfficialProposalSource(proposalId);
+  if (!source) {
+    const sourceState = /^(EIP|ERC)-\d+$/i.test(proposalId.trim()) ? "official_repository_unavailable" : "external_source_only";
+    return emptySpecificationEvidence("title_only", sourceState, null);
+  }
+  const path = isExactCaseFile(source.repositoryRoot, source.relativePath)
+    ? resolve(source.repositoryRoot, source.relativePath)
+    : null;
+  if (!path) return emptySpecificationEvidence("title_only", "official_file_not_found", resolve(source.repositoryRoot, source.relativePath));
   try {
     const markdown = readFileSync(path, "utf8");
-    return parseLocalSpecificationMarkdown(markdown);
+    const parsed = parseLocalSpecificationMarkdown(markdown);
+    return {
+      ...parsed,
+      officialSourceState: parsed.parseState === "body_parsed" ? "official_body_parsed" : "official_file_title_only",
+      officialSourcePath: path,
+    };
   } catch {
-    return { officialTitle: null, status: null, abstractText: null, motivationText: null, specificationIntroText: null, parseState: "fetch_failed" };
+    return emptySpecificationEvidence("fetch_failed", "official_file_parse_failed", path);
   }
+}
+
+function emptySpecificationEvidence(
+  parseState: "title_only" | "fetch_failed",
+  officialSourceState: OfficialSpecificationSourceState,
+  officialSourcePath: string | null,
+) {
+  return {
+    officialTitle: null,
+    status: null,
+    abstractText: null,
+    motivationText: null,
+    specificationIntroText: null,
+    parseState,
+    officialSourceState,
+    officialSourcePath,
+  };
 }
 
 function parseLocalSpecificationMarkdown(markdown: string): {
