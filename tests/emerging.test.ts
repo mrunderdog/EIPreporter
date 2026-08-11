@@ -3,6 +3,7 @@ import test from "node:test";
 import { openDatabase, insertEmergingActivitySnapshots } from "../src/db.ts";
 import {
   buildEmergingLayer,
+  collectEmergingSourceSignals,
   detectEmergingAlerts,
   extractProposalIds,
   resolveProposalIdentity,
@@ -122,6 +123,114 @@ test("detects_fast_emerging_issue_before_official_repo_merge using historical-li
   assert.ok(issue);
   assert.equal(issue.status, "HOT_ISSUE");
   assert.ok(issue.heatScore >= 65);
+});
+
+test("paginated Magicians discovery finds high activity topic outside latest page 0", async () => {
+  const now = new Date("2026-08-10T00:00:00.000Z");
+  const pages = new Map([
+    ["https://ethereum-magicians.org/latest.json?page=0", latestPage(Array.from({ length: 30 }, (_, index) => topic({ id: index + 1, title: `Minor discussion ${index}`, replyCount: 1 })), "/latest?page=1")],
+    ["https://ethereum-magicians.org/latest.json?page=1", latestPage([
+      topic({ id: 100, title: "EIP-9100: Protocol materiality security discussion", replyCount: 175, views: 5200, participantCount: 24 }),
+    ], "/latest?page=2")],
+    ["https://ethereum-magicians.org/latest.json?page=2", latestPage([
+      topic({ id: 200, title: "Old inactive consensus thread", createdAt: "2026-01-01T00:00:00.000Z", lastActivityAt: "2026-01-02T00:00:00.000Z", replyCount: 300, views: 9000, participantCount: 40 }),
+    ])],
+  ]);
+
+  const collected = await collectEmergingSourceSignals({
+    now,
+    fetchImpl: mockFetch(pages),
+  });
+  const layer = buildEmergingLayer({ now, rawSignals: collected.rawSignals, sourceStatus: collected.sourceStatus });
+
+  assert.ok(layer.rawSignals.some((signal) => signal.sourceId === "100"));
+  assert.equal(layer.diagnostics?.magicians?.pagesFetched, 3);
+  assert.equal(layer.diagnostics?.magicians?.topicsWithinWindow, 31);
+  assert.ok(layer.issues.find((issue) => issue.primaryProposalId === "EIP-9100"));
+  assert.ok(!layer.issues.some((issue) => issue.title === "Old inactive consensus thread"));
+});
+
+test("rolling previous candidate remains when current latest no longer contains it", () => {
+  const db = openDatabase(":memory:");
+  const now = new Date("2026-08-10T00:00:00.000Z");
+  buildEmergingLayer({
+    db,
+    now: new Date("2026-08-07T00:00:00.000Z"),
+    rawSignals: [
+      magiciansSignal({
+        sourceId: "rolling-high-activity",
+        title: "EIP-9101: Rolling protocol-level wallet discussion",
+        createdAt: "2026-08-05T00:00:00.000Z",
+        lastActivityAt: "2026-08-07T00:00:00.000Z",
+        replyCount: 120,
+        viewCount: 5000,
+        participantCount: 21,
+      }),
+    ],
+  });
+
+  const layer = buildEmergingLayer({
+    db,
+    now,
+    rawSignals: [
+      magiciansSignal({ sourceId: "current-minor", title: "EIP-9102: Minor current proposal", replyCount: 1, viewCount: 20, participantCount: 1 }),
+    ],
+  });
+
+  const retained = layer.issues.find((issue) => issue.eipIds.includes("EIP-9101"));
+  assert.ok(retained);
+  assert.ok(retained.sourceSignals.some((signal) => signal.facts.restoredFromRollingSnapshot));
+});
+
+test("high activity generic candidate outranks low activity generic candidate", () => {
+  const layer = buildEmergingLayer({
+    now: new Date("2026-08-10T00:00:00.000Z"),
+    rawSignals: [
+      magiciansSignal({ sourceId: "generic-high", title: "Protocol-level wallet security discussion", replyCount: 180, viewCount: 5500, participantCount: 26, extractedEipIds: [] }),
+      githubSignal({ sourceId: "ethereum/EIPs#low", title: "Add EIP-9103 small wording update", replyCount: 0, participantCount: 1 }),
+    ],
+  });
+
+  const high = layer.issues.find((issue) => issue.title === "Protocol-level wallet security discussion");
+  const low = layer.issues.find((issue) => issue.eipIds.includes("EIP-9103"));
+  assert.ok(high && low);
+  assert.ok(layer.issues.indexOf(high) < layer.issues.indexOf(low));
+});
+
+test("old high cumulative thread without current activity is not HOT", () => {
+  const layer = buildEmergingLayer({
+    now: new Date("2026-08-10T00:00:00.000Z"),
+    rawSignals: [
+      magiciansSignal({
+        sourceId: "old-cumulative",
+        title: "EIP-9104: Old consensus security thread",
+        createdAt: "2025-01-01T00:00:00.000Z",
+        lastActivityAt: "2025-02-01T00:00:00.000Z",
+        replyCount: 250,
+        viewCount: 9000,
+        participantCount: 40,
+      }),
+    ],
+  });
+
+  assert.notEqual(layer.issues[0]?.status, "HOT_ISSUE");
+});
+
+test("primary proposal id is removed from related ids and duplicates are collapsed", () => {
+  const layer = buildEmergingLayer({
+    now: new Date("2026-08-10T00:00:00.000Z"),
+    rawSignals: [
+      githubSignal({
+        sourceId: "ethereum/EIPs#1234",
+        title: "EIP-1234 references EIP-5678",
+        primaryProposalId: "EIP-1234",
+        relatedProposalIds: ["EIP-1234", "EIP-5678", "EIP-5678"],
+        extractedEipIds: ["EIP-1234", "EIP-5678"],
+      }),
+    ],
+  });
+
+  assert.deepEqual(layer.issues[0]?.relatedProposalIds, ["EIP-5678"]);
 });
 
 test("cold-start detects a strong historical-like EIP-8363 issue without previous snapshots", () => {
@@ -306,5 +415,41 @@ function githubSignal(overrides: Partial<EmergingRawSignal>): EmergingRawSignal 
     collectedAt: "2026-08-10T00:00:00.000Z",
     facts: {},
     ...overrides,
+  };
+}
+
+function latestPage(topics: unknown[], moreTopicsUrl?: string): unknown {
+  return { topic_list: { topics, more_topics_url: moreTopicsUrl } };
+}
+
+function topic(input: {
+  id: number;
+  title: string;
+  createdAt?: string;
+  lastActivityAt?: string;
+  replyCount?: number;
+  views?: number;
+  participantCount?: number;
+}): unknown {
+  return {
+    id: input.id,
+    slug: `topic-${input.id}`,
+    title: input.title,
+    created_at: input.createdAt ?? "2026-08-06T00:00:00.000Z",
+    bumped_at: input.lastActivityAt ?? "2026-08-09T00:00:00.000Z",
+    last_posted_at: input.lastActivityAt ?? "2026-08-09T00:00:00.000Z",
+    reply_count: input.replyCount ?? 0,
+    views: input.views ?? 30,
+    participant_count: input.participantCount ?? 1,
+    tags: [],
+    posters: [],
+  };
+}
+
+function mockFetch(pages: Map<string, unknown>): typeof fetch {
+  return async (url) => {
+    const key = String(url);
+    const payload = pages.get(key) ?? [];
+    return new Response(JSON.stringify(key.includes("api.github.com") ? payload : payload), { status: 200 });
   };
 }

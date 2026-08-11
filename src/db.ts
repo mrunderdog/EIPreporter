@@ -2,7 +2,7 @@ import { mkdirSync } from "node:fs";
 import { dirname } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { diffRecords } from "./diff.ts";
-import type { ChangeEvent, DiscussionHeatItem, EmergingActivitySnapshot, ProposalChange, ProposalRecord, SnapshotInfo } from "./types.ts";
+import type { ChangeEvent, DiscussionHeatItem, EmergingActivitySnapshot, EmergingLayer, ProposalChange, ProposalRecord, SnapshotInfo } from "./types.ts";
 
 export type AppDatabase = DatabaseSync;
 
@@ -100,6 +100,19 @@ export function migrate(db: AppDatabase): void {
       reply_count INTEGER,
       view_count INTEGER,
       participant_count INTEGER,
+      source_repo TEXT,
+      url TEXT,
+      title TEXT,
+      category TEXT,
+      status TEXT,
+      created_at TEXT,
+      last_activity_at TEXT,
+      primary_proposal_id TEXT,
+      related_proposal_ids_json TEXT NOT NULL DEFAULT '[]',
+      extracted_eip_ids_json TEXT NOT NULL DEFAULT '[]',
+      author_logins_json TEXT NOT NULL DEFAULT '[]',
+      labels_json TEXT NOT NULL DEFAULT '[]',
+      facts_json TEXT NOT NULL DEFAULT '{}',
       PRIMARY KEY (source, source_id, collected_at)
     );
 
@@ -112,6 +125,11 @@ export function migrate(db: AppDatabase): void {
       last_heat_score INTEGER NOT NULL,
       last_alerted_at TEXT NOT NULL
     );
+
+    CREATE TABLE IF NOT EXISTS emerging_layers (
+      generated_at TEXT PRIMARY KEY,
+      layer_json TEXT NOT NULL
+    );
   `);
 
   addColumnIfMissing(db, "proposal_snapshots", "description", "TEXT");
@@ -122,6 +140,19 @@ export function migrate(db: AppDatabase): void {
   addColumnIfMissing(db, "change_events", "changed_sections_json", "TEXT");
   addColumnIfMissing(db, "change_events", "diff_summary", "TEXT");
   addColumnIfMissing(db, "change_events", "diff_evidence", "TEXT");
+  addColumnIfMissing(db, "emerging_activity_snapshots", "source_repo", "TEXT");
+  addColumnIfMissing(db, "emerging_activity_snapshots", "url", "TEXT");
+  addColumnIfMissing(db, "emerging_activity_snapshots", "title", "TEXT");
+  addColumnIfMissing(db, "emerging_activity_snapshots", "category", "TEXT");
+  addColumnIfMissing(db, "emerging_activity_snapshots", "status", "TEXT");
+  addColumnIfMissing(db, "emerging_activity_snapshots", "created_at", "TEXT");
+  addColumnIfMissing(db, "emerging_activity_snapshots", "last_activity_at", "TEXT");
+  addColumnIfMissing(db, "emerging_activity_snapshots", "primary_proposal_id", "TEXT");
+  addColumnIfMissing(db, "emerging_activity_snapshots", "related_proposal_ids_json", "TEXT NOT NULL DEFAULT '[]'");
+  addColumnIfMissing(db, "emerging_activity_snapshots", "extracted_eip_ids_json", "TEXT NOT NULL DEFAULT '[]'");
+  addColumnIfMissing(db, "emerging_activity_snapshots", "author_logins_json", "TEXT NOT NULL DEFAULT '[]'");
+  addColumnIfMissing(db, "emerging_activity_snapshots", "labels_json", "TEXT NOT NULL DEFAULT '[]'");
+  addColumnIfMissing(db, "emerging_activity_snapshots", "facts_json", "TEXT NOT NULL DEFAULT '{}'");
 }
 
 export function insertEmergingActivitySnapshots(db: AppDatabase, snapshots: EmergingActivitySnapshot[]): void {
@@ -133,8 +164,21 @@ export function insertEmergingActivitySnapshots(db: AppDatabase, snapshots: Emer
       collected_at,
       reply_count,
       view_count,
-      participant_count
-    ) VALUES (?, ?, ?, ?, ?, ?)
+      participant_count,
+      source_repo,
+      url,
+      title,
+      category,
+      status,
+      created_at,
+      last_activity_at,
+      primary_proposal_id,
+      related_proposal_ids_json,
+      extracted_eip_ids_json,
+      author_logins_json,
+      labels_json,
+      facts_json
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `);
   db.exec("BEGIN");
   try {
@@ -146,6 +190,19 @@ export function insertEmergingActivitySnapshots(db: AppDatabase, snapshots: Emer
         snapshot.replyCount ?? null,
         snapshot.viewCount ?? null,
         snapshot.participantCount ?? null,
+        snapshot.sourceRepo ?? null,
+        snapshot.url ?? null,
+        snapshot.title ?? null,
+        snapshot.category ?? null,
+        snapshot.status ?? null,
+        snapshot.createdAt ?? null,
+        snapshot.lastActivityAt ?? null,
+        snapshot.primaryProposalId ?? null,
+        JSON.stringify(snapshot.relatedProposalIds ?? []),
+        JSON.stringify(snapshot.extractedEipIds ?? []),
+        JSON.stringify(snapshot.authorLogins ?? []),
+        JSON.stringify(snapshot.labels ?? []),
+        JSON.stringify(snapshot.facts ?? {}),
       );
     }
     const cutoff = new Date(Date.now() - 14 * 24 * 60 * 60 * 1000).toISOString();
@@ -170,19 +227,130 @@ export function getEmergingActivitySnapshots(
       collected_at AS collectedAt,
       reply_count AS replyCount,
       view_count AS viewCount,
-      participant_count AS participantCount
+      participant_count AS participantCount,
+      source_repo AS sourceRepo,
+      url,
+      title,
+      category,
+      status,
+      created_at AS createdAt,
+      last_activity_at AS lastActivityAt,
+      primary_proposal_id AS primaryProposalId,
+      related_proposal_ids_json AS relatedProposalIdsJson,
+      extracted_eip_ids_json AS extractedEipIdsJson,
+      author_logins_json AS authorLoginsJson,
+      labels_json AS labelsJson,
+      facts_json AS factsJson
     FROM emerging_activity_snapshots
     WHERE source = ? AND source_id = ? AND collected_at >= ?
     ORDER BY collected_at ASC
-  `).all(source, sourceId, since) as EmergingActivitySnapshot[];
+  `).all(source, sourceId, since) as Array<Record<string, unknown>>;
   return rows.map((row) => ({
-    source: row.source,
-    sourceId: row.sourceId,
-    collectedAt: row.collectedAt,
-    replyCount: row.replyCount ?? undefined,
-    viewCount: row.viewCount ?? undefined,
-    participantCount: row.participantCount ?? undefined,
+    source: row.source as EmergingActivitySnapshot["source"],
+    sourceId: String(row.sourceId),
+    collectedAt: String(row.collectedAt),
+    replyCount: row.replyCount === null || row.replyCount === undefined ? undefined : Number(row.replyCount),
+    viewCount: row.viewCount === null || row.viewCount === undefined ? undefined : Number(row.viewCount),
+    participantCount: row.participantCount === null || row.participantCount === undefined ? undefined : Number(row.participantCount),
+    sourceRepo: row.sourceRepo as EmergingActivitySnapshot["sourceRepo"] | undefined,
+    url: row.url ? String(row.url) : undefined,
+    title: row.title ? String(row.title) : undefined,
+    category: row.category ? String(row.category) : undefined,
+    status: row.status ? String(row.status) : undefined,
+    createdAt: row.createdAt ? String(row.createdAt) : undefined,
+    lastActivityAt: row.lastActivityAt ? String(row.lastActivityAt) : undefined,
+    primaryProposalId: row.primaryProposalId ? String(row.primaryProposalId) : undefined,
+    relatedProposalIds: parseJsonArray(String(row.relatedProposalIdsJson ?? "[]")),
+    extractedEipIds: parseJsonArray(String(row.extractedEipIdsJson ?? "[]")),
+    authorLogins: parseJsonArray(String(row.authorLoginsJson ?? "[]")),
+    labels: parseJsonArray(String(row.labelsJson ?? "[]")),
+    facts: parseJsonObject(row.factsJson),
   }));
+}
+
+export function getLatestEmergingActivitySnapshotsSince(db: AppDatabase, since: string): EmergingActivitySnapshot[] {
+  const rows = db.prepare(`
+    SELECT
+      s.source,
+      s.source_id AS sourceId,
+      s.collected_at AS collectedAt,
+      s.reply_count AS replyCount,
+      s.view_count AS viewCount,
+      s.participant_count AS participantCount,
+      s.source_repo AS sourceRepo,
+      s.url,
+      s.title,
+      s.category,
+      s.status,
+      s.created_at AS createdAt,
+      s.last_activity_at AS lastActivityAt,
+      s.primary_proposal_id AS primaryProposalId,
+      s.related_proposal_ids_json AS relatedProposalIdsJson,
+      s.extracted_eip_ids_json AS extractedEipIdsJson,
+      s.author_logins_json AS authorLoginsJson,
+      s.labels_json AS labelsJson,
+      s.facts_json AS factsJson
+    FROM emerging_activity_snapshots s
+    JOIN (
+      SELECT source, source_id, MAX(collected_at) AS collected_at
+      FROM emerging_activity_snapshots
+      WHERE collected_at >= ?
+      GROUP BY source, source_id
+    ) latest
+      ON latest.source = s.source
+      AND latest.source_id = s.source_id
+      AND latest.collected_at = s.collected_at
+    ORDER BY s.collected_at DESC
+  `).all(since) as Array<Record<string, unknown>>;
+  return rows.map((row) => ({
+    source: row.source as EmergingActivitySnapshot["source"],
+    sourceId: String(row.sourceId),
+    collectedAt: String(row.collectedAt),
+    replyCount: row.replyCount === null ? undefined : Number(row.replyCount),
+    viewCount: row.viewCount === null ? undefined : Number(row.viewCount),
+    participantCount: row.participantCount === null ? undefined : Number(row.participantCount),
+    sourceRepo: row.sourceRepo as EmergingActivitySnapshot["sourceRepo"] | undefined,
+    url: row.url ? String(row.url) : undefined,
+    title: row.title ? String(row.title) : undefined,
+    category: row.category ? String(row.category) : undefined,
+    status: row.status ? String(row.status) : undefined,
+    createdAt: row.createdAt ? String(row.createdAt) : undefined,
+    lastActivityAt: row.lastActivityAt ? String(row.lastActivityAt) : undefined,
+    primaryProposalId: row.primaryProposalId ? String(row.primaryProposalId) : undefined,
+    relatedProposalIds: parseJsonArray(String(row.relatedProposalIdsJson ?? "[]")),
+    extractedEipIds: parseJsonArray(String(row.extractedEipIdsJson ?? "[]")),
+    authorLogins: parseJsonArray(String(row.authorLoginsJson ?? "[]")),
+    labels: parseJsonArray(String(row.labelsJson ?? "[]")),
+    facts: parseJsonObject(row.factsJson),
+  }));
+}
+
+export function insertEmergingLayer(db: AppDatabase, layer: EmergingLayer): void {
+  db.prepare(`
+    INSERT OR REPLACE INTO emerging_layers (generated_at, layer_json)
+    VALUES (?, ?)
+  `).run(layer.generatedAt, JSON.stringify(layer));
+}
+
+export function getLatestEmergingLayerSince(db: AppDatabase, since: string): EmergingLayer | null {
+  const row = db.prepare(`
+    SELECT layer_json AS layerJson
+    FROM emerging_layers
+    WHERE generated_at >= ?
+    ORDER BY generated_at DESC
+    LIMIT 1
+  `).get(since) as { layerJson: string } | undefined;
+  if (!row) return null;
+  return JSON.parse(row.layerJson) as EmergingLayer;
+}
+
+function parseJsonObject(value: unknown): Record<string, unknown> {
+  try {
+    const parsed = JSON.parse(String(value ?? "{}"));
+    return parsed && typeof parsed === "object" && !Array.isArray(parsed) ? parsed as Record<string, unknown> : {};
+  } catch {
+    return {};
+  }
 }
 
 export function getEmergingAlertState(

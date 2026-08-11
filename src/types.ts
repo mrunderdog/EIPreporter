@@ -516,6 +516,19 @@ export type EmergingActivitySnapshot = {
   replyCount?: number;
   viewCount?: number;
   participantCount?: number;
+  sourceRepo?: SourceRepo;
+  url?: string;
+  title?: string;
+  category?: string | null;
+  status?: string | null;
+  createdAt?: string | null;
+  lastActivityAt?: string | null;
+  primaryProposalId?: string;
+  relatedProposalIds?: string[];
+  extractedEipIds?: string[];
+  authorLogins?: string[];
+  labels?: string[];
+  facts?: Record<string, unknown>;
 };
 
 export type EmergingVelocity = {
@@ -562,6 +575,39 @@ export type EmergingIssue = {
   facts: Record<string, unknown>;
 };
 
+export type EmergingDiagnostics = {
+  magicians?: {
+    pagesFetched: number;
+    topicsScanned: number;
+    topicsWithinWindow: number;
+    rawSignalsCreated: number;
+    paginationStoppedReason: string;
+    truncated: boolean;
+  };
+  github?: {
+    PRsScanned: number;
+    rawSignalsCreated: number;
+  };
+  emerging: {
+    rawSignalCount: number;
+    resolvedIssueCount: number;
+    hotCount: number;
+    earlyCount: number;
+    decisionCount: number;
+  };
+  issues: Array<{
+    issueId: string;
+    primaryProposalId?: string;
+    sourceSignals: Array<{ source: EmergingSource; sourceId: string; title: string; url: string }>;
+    heatScore: number;
+    confidenceScore: number;
+    status: EmergingIssueStatus;
+    rankingPosition: number;
+    rendered: boolean;
+    notRenderedReason?: string;
+  }>;
+};
+
 export type EmergingLayer = {
   generatedAt: string;
   sourceStatus: SourceCollectionDiagnostic[];
@@ -570,6 +616,7 @@ export type EmergingLayer = {
   whatsHappeningNow: EmergingIssue[];
   emergingSignals: EmergingIssue[];
   decisionWatch: EmergingIssue[];
+  diagnostics?: EmergingDiagnostics;
   generatedBy: "deterministic_emerging_signal_engine";
 };
 

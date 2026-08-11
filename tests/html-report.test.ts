@@ -8,7 +8,7 @@ import test from "node:test";
 import { insertSnapshot, openDatabase } from "../src/db.ts";
 import { __qualityTestHooks, generateWeeklyDebugJson, generateWeeklyHtml, weeklyDebugJsonPath, writeWeeklyHtmlReport } from "../src/html-report.ts";
 import { buildWeeklyReport } from "../src/report.ts";
-import type { ChangeEvent, ProposalRecord, WeeklyRadarReport } from "../src/types.ts";
+import type { ChangeEvent, EmergingIssue, ProposalRecord, WeeklyRadarReport } from "../src/types.ts";
 
 test("generates and writes the Developer Intelligence HTML report", () => {
   const db = openDatabase(":memory:");
@@ -332,6 +332,34 @@ test("renders proposal navigation, related proposals, and official URL policy", 
     assert.match(html, /Magicians/);
     assert.match(html, /UNNUMBERED DRAFT/);
     assert.doesNotMatch(html, /eip-undefined|erc-undefined|eip-Future issuance/);
+  } finally {
+    db.close();
+  }
+});
+
+test("renders top-N hidden emerging candidates in full Emerging view and collapses empty Decision Watch space", () => {
+  const db = openDatabase(":memory:");
+  try {
+    insertSnapshot(db, Array.from({ length: 8 }, (_, index) => makeRecord(`EIP-${9300 + index}`, "Draft", `hash-${index}`, `Fixture ${index}`, "Core")));
+    const report = buildWeeklyReport(db, new Date("2026-08-10T00:00:00.000Z"));
+    assert.ok(report);
+    const issues = Array.from({ length: 8 }, (_, index) => emergingIssue(`EIP-${9300 + index}`, 50 - index, index));
+    report.ethereumTechRadar.emergingLayer = {
+      generatedAt: report.generatedAt,
+      sourceStatus: [],
+      rawSignals: issues.flatMap((issue) => issue.sourceSignals),
+      issues,
+      whatsHappeningNow: [],
+      emergingSignals: issues,
+      decisionWatch: [],
+      generatedBy: "deterministic_emerging_signal_engine",
+    };
+
+    const html = generateWeeklyHtml(report);
+    assert.match(html, /Emerging 후보 전체 8건 보기/);
+    assert.match(html, /Full list only candidate 7/);
+    assert.match(html, /dash-emerging-split dash-emerging-split-full/);
+    assert.doesNotMatch(html, /<section id="decision-watch">/);
   } finally {
     db.close();
   }
@@ -1407,6 +1435,43 @@ function makeRecord(
     sourcePath: kind === "ERC" ? `ERCS/erc-${number}.md` : `EIPS/eip-${number}.md`,
     canonicalUrl: `https://example.test/${proposalId}`,
     rawContentHash,
+  };
+}
+
+function emergingIssue(proposalId: string, heatScore: number, index: number): EmergingIssue {
+  return {
+    issueId: `proposal:${proposalId}`,
+    title: index === 7 ? "Full list only candidate 7" : `Emerging fixture ${index}`,
+    primaryProposalId: proposalId,
+    relatedProposalIds: [],
+    eipIds: [proposalId],
+    status: "EARLY_SIGNAL",
+    stage: "DISCUSSION",
+    heatScore,
+    confidenceScore: 50,
+    sources: ["ethereum_magicians"],
+    createdAt: "2026-08-05T00:00:00.000Z",
+    lastActivityAt: "2026-08-09T00:00:00.000Z",
+    metrics: { replyCount: 10 + index, viewCount: 500 + index, participantCount: 3, velocity: [] },
+    scoreBreakdown: [],
+    sourceSignals: [{
+      source: "ethereum_magicians",
+      sourceId: `topic-${proposalId}`,
+      url: `https://ethereum-magicians.org/t/topic/${9300 + index}`,
+      title: `Emerging fixture ${index}`,
+      primaryProposalId: proposalId,
+      relatedProposalIds: [],
+      extractedEipIds: [proposalId],
+      collectedAt: "2026-08-10T00:00:00.000Z",
+      facts: {},
+    }],
+    summaries: {
+      whatIsHappening: "최근 활동 후보입니다.",
+      whyMoving: "최근 활동이 증가했습니다.",
+      whyItMatters: "프로토콜 수준의 확인이 필요합니다.",
+      watchNext: "후속 논의를 확인합니다.",
+    },
+    facts: { sourceCount: 1 },
   };
 }
 

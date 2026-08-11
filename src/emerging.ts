@@ -1,6 +1,8 @@
 import {
   getEmergingActivitySnapshots,
   getEmergingAlertState,
+  getLatestEmergingActivitySnapshotsSince,
+  insertEmergingLayer,
   insertEmergingActivitySnapshots,
   upsertEmergingAlertState,
   type AppDatabase,
@@ -9,6 +11,7 @@ import { REPOSITORIES } from "./github.ts";
 import type {
   ChangeEvent,
   EmergingActivitySnapshot,
+  EmergingDiagnostics,
   EmergingIssue,
   EmergingLayer,
   EmergingRawSignal,
@@ -22,6 +25,10 @@ import type {
 const USER_AGENT = "EIPreporter/1.0 (+https://github.com/mrunderdog/EIPreporter)";
 const DAY_MS = 24 * 60 * 60 * 1000;
 const HOUR_MS = 60 * 60 * 1000;
+const OBSERVATION_WINDOW_DAYS = 7;
+const MAGICIANS_PAGE_SIZE = 30;
+const MAGICIANS_MAX_PAGES = 12;
+const MAGICIANS_MAX_TOPICS = 360;
 
 export const EMERGING_THRESHOLDS = {
   earlyHeat: 35,
@@ -105,14 +112,16 @@ export function buildEmergingLayer(input: {
   recentEvents?: ChangeEvent[];
   rawSignals?: EmergingRawSignal[];
   sourceStatus?: SourceCollectionDiagnostic[];
+  persist?: boolean;
 }): EmergingLayer {
   const now = input.now ?? new Date();
   const officialSignals = buildOfficialRepoSignals(input.records ?? [], input.recentEvents ?? [], now);
-  const rawSignals = dedupeRawSignals([...(input.rawSignals ?? []), ...officialSignals]);
+  const rollingSignals = input.db ? restoreRollingSignals(input.db, now) : [];
+  const rawSignals = dedupeRawSignals([...(input.rawSignals ?? []), ...rollingSignals, ...officialSignals]);
   const snapshots = rawSignals.map(activitySnapshotFromSignal).filter((snapshot): snapshot is EmergingActivitySnapshot => Boolean(snapshot));
-  if (input.db) insertEmergingActivitySnapshots(input.db, snapshots);
+  if (input.db && input.persist !== false) insertEmergingActivitySnapshots(input.db, snapshots);
   const issues = scoreEmergingIssues(resolveEmergingIssues(rawSignals), input.db, now);
-  return {
+  const layer = {
     generatedAt: now.toISOString(),
     sourceStatus: [
       ...(input.sourceStatus ?? []),
@@ -131,8 +140,11 @@ export function buildEmergingLayer(input: {
     whatsHappeningNow: issues.filter((issue) => issue.status === "HOT_ISSUE").slice(0, 5),
     emergingSignals: issues.filter((issue) => issue.status === "EARLY_SIGNAL").slice(0, 8),
     decisionWatch: issues.filter((issue) => issue.status === "DECISION_WATCH").slice(0, 8),
+    diagnostics: buildEmergingDiagnostics(issues, rawSignals, input.sourceStatus ?? []),
     generatedBy: "deterministic_emerging_signal_engine",
-  };
+  } satisfies EmergingLayer;
+  if (input.db && input.persist !== false) insertEmergingLayer(input.db, layer);
+  return layer;
 }
 
 export async function buildEmergingLayerWithSources(input: {
@@ -214,7 +226,7 @@ function resolveEmergingIssues(signals: EmergingRawSignal[]): EmergingIssue[] {
   }
   return [...groups.entries()].map(([issueId, sourceSignals]) => {
     const primaryProposalId = primaryProposalIdForSignals(sourceSignals);
-    const relatedProposalIds = [...new Set(sourceSignals.flatMap((signal) => signal.relatedProposalIds ?? []).filter((id) => id !== primaryProposalId))].sort(compareProposalIds);
+    const relatedProposalIds = sanitizeRelatedProposalIds(sourceSignals.flatMap((signal) => signal.relatedProposalIds ?? []), primaryProposalId);
     const eipIds = [...new Set([primaryProposalId, ...relatedProposalIds, ...sourceSignals.flatMap((signal) => signal.extractedEipIds).filter((id) => id !== primaryProposalId && !relatedProposalIds.includes(id))].filter((id): id is string => Boolean(id)))].sort(compareProposalIds);
     const preferred = sourceSignals.sort(compareSignalFreshness)[0]!;
     const sources = [...new Set(sourceSignals.map((signal) => signal.source))];
@@ -323,21 +335,81 @@ function scoreEmergingIssues(issues: EmergingIssue[], db: AppDatabase | undefine
 
 async function collectMagiciansDiscovery(options: FetchOptions): Promise<{ rawSignals: EmergingRawSignal[]; status: SourceCollectionDiagnostic }> {
   const now = options.now ?? new Date();
-  const url = "https://ethereum-magicians.org/latest.json";
+  const windowStart = new Date(now.getTime() - OBSERVATION_WINDOW_DAYS * DAY_MS).toISOString();
+  const baseUrl = "https://ethereum-magicians.org/latest.json";
+  const maxPages = Math.max(1, Math.ceil((options.limit ?? MAGICIANS_MAX_TOPICS) / MAGICIANS_PAGE_SIZE), MAGICIANS_MAX_PAGES);
+  const maxTopics = Math.max(options.limit ?? 0, MAGICIANS_MAX_TOPICS);
+  const topicsWithinWindow: unknown[] = [];
+  let pagesFetched = 0;
+  let topicsScanned = 0;
+  let stoppedReason = "completed";
+  let truncated = false;
   try {
-    const json = await fetchJson(url, options);
-    const topics = Array.isArray((json as { topic_list?: { topics?: unknown[] } }).topic_list?.topics)
-      ? (json as { topic_list: { topics: unknown[] } }).topic_list.topics
-      : [];
-    const rawSignals = topics.slice(0, options.limit ?? 60).flatMap((value) => magiciansTopicToSignal(value, now));
+    for (let page = 0; page < maxPages; page += 1) {
+      const url = `${baseUrl}?page=${page}`;
+      const json = await fetchJson(url, options);
+      pagesFetched += 1;
+      const topicList = (json as { topic_list?: { topics?: unknown[]; more_topics_url?: string } }).topic_list;
+      const topics = Array.isArray(topicList?.topics) ? topicList.topics : [];
+      if (!topics.length) {
+        stoppedReason = "empty_page";
+        break;
+      }
+      topicsScanned += topics.length;
+      const inWindow = topics.filter((topic) => topicOverlapsWindow(topic, windowStart));
+      topicsWithinWindow.push(...inWindow);
+      const pageStillOverlaps = topics.some((topic) => topicOverlapsWindow(topic, windowStart));
+      if (topicsScanned >= maxTopics) {
+        stoppedReason = "max_topics";
+        truncated = true;
+        break;
+      }
+      if (!pageStillOverlaps) {
+        stoppedReason = "window_exhausted";
+        break;
+      }
+      if (!topicList?.more_topics_url) {
+        stoppedReason = "no_more_topics";
+        break;
+      }
+      if (page === maxPages - 1) {
+        stoppedReason = "max_pages";
+        truncated = true;
+      }
+    }
+    const rawSignals = topicsWithinWindow.flatMap((value) => magiciansTopicToSignal(value, now));
     return {
       rawSignals,
-      status: sourceStatus("Ethereum Magicians latest topics", "github_api", url, "success", rawSignals.length),
+      status: {
+        ...sourceStatus("Ethereum Magicians latest topics", "github_api", baseUrl, "success", rawSignals.length),
+        freshness: {
+          collectedAt: now.toISOString(),
+          stale: false,
+        },
+        requestQuery: JSON.stringify({
+          pagesFetched,
+          topicsScanned,
+          topicsWithinWindow: topicsWithinWindow.length,
+          rawSignalsCreated: rawSignals.length,
+          paginationStoppedReason: stoppedReason,
+          truncated,
+        }),
+      },
     };
   } catch (error) {
     return {
       rawSignals: [],
-      status: sourceStatus("Ethereum Magicians latest topics", "github_api", url, "failure", 0, error),
+      status: {
+        ...sourceStatus("Ethereum Magicians latest topics", "github_api", baseUrl, "failure", 0, error),
+        requestQuery: JSON.stringify({
+          pagesFetched,
+          topicsScanned,
+          topicsWithinWindow: topicsWithinWindow.length,
+          rawSignalsCreated: 0,
+          paginationStoppedReason: "failure",
+          truncated,
+        }),
+      },
     };
   }
 }
@@ -346,12 +418,23 @@ async function collectGithubPrDiscovery(options: FetchOptions): Promise<{ rawSig
   const now = options.now ?? new Date();
   const rawSignals: EmergingRawSignal[] = [];
   const failures: string[] = [];
+  let prsScanned = 0;
+  let detailRequests = 0;
   for (const repo of REPOSITORIES) {
     const url = `https://api.github.com/repos/${repo.owner}/${repo.repo}/pulls?state=open&sort=updated&direction=desc&per_page=${Math.min(50, options.limit ?? 30)}`;
     try {
       const prs = await fetchJson(url, options);
       if (Array.isArray(prs)) {
-        rawSignals.push(...prs.flatMap((pr) => githubPrToSignal(pr, repo.sourceRepo, now)));
+        prsScanned += prs.length;
+        for (const pr of prs) {
+          const resolved = detailRequests < 10
+            ? await resolveGithubPrForDiscovery(pr, repo, options, now).then((result) => {
+              if (result.detailRequested) detailRequests += 1;
+              return result.rawSignals;
+            })
+            : githubPrToSignal(pr, repo.sourceRepo, now);
+          rawSignals.push(...resolved);
+        }
       }
     } catch (error) {
       failures.push(error instanceof Error ? error.message : String(error));
@@ -362,8 +445,41 @@ async function collectGithubPrDiscovery(options: FetchOptions): Promise<{ rawSig
     status: {
       ...sourceStatus("GitHub EIP/ERC open PRs", "github_api", "ethereum/EIPs + ethereum/ercs pulls", failures.length ? failures.length === REPOSITORIES.length ? "failure" : "partial_failure" : "success", rawSignals.length, failures.join(" | ")),
       requestAttempted: true,
+      requestQuery: JSON.stringify({ PRsScanned: prsScanned, rawSignalsCreated: rawSignals.length, detailRequests }),
     },
   };
+}
+
+async function resolveGithubPrForDiscovery(
+  value: unknown,
+  repo: { owner: string; repo: string; sourceRepo: SourceRepo },
+  options: FetchOptions,
+  now: Date,
+): Promise<{ rawSignals: EmergingRawSignal[]; detailRequested: boolean }> {
+  const initial = githubPrToSignal(value, repo.sourceRepo, now);
+  const signal = initial[0];
+  if (!signal || !githubIdentityNeedsDetail(signal)) return { rawSignals: initial, detailRequested: false };
+  const record = value && typeof value === "object" ? value as Record<string, unknown> : {};
+  const number = readNumber(record.number);
+  if (!number) return { rawSignals: initial, detailRequested: false };
+  try {
+    const filesUrl = `https://api.github.com/repos/${repo.owner}/${repo.repo}/pulls/${number}/files?per_page=30`;
+    const files = await fetchJson(filesUrl, options);
+    const changedFiles = Array.isArray(files)
+      ? files.map((file) => readString((file as Record<string, unknown>).filename)).filter((item): item is string => Boolean(item))
+      : [];
+    if (!changedFiles.length) return { rawSignals: initial, detailRequested: true };
+    return {
+      rawSignals: githubPrToSignal({ ...record, changedFiles }, repo.sourceRepo, now),
+      detailRequested: true,
+    };
+  } catch {
+    return { rawSignals: initial, detailRequested: true };
+  }
+}
+
+function githubIdentityNeedsDetail(signal: EmergingRawSignal): boolean {
+  return !signal.primaryProposalId || signal.extractedEipIds.length > 1;
 }
 
 function magiciansTopicToSignal(value: unknown, now: Date): EmergingRawSignal[] {
@@ -430,7 +546,7 @@ function githubPrToSignal(value: unknown, sourceRepo: SourceRepo, now: Date): Em
     sourceRepo,
     url,
     title,
-    status: readString(record.draft) === "true" ? "draft" : readString(record.state),
+    status: Boolean(record.draft) ? "draft" : readString(record.state),
     createdAt: readString(record.created_at),
     lastActivityAt: readString(record.updated_at),
     replyCount: readNumber(record.comments) !== undefined || readNumber(record.review_comments) !== undefined
@@ -565,7 +681,48 @@ function activitySnapshotFromSignal(signal: EmergingRawSignal): EmergingActivity
     replyCount: signal.replyCount,
     viewCount: signal.viewCount,
     participantCount: signal.participantCount,
+    sourceRepo: signal.sourceRepo,
+    url: signal.url,
+    title: signal.title,
+    category: signal.category,
+    status: signal.status,
+    createdAt: signal.createdAt,
+    lastActivityAt: signal.lastActivityAt,
+    primaryProposalId: signal.primaryProposalId,
+    relatedProposalIds: sanitizeRelatedProposalIds(signal.relatedProposalIds ?? [], signal.primaryProposalId),
+    extractedEipIds: signal.extractedEipIds,
+    authorLogins: signal.authorLogins,
+    labels: signal.labels,
+    facts: signal.facts,
   };
+}
+
+function restoreRollingSignals(db: AppDatabase, now: Date): EmergingRawSignal[] {
+  const since = new Date(now.getTime() - OBSERVATION_WINDOW_DAYS * DAY_MS).toISOString();
+  return getLatestEmergingActivitySnapshotsSince(db, since)
+    .filter((snapshot) => snapshot.title && snapshot.url)
+    .filter((snapshot) => isWithinObservationWindow(snapshot.lastActivityAt ?? snapshot.createdAt ?? snapshot.collectedAt, since))
+    .map((snapshot): EmergingRawSignal => ({
+      source: snapshot.source,
+      sourceId: snapshot.sourceId,
+      sourceRepo: snapshot.sourceRepo,
+      url: snapshot.url!,
+      title: snapshot.title!,
+      category: snapshot.category,
+      status: snapshot.status,
+      createdAt: snapshot.createdAt,
+      lastActivityAt: snapshot.lastActivityAt ?? snapshot.collectedAt,
+      replyCount: snapshot.replyCount,
+      viewCount: snapshot.viewCount,
+      participantCount: snapshot.participantCount,
+      authorLogins: snapshot.authorLogins,
+      labels: snapshot.labels,
+      primaryProposalId: snapshot.primaryProposalId,
+      relatedProposalIds: sanitizeRelatedProposalIds(snapshot.relatedProposalIds ?? [], snapshot.primaryProposalId),
+      extractedEipIds: snapshot.extractedEipIds ?? [],
+      collectedAt: now.toISOString(),
+      facts: { ...(snapshot.facts ?? {}), restoredFromRollingSnapshot: true, previousCollectedAt: snapshot.collectedAt },
+    }));
 }
 
 function issueKey(signal: EmergingRawSignal): string {
@@ -573,6 +730,87 @@ function issueKey(signal: EmergingRawSignal): string {
   const ids = signal.extractedEipIds.map((id) => id.toUpperCase()).sort(compareProposalIds);
   if (ids.length === 1 && (titleStartsWithProposalId(signal.title, ids[0]) || titleProposalActionId(signal.title) === ids[0])) return `proposal:${ids[0]}`;
   return `topic:${normalizeTitle(signal.title)}`;
+}
+
+function buildEmergingDiagnostics(
+  issues: EmergingIssue[],
+  rawSignals: EmergingRawSignal[],
+  sourceStatus: SourceCollectionDiagnostic[],
+): EmergingDiagnostics {
+  const renderedMain = new Set([
+    ...issues.filter((issue) => issue.status === "HOT_ISSUE").slice(0, 5).map((issue) => issue.issueId),
+    ...issues.filter((issue) => issue.status === "EARLY_SIGNAL").slice(0, 8).map((issue) => issue.issueId),
+    ...issues.filter((issue) => issue.status === "DECISION_WATCH").slice(0, 8).map((issue) => issue.issueId),
+  ]);
+  const magiciansStatus = sourceStatus.find((status) => status.sourceName.includes("Magicians"));
+  const githubStatus = sourceStatus.find((status) => status.sourceName.includes("GitHub EIP/ERC open PRs"));
+  return {
+    magicians: parseMagiciansDiagnostics(magiciansStatus?.requestQuery),
+    github: parseGithubDiagnostics(githubStatus?.requestQuery),
+    emerging: {
+      rawSignalCount: rawSignals.length,
+      resolvedIssueCount: issues.length,
+      hotCount: issues.filter((issue) => issue.status === "HOT_ISSUE").length,
+      earlyCount: issues.filter((issue) => issue.status === "EARLY_SIGNAL").length,
+      decisionCount: issues.filter((issue) => issue.status === "DECISION_WATCH").length,
+    },
+    issues: issues.map((issue, index) => ({
+      issueId: issue.issueId,
+      primaryProposalId: issue.primaryProposalId,
+      sourceSignals: issue.sourceSignals.map((signal) => ({
+        source: signal.source,
+        sourceId: signal.sourceId,
+        title: signal.title,
+        url: signal.url,
+      })),
+      heatScore: issue.heatScore,
+      confidenceScore: issue.confidenceScore,
+      status: issue.status,
+      rankingPosition: index + 1,
+      rendered: renderedMain.has(issue.issueId),
+      notRenderedReason: renderedMain.has(issue.issueId) ? undefined : "available_in_full_emerging_view",
+    })),
+  };
+}
+
+function parseMagiciansDiagnostics(value: string | undefined): EmergingDiagnostics["magicians"] {
+  const parsed = parseJsonObject(value);
+  return {
+    pagesFetched: Number(parsed.pagesFetched ?? 0),
+    topicsScanned: Number(parsed.topicsScanned ?? 0),
+    topicsWithinWindow: Number(parsed.topicsWithinWindow ?? 0),
+    rawSignalsCreated: Number(parsed.rawSignalsCreated ?? 0),
+    paginationStoppedReason: String(parsed.paginationStoppedReason ?? "unknown"),
+    truncated: Boolean(parsed.truncated),
+  };
+}
+
+function parseGithubDiagnostics(value: string | undefined): EmergingDiagnostics["github"] {
+  const parsed = parseJsonObject(value);
+  return {
+    PRsScanned: Number(parsed.PRsScanned ?? 0),
+    rawSignalsCreated: Number(parsed.rawSignalsCreated ?? 0),
+  };
+}
+
+function topicOverlapsWindow(value: unknown, windowStartIso: string): boolean {
+  if (!value || typeof value !== "object") return false;
+  const record = value as Record<string, unknown>;
+  return [
+    readString(record.created_at),
+    readString(record.bumped_at),
+    readString(record.last_posted_at),
+  ].some((date) => isWithinObservationWindow(date, windowStartIso));
+}
+
+function isWithinObservationWindow(value: string | null | undefined, windowStartIso: string): boolean {
+  if (!value) return false;
+  const time = Date.parse(value);
+  return Number.isFinite(time) && time >= Date.parse(windowStartIso);
+}
+
+function sanitizeRelatedProposalIds(ids: string[], primaryProposalId?: string): string[] {
+  return [...new Set(ids.filter((id) => id && id !== primaryProposalId))].sort(compareProposalIds);
 }
 
 function dedupeRawSignals(signals: EmergingRawSignal[]): EmergingRawSignal[] {
@@ -651,7 +889,7 @@ export function resolveProposalIdentity(input: {
     normalizeProposalId(input.discussionsToProposalId),
     titleLeadingProposalId(input.title ?? "") ?? titleProposalActionId(input.title ?? ""),
   ].find((id): id is string => Boolean(id));
-  const relatedProposalIds = allProposalIds.filter((id) => id !== primaryProposalId).sort(compareProposalIds);
+  const relatedProposalIds = sanitizeRelatedProposalIds(allProposalIds, primaryProposalId);
   return {
     primaryProposalId,
     relatedProposalIds,
@@ -660,7 +898,7 @@ export function resolveProposalIdentity(input: {
 }
 
 export function extractRelatedProposalIds(text: string, primaryProposalId?: string): string[] {
-  return extractProposalIds(text).filter((id) => id !== primaryProposalId).sort(compareProposalIds);
+  return sanitizeRelatedProposalIds(extractProposalIds(text), primaryProposalId);
 }
 
 function primaryProposalIdForSignals(signals: EmergingRawSignal[]): string | undefined {
@@ -715,6 +953,15 @@ function readFrontmatterProposalId(record: Record<string, unknown>, sourceRepo?:
     return value && /^\d+$/.test(value) ? `${kind}-${value}` : value;
   }
   return readString(record.frontmatterProposalId);
+}
+
+function parseJsonObject(value: unknown): Record<string, unknown> {
+  try {
+    const parsed = JSON.parse(String(value ?? "{}"));
+    return parsed && typeof parsed === "object" && !Array.isArray(parsed) ? parsed as Record<string, unknown> : {};
+  } catch {
+    return {};
+  }
 }
 
 function inferStage(signals: EmergingRawSignal[]): EmergingIssue["stage"] {

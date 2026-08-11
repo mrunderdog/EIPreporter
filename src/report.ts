@@ -5,7 +5,7 @@ import { buildChartData } from "./chart-data.ts";
 import { buildAdoptionLayer, buildAdoptionLayerWithGithubSearch } from "./adoption.ts";
 import { buildDiscussionFallbackWhyItMatters, enrichDiscussionHeat, type FetchDiscussionOptions } from "./discussion-activity.ts";
 import { buildEmergingLayer, buildEmergingLayerWithSources, EMERGING_THRESHOLDS } from "./emerging.ts";
-import { getChangeEventsSince, getSnapshotRecords, listSnapshots } from "./db.ts";
+import { getChangeEventsSince, getLatestEmergingLayerSince, getSnapshotRecords, listSnapshots } from "./db.ts";
 import type { AppDatabase } from "./db.ts";
 import { summarizeChanges } from "./diff.ts";
 import { buildEcosystemStateLayer } from "./ecosystem-state.ts";
@@ -155,6 +155,7 @@ export function buildWeeklyReport(
         now: generatedAt,
         records,
         recentEvents,
+        persist: false,
       }),
       narrativeLayer: {
         weeklyNarrative: [],
@@ -221,22 +222,7 @@ export async function buildWeeklyReportWithDiscussionActivity(
       fetchImpl: options.fetchImpl,
     },
   );
-  report.ethereumTechRadar.emergingLayer = await buildEmergingLayerWithSources({
-    db,
-    now: generatedAt,
-    records: getSnapshotRecords(db, report.ethereumTechRadar.latestSnapshot.id),
-    recentEvents: [
-      ...report.ethereumTechRadar.recentChanges.newProposals,
-      ...report.ethereumTechRadar.recentChanges.statusChanges,
-      ...report.ethereumTechRadar.recentChanges.finalTransitions,
-      ...report.ethereumTechRadar.recentChanges.withdrawnTransitions,
-      ...report.ethereumTechRadar.recentChanges.contentHashChanges,
-    ],
-    githubToken: process.env.GITHUB_TOKEN,
-    timeoutMs: options.timeoutMs,
-    limit: options.limit,
-    fetchImpl: options.fetchImpl,
-  });
+  report.ethereumTechRadar.emergingLayer = await canonicalOrCollectedEmergingLayer(db, report, generatedAt, options);
   report.ethereumTechRadar.signalLayer.discussionHeat = await promoteEmergingMagiciansDiscussions(report, options, generatedAt, db);
   report.ethereumTechRadar.watchlistLayer = buildWatchlistLayer(report);
   report.ethereumTechRadar.adoptionLayer = await buildAdoptionLayerWithGithubSearch(report, {
@@ -273,6 +259,33 @@ export async function buildWeeklyReportWithDiscussionActivity(
   });
   report.ethereumTechRadar.ecosystemStateLayer = buildEcosystemStateLayer(report);
   return { ...report, chartData: buildChartData(report) };
+}
+
+async function canonicalOrCollectedEmergingLayer(
+  db: AppDatabase,
+  report: WeeklyRadarReport,
+  generatedAt: Date,
+  options: ReportWindowOptions & FetchDiscussionOptions,
+) {
+  const canonicalSince = new Date(generatedAt.getTime() - DEFAULT_CHANGE_DAYS * DAY_MS).toISOString();
+  const canonical = getLatestEmergingLayerSince(db, canonicalSince);
+  if (canonical) return canonical;
+  return buildEmergingLayerWithSources({
+    db,
+    now: generatedAt,
+    records: getSnapshotRecords(db, report.ethereumTechRadar.latestSnapshot.id),
+    recentEvents: [
+      ...report.ethereumTechRadar.recentChanges.newProposals,
+      ...report.ethereumTechRadar.recentChanges.statusChanges,
+      ...report.ethereumTechRadar.recentChanges.finalTransitions,
+      ...report.ethereumTechRadar.recentChanges.withdrawnTransitions,
+      ...report.ethereumTechRadar.recentChanges.contentHashChanges,
+    ],
+    githubToken: process.env.GITHUB_TOKEN,
+    timeoutMs: options.timeoutMs,
+    limit: options.limit,
+    fetchImpl: options.fetchImpl,
+  });
 }
 
 function buildDiscussionHeat(
@@ -402,22 +415,7 @@ export async function buildWeeklyReportWithDiscussionPosts(
       fetchImpl: options.fetchImpl,
     },
   );
-  report.ethereumTechRadar.emergingLayer = await buildEmergingLayerWithSources({
-    db,
-    now: generatedAt,
-    records: getSnapshotRecords(db, report.ethereumTechRadar.latestSnapshot.id),
-    recentEvents: [
-      ...report.ethereumTechRadar.recentChanges.newProposals,
-      ...report.ethereumTechRadar.recentChanges.statusChanges,
-      ...report.ethereumTechRadar.recentChanges.finalTransitions,
-      ...report.ethereumTechRadar.recentChanges.withdrawnTransitions,
-      ...report.ethereumTechRadar.recentChanges.contentHashChanges,
-    ],
-    githubToken: process.env.GITHUB_TOKEN,
-    timeoutMs: options.timeoutMs,
-    limit: options.limit,
-    fetchImpl: options.fetchImpl,
-  });
+  report.ethereumTechRadar.emergingLayer = await canonicalOrCollectedEmergingLayer(db, report, generatedAt, options);
   report.ethereumTechRadar.signalLayer.discussionHeat = await promoteEmergingMagiciansDiscussions(report, options, generatedAt, db);
   report.ethereumTechRadar.watchlistLayer = buildWatchlistLayer(report);
   report.ethereumTechRadar.topicClusterLayer = buildTopicClusterLayer({
