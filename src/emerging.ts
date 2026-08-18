@@ -26,6 +26,9 @@ const USER_AGENT = "EIPreporter/1.0 (+https://github.com/mrunderdog/EIPreporter)
 const DAY_MS = 24 * 60 * 60 * 1000;
 const HOUR_MS = 60 * 60 * 1000;
 const OBSERVATION_WINDOW_DAYS = 7;
+const WEEKLY_TARGET_MS = 7 * DAY_MS;
+const WEEKLY_MIN_AGE_MS = 6 * DAY_MS;
+const WEEKLY_MAX_AGE_MS = 8 * DAY_MS;
 const MAGICIANS_PAGE_SIZE = 30;
 const MAGICIANS_MAX_PAGES = 12;
 const MAGICIANS_MAX_TOPICS = 360;
@@ -571,9 +574,14 @@ function calculateVelocity(signal: EmergingRawSignal, db: AppDatabase | undefine
   const windows: Array<6 | 24 | 72 | 168> = [6, 24, 72, 168];
   if (!db) return windows.map((windowHours) => ({ windowHours }));
   return windows.map((windowHours) => {
-    const since = new Date(now.getTime() - windowHours * HOUR_MS).toISOString();
+    const currentTime = currentSignalTime(signal, now);
+    const since = windowHours === 168
+      ? new Date(currentTime - WEEKLY_MAX_AGE_MS).toISOString()
+      : new Date(currentTime - windowHours * HOUR_MS).toISOString();
     const history = getEmergingActivitySnapshots(db, signal.source, signal.sourceId, since);
-    const previous = history[0];
+    const previous = windowHours === 168
+      ? selectWeeklyBaselineSnapshot(history, currentTime)
+      : history.find((snapshot) => Date.parse(snapshot.collectedAt) < currentTime);
     const replyDelta = delta(signal.replyCount, previous?.replyCount);
     const viewDelta = delta(signal.viewCount, previous?.viewCount);
     const participantDelta = delta(signal.participantCount, previous?.participantCount);
@@ -586,6 +594,33 @@ function calculateVelocity(signal: EmergingRawSignal, db: AppDatabase | undefine
       viewGrowthPct: growthPct(signal.viewCount, previous?.viewCount),
     };
   });
+}
+
+export function selectWeeklyBaselineSnapshot(
+  snapshots: EmergingActivitySnapshot[],
+  currentCollectedAt: string | number | Date,
+): EmergingActivitySnapshot | undefined {
+  const currentTime = currentCollectedAt instanceof Date
+    ? currentCollectedAt.getTime()
+    : typeof currentCollectedAt === "number"
+      ? currentCollectedAt
+      : Date.parse(currentCollectedAt);
+  if (!Number.isFinite(currentTime)) return undefined;
+  return snapshots
+    .map((snapshot) => ({ snapshot, collectedTime: Date.parse(snapshot.collectedAt) }))
+    .filter((item) => Number.isFinite(item.collectedTime))
+    .map((item) => ({ ...item, ageMs: currentTime - item.collectedTime }))
+    .filter((item) => item.ageMs > 0 && item.ageMs >= WEEKLY_MIN_AGE_MS && item.ageMs <= WEEKLY_MAX_AGE_MS)
+    .sort((left, right) => {
+      const distance = Math.abs(left.ageMs - WEEKLY_TARGET_MS) - Math.abs(right.ageMs - WEEKLY_TARGET_MS);
+      if (distance !== 0) return distance;
+      return right.collectedTime - left.collectedTime;
+    })[0]?.snapshot;
+}
+
+function currentSignalTime(signal: EmergingRawSignal, now: Date): number {
+  const collectedTime = Date.parse(signal.collectedAt);
+  return Number.isFinite(collectedTime) ? collectedTime : now.getTime();
 }
 
 function velocityPoints(value: EmergingVelocity): number {

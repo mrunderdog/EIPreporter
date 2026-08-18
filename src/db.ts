@@ -205,13 +205,19 @@ export function insertEmergingActivitySnapshots(db: AppDatabase, snapshots: Emer
         JSON.stringify(snapshot.facts ?? {}),
       );
     }
-    const cutoff = new Date(Date.now() - 14 * 24 * 60 * 60 * 1000).toISOString();
+    const newestInsertedAt = maxIso(snapshots.map((snapshot) => snapshot.collectedAt));
+    const cutoff = new Date(newestInsertedAt.getTime() - 14 * 24 * 60 * 60 * 1000).toISOString();
     db.prepare("DELETE FROM emerging_activity_snapshots WHERE collected_at < ?").run(cutoff);
     db.exec("COMMIT");
   } catch (error) {
     db.exec("ROLLBACK");
     throw error;
   }
+}
+
+function maxIso(values: string[]): Date {
+  const times = values.map((value) => Date.parse(value)).filter(Number.isFinite);
+  return new Date(times.length ? Math.max(...times) : 0);
 }
 
 export function getEmergingActivitySnapshots(

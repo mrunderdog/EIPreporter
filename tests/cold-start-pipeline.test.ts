@@ -79,7 +79,12 @@ test("report:html renders from canonical snapshot without collecting again", () 
     assert.match(result.stdout, /inputSnapshotHash=/);
     assert.ok(readFileSync(join(directory, "weekly-2026-08-01.html"), "utf8").includes("Ethereum Standards Weekly - 2026-08-01"));
     assert.ok(readFileSync(join(directory, "weekly-2026-08-01.compact.json"), "utf8").includes("intelligenceSnapshot"));
-    assert.ok(readFileSync(join(directory, "weekly-2026-08-01.quality.json"), "utf8").includes("passed"));
+    const quality = JSON.parse(readFileSync(join(directory, "weekly-2026-08-01.quality.json"), "utf8")) as {
+      passed?: boolean;
+      checks?: Array<{ severity?: string; passed?: boolean }>;
+    };
+    assert.equal(typeof quality.passed, "boolean");
+    assert.ok(Array.isArray(quality.checks));
   } finally {
     db.close();
     rmSync(directory, { recursive: true, force: true });

@@ -7,8 +7,9 @@ import {
   detectEmergingAlerts,
   extractProposalIds,
   resolveProposalIdentity,
+  selectWeeklyBaselineSnapshot,
 } from "../src/emerging.ts";
-import type { EmergingRawSignal } from "../src/types.ts";
+import type { EmergingActivitySnapshot, EmergingIssue, EmergingRawSignal } from "../src/types.ts";
 
 test("resolves the same EIP from Magicians and GitHub PR into one issue", () => {
   const layer = buildEmergingLayer({
@@ -264,13 +265,14 @@ test("cold-start detects a strong historical-like EIP-8363 issue without previou
 
 test("7-day delta is the primary production velocity signal", () => {
   const db = openDatabase(":memory:");
+  const asOf = new Date("2026-08-10T00:00:00.000Z");
   insertEmergingActivitySnapshots(db, [
     { source: "ethereum_magicians", sourceId: "weekly", collectedAt: "2026-08-03T00:00:00.000Z", replyCount: 10, viewCount: 700, participantCount: 4 },
   ]);
 
   const layer = buildEmergingLayer({
     db,
-    now: new Date("2026-08-10T00:00:00.000Z"),
+    now: asOf,
     rawSignals: [
       magiciansSignal({ sourceId: "weekly", title: "EIP-9009: Weekly wallet UX activity", replyCount: 35, viewCount: 2400, participantCount: 12 }),
     ],
@@ -278,9 +280,97 @@ test("7-day delta is the primary production velocity signal", () => {
 
   const issue = layer.issues.find((item) => item.eipIds.includes("EIP-9009"));
   const weeklyVelocity = issue?.metrics.velocity.find((item) => item.windowHours === 168);
-  assert.equal(weeklyVelocity?.replyDelta, 25);
-  assert.equal(weeklyVelocity?.participantDelta, 8);
+  assert.equal(weeklyVelocity?.replyDelta, 25, velocityFailureMessage(issue, asOf));
+  assert.equal(weeklyVelocity?.participantDelta, 8, velocityFailureMessage(issue, asOf));
   assert.ok(issue?.scoreBreakdown.some((item) => item.label === "7-day Velocity" && item.value > 0));
+});
+
+test("weekly baseline selection accepts exactly 7 days", () => {
+  const baseline = weeklyBaselineFor([
+    { collectedAt: "2026-08-03T00:00:00.000Z" },
+  ], "2026-08-10T00:00:00.000Z");
+
+  assert.equal(baseline?.collectedAt, "2026-08-03T00:00:00.000Z");
+});
+
+test("weekly baseline selection tolerates GitHub Actions cron drift", () => {
+  const baseline = weeklyBaselineFor([
+    { collectedAt: "2026-08-03T00:03:00.000Z" },
+  ], "2026-08-10T00:11:00.000Z");
+
+  assert.equal(baseline?.collectedAt, "2026-08-03T00:03:00.000Z");
+});
+
+test("weekly velocity scoring is timezone independent for the same epoch", () => {
+  const asOf = new Date(Date.UTC(2026, 7, 10, 0, 0, 0));
+  const issue = weeklyVelocityIssue(asOf, "2026-08-03T00:00:00.000Z");
+  const weeklyVelocity = issue?.metrics.velocity.find((item) => item.windowHours === 168);
+
+  assert.equal(weeklyVelocity?.replyDelta, 25, velocityFailureMessage(issue, asOf));
+  assert.equal(issue?.scoreBreakdown.find((item) => item.label === "7-day Velocity")?.value, 25);
+});
+
+test("weekly baseline selection accepts the 6 to 8 day tolerance window", () => {
+  assert.equal(weeklyBaselineFor([{ collectedAt: "2026-08-04T00:00:00.000Z" }], "2026-08-10T00:00:00.000Z")?.collectedAt, "2026-08-04T00:00:00.000Z");
+  assert.equal(weeklyBaselineFor([{ collectedAt: "2026-08-02T00:00:00.000Z" }], "2026-08-10T00:00:00.000Z")?.collectedAt, "2026-08-02T00:00:00.000Z");
+});
+
+test("weekly baseline selection rejects too recent snapshots", () => {
+  const baseline = weeklyBaselineFor([
+    { collectedAt: "2026-08-08T00:00:00.000Z" },
+  ], "2026-08-10T00:00:00.000Z");
+
+  assert.equal(baseline, undefined);
+});
+
+test("weekly baseline selection rejects too old snapshots", () => {
+  const baseline = weeklyBaselineFor([
+    { collectedAt: "2026-07-21T00:00:00.000Z" },
+  ], "2026-08-10T00:00:00.000Z");
+
+  assert.equal(baseline, undefined);
+});
+
+test("weekly baseline selection chooses the candidate closest to 7 days deterministically", () => {
+  const baseline = weeklyBaselineFor([
+    { sourceId: "older", collectedAt: "2026-08-02T22:00:00.000Z" },
+    { sourceId: "closer", collectedAt: "2026-08-03T01:00:00.000Z" },
+  ], "2026-08-10T00:00:00.000Z");
+
+  assert.equal(baseline?.sourceId, "closer");
+});
+
+test("weekly baseline selection rejects future snapshots", () => {
+  const baseline = weeklyBaselineFor([
+    { collectedAt: "2026-08-11T00:00:00.000Z" },
+  ], "2026-08-10T00:00:00.000Z");
+
+  assert.equal(baseline, undefined);
+});
+
+test("two-week emerging scan simulation keeps weekly velocity in canonical layer", () => {
+  const db = openDatabase(":memory:");
+  buildEmergingLayer({
+    db,
+    now: new Date("2026-08-03T00:03:00.000Z"),
+    rawSignals: [
+      magiciansSignal({ sourceId: "weekly-sim", title: "EIP-9010: Simulated weekly activity", replyCount: 10, viewCount: 700, participantCount: 4, collectedAt: "2026-08-03T00:03:00.000Z" }),
+    ],
+  });
+
+  const layer = buildEmergingLayer({
+    db,
+    now: new Date("2026-08-10T00:11:00.000Z"),
+    rawSignals: [
+      magiciansSignal({ sourceId: "weekly-sim", title: "EIP-9010: Simulated weekly activity", replyCount: 35, viewCount: 2400, participantCount: 12, collectedAt: "2026-08-10T00:11:00.000Z" }),
+    ],
+  });
+
+  const issue = layer.issues.find((item) => item.eipIds.includes("EIP-9010"));
+  const weeklyVelocity = issue?.metrics.velocity.find((item) => item.windowHours === 168);
+  assert.equal(weeklyVelocity?.replyDelta, 25, velocityFailureMessage(issue, new Date(layer.generatedAt)));
+  assert.equal(issue?.scoreBreakdown.find((item) => item.label === "7-day Velocity")?.value, 25);
+  assert.equal(layer.whatsHappeningNow.some((item) => item.eipIds.includes("EIP-9010")), true);
 });
 
 test("negative regression does not mark simple noise as HOT", () => {
@@ -379,6 +469,59 @@ test("does not merge separate proposals that only share a related reference", ()
   assert.ok(layer.issues.every((issue) => issue.sources.length === 1));
   assert.ok(layer.issues.every((issue) => issue.scoreBreakdown.find((part) => part.label === "Cross-source Spread")?.value === 0));
 });
+
+function weeklyBaselineFor(
+  snapshots: Array<Partial<EmergingActivitySnapshot> & { collectedAt: string }>,
+  currentCollectedAt: string,
+): EmergingActivitySnapshot | undefined {
+  return selectWeeklyBaselineSnapshot(
+    snapshots.map((snapshot, index) => ({
+      source: "ethereum_magicians",
+      sourceId: `candidate-${index}`,
+      replyCount: 10,
+      viewCount: 700,
+      participantCount: 4,
+      ...snapshot,
+    })),
+    currentCollectedAt,
+  );
+}
+
+function weeklyVelocityIssue(asOf: Date, baselineCollectedAt: string): EmergingIssue | undefined {
+  const db = openDatabase(":memory:");
+  insertEmergingActivitySnapshots(db, [
+    { source: "ethereum_magicians", sourceId: "weekly-tz", collectedAt: baselineCollectedAt, replyCount: 10, viewCount: 700, participantCount: 4 },
+  ]);
+  const layer = buildEmergingLayer({
+    db,
+    now: asOf,
+    rawSignals: [
+      magiciansSignal({
+        sourceId: "weekly-tz",
+        title: "EIP-9011: Timezone stable weekly activity",
+        replyCount: 35,
+        viewCount: 2400,
+        participantCount: 12,
+        collectedAt: asOf.toISOString(),
+      }),
+    ],
+  });
+  return layer.issues.find((item) => item.eipIds.includes("EIP-9011"));
+}
+
+function velocityFailureMessage(issue: EmergingIssue | undefined, asOf: Date): string {
+  const weeklyVelocity = issue?.metrics.velocity.find((item) => item.windowHours === 168);
+  const velocityScore = issue?.scoreBreakdown.find((item) => item.label === "7-day Velocity");
+  return [
+    `asOf=${asOf.toISOString()}`,
+    `current=${issue?.sourceSignals[0]?.collectedAt ?? "missing"}`,
+    `replyDelta7d=${weeklyVelocity?.replyDelta ?? "missing"}`,
+    `viewDelta7d=${weeklyVelocity?.viewDelta ?? "missing"}`,
+    `participantDelta7d=${weeklyVelocity?.participantDelta ?? "missing"}`,
+    `velocityScore=${velocityScore?.value ?? "missing"}`,
+    `heat=${issue?.heatScore ?? "missing"}`,
+  ].join(" ");
+}
 
 function magiciansSignal(overrides: Partial<EmergingRawSignal>): EmergingRawSignal {
   const title = overrides.title ?? "EIP-9000: Example";

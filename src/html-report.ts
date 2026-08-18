@@ -845,7 +845,7 @@ function weeklyRankingValidityRendering(report: WeeklyRadarReport, visibleHtml: 
     const hero = visibleHtml.match(/<header class="dash-hero"[\s\S]*?<\/header>/)?.[0] ?? "";
     return /공식 저장소 신규 반영/.test(hero)
       && !/순위 미제공|ranking invalid|주간 순위|Top 3|Top 1|1위|이번 주 주요 개발 주제/.test(hero)
-      && !/\bTop\b|\bRank\b|1위|개발자 관심 순위/.test(visibleHtml);
+      && !/(\bTop(?!-)\b|\bRank\b|1위|개발자 관심 순위)/.test(visibleHtml);
   }
   return /확인된 주간 신호/.test(visibleHtml)
     && /주간 개발 순위를 산정하지 않았습니다|주간 개발 순위에서 제외했습니다|주간 순위는 제공하지 않습니다/.test(visibleHtml)
@@ -1122,13 +1122,13 @@ function dashboardV2CountAffectedIds(embeddedApi: unknown): string[] {
 function dashboardV2RankingLanguage(embeddedApi: unknown, visibleHtml: string): boolean {
   const validity = dashboardV2FromApi(embeddedApi)?.evidenceQuality.weeklyRankingValidity;
   if (validity !== "invalid") return true;
-  return !/\bTop\b|\bRank\b|1위|개발자 관심 순위/.test(visibleHtml);
+  return !/(\bTop(?!-)\b|\bRank\b|1위|개발자 관심 순위)/.test(visibleHtml);
 }
 
 function dashboardV2RankingObserved(embeddedApi: unknown, visibleHtml: string): string {
   return JSON.stringify({
     weeklyRankingValidity: dashboardV2FromApi(embeddedApi)?.evidenceQuality.weeklyRankingValidity ?? "missing",
-    forbiddenMatches: visibleHtml.match(/\bTop\b|\bRank\b|1위|개발자 관심 순위/g) ?? [],
+    forbiddenMatches: visibleHtml.match(/\bTop(?!-)\b|\bRank\b|1위|개발자 관심 순위/g) ?? [],
   });
 }
 
@@ -2587,9 +2587,10 @@ function aaDiscussionDeduplication(embeddedApi: unknown, visibleText: string): b
   if (!summary) return false;
   void visibleText;
   if (summary.uniqueActiveThreadCount === 0 && summary.uniqueRecentPostCount === 0) return true;
-  return summary.uniqueActiveThreadCount <= summary.trackAssignmentCount
-    && summary.uniqueRecentPostCount <= summary.trackAssignmentCount
-    && summary.trackAssignmentCount >= 0;
+  return summary.uniqueActiveThreadCount <= summary.uniqueDiscussionThreadCount
+    && summary.uniqueRecentPostCount === summary.uniqueDiscussionPostCount
+    && summary.trackAssignmentCount >= 0
+    && summary.activeTrackAssignmentCount >= 0;
 }
 
 function aaZeroVsNotCollected(embeddedApi: unknown, visibleHtml: string): boolean {

@@ -9,6 +9,7 @@
     "collect:health": "node --experimental-strip-types src/cli/collect-health.ts",
     "source:vitalik:check": "node --experimental-strip-types src/cli/vitalik-blog-check.ts",
     "ci:doctor": "node --experimental-strip-types src/cli/ci-doctor.ts",
+    "ci:verify": "node --experimental-strip-types src/cli/ci-verify.ts",
     "ci:preflight": "node --experimental-strip-types src/cli/preflight.ts",
     "diff": "node --experimental-strip-types src/cli/diff.ts",
     "report:weekly": "node --experimental-strip-types src/cli/html-report.ts",
