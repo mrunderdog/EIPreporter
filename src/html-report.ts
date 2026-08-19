@@ -3618,6 +3618,12 @@ export const __qualityTestHooks = {
   weeklyRepositoryAdditionObserved,
   parseLocalSpecificationMarkdown,
   localSpecificationEvidence,
+  proposalActivities,
+  proposalSourceActions,
+  extractProposalMechanism,
+  simpleProposalSummaryKo,
+  plainProposalExplanationKo,
+  changeExplanationForDomain,
   specificationPreflightDiagnostics,
   proposalSummaryForV3,
   snapshotWithoutVitalik,
@@ -5894,6 +5900,7 @@ function domainDisplayName(value: string): string {
     "scaling-data": "확장·데이터",
     "validators-consensus": "검증자·합의",
     "interoperability": "상호운용성",
+    "governance-process": "거버넌스·절차",
     unknown: "미분류",
   };
   return labels[value] ?? value.replace(/-/g, " ");
@@ -7627,14 +7634,15 @@ function proposalIntelligenceItem(input: {
   const topic = String(input.proposal.topic ?? displayTopicForProposal(input.classified ?? {}) ?? "분류 보류");
   const specText = [input.specFact?.abstractText, input.specFact?.motivationText, input.specFact?.specificationIntroText].filter(Boolean).join(" ");
   const technologyText = `${input.classified?.technologies?.join(" ") ?? ""} ${topic} ${domainId}`;
-  const simpleSummary = simpleProposalSummaryKo(proposalId, title, specText, technologyText, input.specFact);
-  const plainExplanation = plainProposalExplanationKo(simpleSummary, domainId, input.classified?.technologies ?? [], Boolean(specText));
+  const mechanism = extractProposalMechanism(proposalId, title, input.specFact, input.emergingIssue);
+  const simpleSummary = simpleProposalSummaryKo(proposalId, title, specText, technologyText, input.specFact, mechanism);
+  const plainExplanation = plainProposalExplanationKo(simpleSummary, domainId, input.classified?.technologies ?? [], Boolean(specText), mechanism);
   const recentActivities = proposalActivities(input.report, proposalId, input.developmentEvents, input.discussionPosts, input.emergingIssue);
   const useCases = proposalUseCases(input, domainId, input.classified?.technologies ?? [], topic, specText);
   const whyNow = whyNowSignals(input, recentActivities, input.emergingIssue);
   const sourceActions = proposalSourceActions(proposalId, input.specFact, input.proposal, input.emergingIssue, input.adoption);
   const rank = proposalIntelligenceRank(input, recentActivities, useCases);
-  const changeExplanation = changeExplanationForDomain(domainId, input.classified?.technologies ?? [], Boolean(specText));
+  const changeExplanation = changeExplanationForDomain(domainId, input.classified?.technologies ?? [], Boolean(specText), mechanism);
   const watchNext = watchNextItems(status, recentActivities, input.emergingIssue, input.adoption);
   return {
     proposalId,
@@ -7660,13 +7668,14 @@ function proposalIntelligenceItem(input: {
     traceability: {
       evidenceIds: unique([
         `spec:${proposalId}`,
+        ...mechanism.evidenceIds,
         ...recentActivities.flatMap((activity) => activity.sourceFactIds),
         ...useCases.flatMap((useCase) => useCase.evidenceIds),
         ...(input.adoption?.sources ?? []).map((source) => source.evidenceId).filter(Boolean),
       ]),
       derivedFrom: unique(["specificationEvidence", "technologyAtlas", "topicMembershipFacts", recentActivities.length ? "developmentEvents/discussionPosts" : "", input.emergingIssue ? "emergingLayer" : "", input.adoption ? "adoptionLayer" : ""].filter(Boolean)),
       calculationVersion: "proposal-intelligence-1",
-      ruleVersion: "deterministic-conservative-1",
+      ruleVersion: "deterministic-conservative-2",
     },
   };
 }
@@ -7746,6 +7755,8 @@ function proposalActivities(
       occurredAt: String(event.occurredAt ?? event.detectedAt),
       sourceFactIds: [String(event.factId ?? `event:${event.eventId}`)],
       sourceUrls: [String(event.sourceUrl)],
+      sourceType: String(event.sourceType ?? "official_repo"),
+      semanticTarget: specificationActivityTarget(event),
     }));
   const discussionGroups = new Map<string, Array<Record<string, unknown>>>();
   for (const post of discussionPosts) {
@@ -7763,6 +7774,8 @@ function proposalActivities(
     occurredAt: String(posts.map((post) => post.createdAt).sort().at(-1)),
     sourceFactIds: posts.map((post) => `post:${post.postId}`),
     sourceUrls: unique(posts.map((post) => String(post.sourceUrl ?? "")).filter(Boolean)),
+    sourceType: "ethereum_magicians",
+    semanticTarget: "discussion",
   })).filter((activity) => activity.sourceUrls.length > 0);
   const emerging = emergingIssue?.sourceSignals
     .filter((signal) => signal.primaryProposalId === proposalId || signal.extractedEipIds.includes(proposalId) || signal.relatedProposalIds?.includes(proposalId))
@@ -7775,11 +7788,81 @@ function proposalActivities(
       occurredAt: signal.lastActivityAt ?? signal.createdAt ?? emergingIssue.lastActivityAt ?? emergingIssue.createdAt ?? report.generatedAt,
       sourceFactIds: [`emerging:${signal.source}:${signal.sourceId}`],
       sourceUrls: [signal.url],
+      sourceType: signal.source,
+      semanticTarget: signal.source === "github_pr" ? canonicalUrl(signal.url) : signal.source === "ethereum_magicians" ? "discussion" : "emerging",
     })) ?? [];
-  return uniqueByKey([...official, ...discussion, ...emerging], (activity) => activity.activityId)
+  return dedupeProposalActivities([...official, ...discussion, ...emerging])
     .filter((activity) => activity.sourceFactIds.length > 0 && activity.sourceUrls.length > 0)
     .sort((a, b) => Date.parse(b.occurredAt) - Date.parse(a.occurredAt) || a.activityType.localeCompare(b.activityType))
     .slice(0, 12);
+}
+
+function dedupeProposalActivities<T extends {
+  proposalId: string;
+  activityType: string;
+  labelKo: string;
+  occurredAt: string;
+  sourceFactIds: string[];
+  sourceUrls: string[];
+  sourceType?: string;
+  semanticTarget?: string;
+}>(activities: T[]): T[] {
+  const byIdentity = new Map<string, T & { evidenceCount?: number }>();
+  for (const activity of activities) {
+    const key = canonicalActivityIdentity(activity);
+    const existing = byIdentity.get(key);
+    if (!existing) {
+      byIdentity.set(key, { ...activity, sourceFactIds: unique(activity.sourceFactIds), sourceUrls: unique(activity.sourceUrls.map(canonicalUrl)), evidenceCount: activity.sourceFactIds.length });
+      continue;
+    }
+    existing.sourceFactIds = unique([...existing.sourceFactIds, ...activity.sourceFactIds]);
+    existing.sourceUrls = unique([...existing.sourceUrls, ...activity.sourceUrls.map(canonicalUrl)]);
+    existing.evidenceCount = existing.sourceFactIds.length;
+    if (Date.parse(activity.occurredAt) > Date.parse(existing.occurredAt)) existing.occurredAt = activity.occurredAt;
+  }
+  return [...byIdentity.values()].map((activity) => {
+    if ((activity.evidenceCount ?? 0) > 1 && activity.activityType === "SPEC_UPDATED") {
+      return { ...activity, labelKo: `${activity.labelKo} · 변경사항 ${activity.evidenceCount}건` };
+    }
+    return activity;
+  });
+}
+
+function canonicalActivityIdentity(activity: {
+  proposalId: string;
+  activityType: string;
+  occurredAt: string;
+  sourceType?: string;
+  semanticTarget?: string;
+  sourceUrls: string[];
+}): string {
+  const sourceType = canonicalActivitySourceType(activity.activityType, activity.sourceType);
+  const date = canonicalActivityDate(activity.occurredAt);
+  const target = activity.activityType === "GITHUB_PR_ACTIVITY"
+    ? "github_pr"
+    : activity.activityType === "DISCUSSION_ACTIVITY"
+      ? canonicalUrl(activity.sourceUrls[0] ?? activity.semanticTarget ?? "")
+      : activity.semanticTarget ?? "specification";
+  return [activity.proposalId, activity.activityType, sourceType, date, target].join("|").toLowerCase();
+}
+
+function canonicalActivityDate(value: string): string {
+  const time = Date.parse(value);
+  return Number.isFinite(time) ? new Date(time).toISOString().slice(0, 10) : value.slice(0, 10);
+}
+
+function canonicalActivitySourceType(activityType: string, sourceType?: string): string {
+  if (activityType === "SPEC_CREATED" || activityType === "SPEC_UPDATED" || activityType === "STATUS_CHANGED") return "official_repo";
+  if (activityType === "GITHUB_PR_ACTIVITY") return "github_pr";
+  if (activityType === "DISCUSSION_ACTIVITY") return "ethereum_magicians";
+  return sourceType ?? "unknown";
+}
+
+function specificationActivityTarget(event: Record<string, unknown>): string {
+  const type = proposalActivityType(String(event.eventType), String(event.semanticType ?? ""));
+  if (type === "STATUS_CHANGED") return `${String(event.previousStatus ?? "")}->${String(event.currentStatus ?? "")}`;
+  if (type === "SPEC_CREATED") return "proposal";
+  return "specification";
 }
 
 function proposalActivityType(eventType: string, semanticType: string): string {
@@ -7832,9 +7915,119 @@ function proposalUseCases(input: Parameters<typeof proposalIntelligenceItem>[0],
   return [...useCases.values()].filter((item) => item.sourceUrls.length > 0 || item.evidenceLevel === "SPECIFICATION_POTENTIAL").slice(0, 5);
 }
 
-function simpleProposalSummaryKo(proposalId: string, title: string, specText: string, technologyText: string, specFact?: Record<string, unknown>): string {
+type ProposalMechanism = {
+  subject?: string;
+  action?: string;
+  mechanism?: string;
+  target?: string;
+  interoperabilityGoal?: string;
+  constraints: string[];
+  evidenceIds: string[];
+  evidenceKind: "official_specification" | "discussion_or_pr" | "title_only" | "none";
+  strength: "strong" | "weak";
+};
+
+function extractProposalMechanism(proposalId: string, title: string, specFact?: Record<string, unknown>, emergingIssue?: EmergingIssue): ProposalMechanism {
+  const abstractText = String(specFact?.abstractText ?? "");
+  const motivationText = String(specFact?.motivationText ?? "");
+  const specificationText = String(specFact?.specificationIntroText ?? "");
+  const officialBody = [abstractText, motivationText, specificationText].filter(Boolean).join(" ");
+  const supportText = officialBody || emergingIssue?.summaries?.whatIsHappening || emergingIssue?.title || "";
+  const titleOnly = !officialBody && !supportText;
+  const text = `${title} ${supportText}`.replace(/\s+/g, " ").trim();
+  const titleLower = title.toLowerCase();
+  const lower = text.toLowerCase();
+  const mechanism = firstMatch(lower, [
+    ["Frame Transaction", /\bframe transaction(s)?\b|\bexecution frame(s)?\b|\bframe(s)?\b/],
+    ["authorization rule", /\bauthorization\b|\bauthentication\b|\bpermission(s)?\b|\bdelegat(e|ion|ed)\b/],
+    ["credential", /\bcredential(s)?\b|\bverifiable credential(s)?\b|\bexecution credential(s)?\b/],
+    ["attestation", /\bcredential attestation(s)?\b|\bidentity attestation(s)?\b|\bpolicy verdict(s)?\b/],
+    ["proof verification", /\bproof verification\b|\binference proof(s)?\b|\bproof verifier\b|\bverifier input(s)?\b/],
+    ["token metadata", /\btoken metadata\b|\bmetadata\b|\bregistry\b/],
+    ["vault request", /\bvault request(s)?\b|\bredemption request(s)?\b|\bvault(s)?\b/],
+    ["data availability rule", /\bdata availability\b|\bblob(s)?\b|\bcalldata\b/],
+    ["gas accounting rule", /\bgas accounting\b|\bgas cost\b|\bgas\b/],
+  ]);
+  const subject = firstMatch(lower, [
+    ["실행 단위(Frame)", /\bframe transaction(s)?\b|\bexecution frame(s)?\b|\bframe(s)?\b/],
+    ["gas/state access", /\bstate-access gas\b|\bgas accounting\b|\bgas cost\b|\bstate access\b/],
+    ["EVM state", /\bbinary tree\b|\bstate tree\b|\bstateless(ness)?\b|\bbytecode\b/],
+    ["agent", /\bagent(s)?\b|\bai\b/],
+    ["credential", /\bcredential(s)?\b/],
+    ["proof", /\bproof(s)?\b|\bverifier\b/],
+    ["token", /\btoken(s)?\b|\berc-?20\b|\bnft\b/],
+    ["vault", /\bvault(s)?\b/],
+    ["transaction", /\btransaction(s)?\b|\btx\b/],
+    ["account", /\baccount(s)?\b|\bwallet(s)?\b/],
+  ]);
+  let target = firstMatch(lower, [
+    ["계정 권한 흐름", /\bframe transaction(s)?\b|\bexecution frame(s)?\b|\baccount\b|\bauthorization\b|\bwallet\b|\bpermission\b/],
+    ["EVM 실행/상태 처리", /\bstate-access gas\b|\bgas accounting\b|\bgas cost\b|\bevm\b|\bopcode\b|\bstate access\b|\bstate tree\b|\bbinary tree\b|\bbytecode\b/],
+    ["AI inference 결과 검증", /\bai\b|\binference\b/],
+    ["자격 증명 검증", /\bcredential\b|\battestation\b|\bverdict\b/],
+    ["토큰/자산 metadata", /\btoken\b|\basset\b|\bmetadata\b|\bregistry\b/],
+    ["vault 입출금 요청", /\bvault\b|\bredemption\b|\bdeposit\b/],
+    ["EVM 실행 규칙", /\bevm\b|\bopcode\b|\bgas\b|\bstate\b/],
+    ["데이터 게시 비용", /\bblob\b|\bcalldata\b|\bdata availability\b/],
+  ]);
+  if (mechanism === "Frame Transaction") target = "계정 권한 흐름";
+  if (mechanism === "gas accounting rule") target = "EVM 실행/상태 처리";
+  const action = firstMatch(lower, [
+    ["공통 구조를 정의", /\bdefine(s)?\b|\bspecif(y|ies)\b|\bstandard(ize|ized)?\b/],
+    ["검증 규칙을 추가", /\bverify\b|\bverification\b|\bvalidate\b|\bvalidation\b/],
+    ["권한 조건을 표현", /\bauthorization\b|\bpermission\b|\bdelegat(e|ion|ed)\b/],
+    ["metadata 표현을 표준화", /\bmetadata\b|\bregistry\b/],
+    ["비용/상태 처리 규칙을 조정", /\bgas\b|\bstate\b|\bopcode\b/],
+  ]);
+  const interoperabilityGoal = /interface|standard|interoperab|common|erc/i.test(text)
+    ? "지갑, 프로토콜, 도구가 같은 구조로 해석할 수 있게 하는 것"
+    : undefined;
+  const officialState = String(specFact?.officialSourceState ?? "");
+  const officialBodyBacked = Boolean(officialBody && officialState !== "external_source_only");
+  const evidenceKind = officialBodyBacked ? "official_specification" : supportText ? "discussion_or_pr" : titleOnly ? "title_only" : "none";
+  const strength = mechanism && (
+    mechanism === "Frame Transaction"
+    || /ai inference proof|proof verification/.test(titleLower)
+    || (/agent/.test(titleLower) && /\b(registry|registration|credential|authorization|trust|mandate|execution|policy|verdict)\b/.test(lower))
+    || (/credential/.test(titleLower) && /\b(credential|attestation|verifiable)\b/.test(lower))
+    || (/key hash|token metadata|metadata registry/.test(titleLower) && /\b(token|metadata|registry|key hash)\b/.test(lower))
+    || (/vault|redemption/.test(titleLower) && /\b(vault|request|redemption)\b/.test(lower))
+    || (/gas|calldata|blob|data availability|opcode|state/.test(titleLower) && /\b(gas|calldata|blob|data availability|opcode|state)\b/.test(lower))
+  ) ? "strong" : "weak";
+  return {
+    subject,
+    action,
+    mechanism,
+    target,
+    interoperabilityGoal,
+    constraints: /must|shall|required/i.test(text) ? ["normative requirement"] : [],
+    evidenceIds: evidenceKind === "official_specification" ? [`spec:${proposalId}`] : emergingIssue ? emergingIssue.sourceSignals.map((signal) => `emerging:${signal.source}:${signal.sourceId}`) : [],
+    evidenceKind,
+    strength,
+  };
+}
+
+function firstMatch(text: string, patterns: Array<[string, RegExp]>): string | undefined {
+  return patterns.find(([, pattern]) => pattern.test(text))?.[0];
+}
+
+function mechanismSpecificEnough(mechanism: ProposalMechanism): boolean {
+  return mechanism.strength === "strong" && Boolean([mechanism.subject, mechanism.action, mechanism.mechanism, mechanism.target].filter(Boolean).length >= 2);
+}
+
+function simpleProposalSummaryKo(proposalId: string, title: string, specText: string, technologyText: string, specFact?: Record<string, unknown>, mechanism?: ProposalMechanism): string {
+  if (mechanism && mechanismSpecificEnough(mechanism) && mechanism.evidenceKind !== "title_only") {
+    const subject = mechanism.subject ?? "대상";
+    const action = mechanism.action ?? "규칙을 정의";
+    const via = mechanism.mechanism ? ` ${mechanism.mechanism}을 통해` : "";
+    const target = mechanism.target ? ` ${mechanism.target} 관련` : "";
+    return `${subject}에 대해${via}${target} ${action}하려는 제안입니다.`;
+  }
   if (!specText && (!specFact || specFact.parseState !== "body_parsed")) return `이 Proposal은 ${title}에 관한 Ethereum 표준 제안입니다.`;
   const lower = `${title} ${specText} ${technologyText}`.toLowerCase();
+  if (/execution-state/.test(lower) && /gas|opcode|evm|state|precompile|transaction|binary tree|stateless|bytecode/.test(lower)) return "EVM 실행, 상태 접근, gas 비용 또는 트랜잭션 처리 규칙을 조정하려는 제안입니다.";
+  if (/validators-consensus/.test(lower) && /validator|consensus|checkpoint|epoch|withdrawal|credential|attestation|bls/.test(lower)) return "검증자 운영, 합의 상태, 인증 또는 출금 관련 규칙을 조정하려는 제안입니다.";
+  if (/scaling-data/.test(lower) && /blob|calldata|rollup|data availability|ssz/.test(lower)) return "Ethereum과 L2가 데이터를 게시하고 처리하는 방식을 다루는 제안입니다.";
   if (/vault|erc-4626|redemption/.test(lower)) return "자산을 보관·운용하는 Vault가 다른 서비스와 공통 방식으로 상호작용하기 위한 제안입니다.";
   if (/metadata|registry|token/.test(lower)) return "토큰의 속성이나 관련 정보를 다른 서비스가 일관되게 해석할 수 있도록 하는 제안입니다.";
   if (/authorization|permission|delegation|signature|account|wallet|nonce/.test(lower)) return "트랜잭션이나 계정 권한을 누가 어떤 조건으로 승인하고 실행할 수 있는지를 다루는 제안입니다.";
@@ -7845,15 +8038,29 @@ function simpleProposalSummaryKo(proposalId: string, title: string, specText: st
   return `이 Proposal은 ${title}에 관한 Ethereum 표준 제안입니다.`;
 }
 
-function plainProposalExplanationKo(simpleSummary: string, domainId: string, technologies: string[], hasSpecText: boolean): string {
+function plainProposalExplanationKo(simpleSummary: string, domainId: string, technologies: string[], hasSpecText: boolean, mechanism?: ProposalMechanism): string {
+  if (mechanism && mechanismSpecificEnough(mechanism) && mechanism.evidenceKind !== "title_only") {
+    const source = mechanism.evidenceKind === "official_specification" ? "공식 명세" : "공식 문서 전 단계의 토론/PR 근거";
+    const current = mechanism.target ? `현재는 ${mechanism.target} 관련 규칙을 프로젝트마다 다르게 표현하거나 검증할 수 있습니다.` : "현재는 관련 규칙을 프로젝트마다 다르게 해석할 수 있습니다.";
+    const target = mechanism.target ? `${mechanism.target} 관련 ` : "";
+    const proposed = `${source} 기준으로는 ${mechanism.subject ?? "대상"}에 ${mechanism.mechanism ? `${mechanism.mechanism} 기반의 ` : ""}${target}${mechanism.action ?? "공통 규칙"}하려는 흐름입니다.`;
+    const result = mechanism.interoperabilityGoal ? `결과적으로 ${mechanism.interoperabilityGoal}이 가능해질 수 있지만, 실제 구현이나 채택은 별도 근거로만 판단합니다.` : "실제 구현이나 채택은 별도 근거로만 판단합니다.";
+    return `${current} ${proposed} ${result}`;
+  }
   if (!hasSpecText) return "현재 확보된 명세 정보만으로는 구체적 용도를 안전하게 요약하기 어렵습니다. 공식 문서나 연결된 토론을 함께 확인하는 것이 좋습니다.";
   const domain = domainDisplayName(domainId);
   const tech = technologies.slice(0, 2).join(", ");
   return `쉽게 말하면 ${domain} 영역에서 프로젝트마다 다르게 구현할 수 있는 규칙을 공통으로 맞추려는 흐름입니다. ${tech ? `${tech} 관련 서비스가 같은 의미로 해석할 수 있는 접점을 늘릴 수 있습니다.` : simpleSummary} 실제 구현이나 채택은 별도 근거가 있을 때만 판단합니다.`;
 }
 
-function changeExplanationForDomain(domainId: string, technologies: string[], hasSpecText: boolean) {
+function changeExplanationForDomain(domainId: string, technologies: string[], hasSpecText: boolean, mechanism?: ProposalMechanism) {
   if (!hasSpecText || domainId === "unknown") return undefined;
+  if (mechanism && mechanismSpecificEnough(mechanism) && mechanism.evidenceKind === "official_specification") {
+    return {
+      before: mechanism.target ? `${mechanism.target}을 프로젝트별로 해석` : "관련 규칙을 프로젝트별로 해석",
+      after: mechanism.mechanism ? `표준화된 ${mechanism.mechanism} / ${mechanism.action ?? "규칙"}` : `공통 ${mechanism.action ?? "규칙"}`,
+    };
+  }
   const tech = technologies[0] ?? domainDisplayName(domainId);
   const after = domainId === "accounts-wallets" ? "공통 authorization / account rule"
     : domainId === "tokens-finance" ? "공통 token / vault / metadata interface"
@@ -7934,7 +8141,40 @@ function proposalSourceActions(proposalId: string, specFact?: Record<string, unk
     const labelKo = source.sourceType === "github_pr" ? "GitHub PR" : source.sourceType === "github_issue" ? "GitHub Issue" : source.evidenceKind === "implementation" ? "Implementation evidence" : "External evidence";
     actions.push({ labelKo, sourceType: source.sourceType, url: source.url, evidenceId: source.evidenceId ?? `adoption:${proposalId}:${source.url}`, primary: false });
   }
-  return uniqueByKey(actions, (action) => `${action.labelKo}:${action.url}`).slice(0, 6);
+  return dedupeSourceActions(actions).slice(0, 6);
+}
+
+function dedupeSourceActions<T extends { labelKo: string; sourceType: string; url: string; evidenceId: string; primary: boolean }>(actions: T[]): T[] {
+  const byIdentity = new Map<string, T>();
+  for (const action of actions) {
+    const key = `${action.sourceType}:${canonicalUrl(action.url)}`;
+    const existing = byIdentity.get(key);
+    if (existing) {
+      existing.primary = existing.primary || action.primary;
+      existing.evidenceId = unique([existing.evidenceId, action.evidenceId]).join(",");
+      continue;
+    }
+    byIdentity.set(key, { ...action, url: canonicalUrl(action.url) });
+  }
+  return [...byIdentity.values()];
+}
+
+function canonicalUrl(value: string): string {
+  const trimmed = value.trim();
+  if (!trimmed) return "";
+  try {
+    const url = new URL(trimmed);
+    url.hash = "";
+    if (/ethereum-magicians\.org$/i.test(url.hostname)) {
+      const topicId = url.pathname.match(/\/t\/(?:[^/]+\/)?(\d+)(?:\/|$)/)?.[1];
+      if (topicId) return `https://ethereum-magicians.org/t/${topicId}`;
+    }
+    const pathname = url.pathname.replace(/\/+$/, "");
+    url.pathname = pathname || "/";
+    return url.toString();
+  } catch {
+    return trimmed.replace(/#.*$/, "").replace(/\/+$/, "");
+  }
 }
 
 function officialSpecUrlAvailable(specFact?: Record<string, unknown>): boolean {

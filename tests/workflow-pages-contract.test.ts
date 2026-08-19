@@ -6,8 +6,8 @@ const workflow = readFileSync(".github/workflows/weekly-report.yml", "utf8");
 const emergingWorkflow = readFileSync(".github/workflows/emerging-scan.yml", "utf8");
 
 test("weekly workflow deploys only the validated report through Pages", () => {
-  assert.match(workflow, /^\s{2}weekly-report:\n/m);
-  assert.match(workflow, /^\s{2}deploy-pages:\n/m);
+  assert.match(workflow, /^\s{2}weekly-report:\r?\n/m);
+  assert.match(workflow, /^\s{2}deploy-pages:\r?\n/m);
   assert.match(workflow, /^\s{4}needs: weekly-report$/m);
   assert.match(workflow, /if: \$\{\{ github\.ref == 'refs\/heads\/main' && github\.event_name != 'pull_request' \}\}/);
   assert.match(workflow, /uses: actions\/upload-pages-artifact@v4[\s\S]*?path: _site/);

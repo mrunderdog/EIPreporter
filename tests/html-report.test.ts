@@ -887,6 +887,193 @@ test("builds proposal intelligence for domain watch, detail, timeline, and use-c
   }
 });
 
+test("proposal intelligence semantically dedupes activities and source actions while preserving distinct signals", () => {
+  const proposalId = "EIP-8368";
+  const report = { generatedAt: "2026-08-07T05:00:00.000Z" } as WeeklyRadarReport;
+  const developmentEvents = [
+    specEvent(proposalId, "a"),
+    specEvent(proposalId, "b"),
+    specEvent(proposalId, "c"),
+  ];
+  const discussionPosts = [{
+    factId: `post:${proposalId}:1`,
+    postId: `${proposalId}:1`,
+    proposalId,
+    createdAt: "2026-08-07T04:00:00.000Z",
+    sourceUrl: "https://ethereum-magicians.org/t/frame-transaction/8368",
+  }];
+  const emergingIssue = {
+    issueId: `proposal:${proposalId}`,
+    title: "Frame Transaction Authorization",
+    primaryProposalId: proposalId,
+    relatedProposalIds: [],
+    eipIds: [proposalId],
+    status: "HOT_ISSUE",
+    stage: "IMPLEMENTATION",
+    heatScore: 91,
+    confidenceScore: 80,
+    sources: ["github_pr", "ethereum_magicians"],
+    metrics: { velocity: [] },
+    scoreBreakdown: [],
+    sourceSignals: [
+      { source: "github_pr", sourceId: "ethereum/EIPs#8368", sourceRepo: "ethereum/EIPs", url: "https://github.com/ethereum/EIPs/pull/8368", title: "Frame PR", primaryProposalId: proposalId, relatedProposalIds: [], extractedEipIds: [proposalId], collectedAt: report.generatedAt, facts: {} },
+      { source: "github_pr", sourceId: "ethereum/EIPs#8368-duplicate", sourceRepo: "ethereum/EIPs", url: "https://github.com/ethereum/EIPs/pull/8368#discussion", title: "Frame PR duplicate", primaryProposalId: proposalId, relatedProposalIds: [], extractedEipIds: [proposalId], collectedAt: report.generatedAt, facts: {} },
+      { source: "github_pr", sourceId: "ethereum/EIPs#8369", sourceRepo: "ethereum/EIPs", url: "https://github.com/ethereum/EIPs/pull/8369", title: "Second PR", primaryProposalId: proposalId, relatedProposalIds: [], extractedEipIds: [proposalId], collectedAt: report.generatedAt, facts: {} },
+      { source: "ethereum_magicians", sourceId: "topic-8368", url: "https://ethereum-magicians.org/t/frame-transaction/8368", title: "Frame discussion", primaryProposalId: proposalId, relatedProposalIds: [], extractedEipIds: [proposalId], collectedAt: report.generatedAt, facts: {} },
+    ],
+    summaries: { whatIsHappening: "Frame Transaction discussion and PR activity.", whyMoving: "Emerging signal", whyItMatters: "Watch PR and discussion separately.", watchNext: "PR merge" },
+    facts: {},
+  } as EmergingIssue;
+  const adoption = {
+    proposalId,
+    title: "Frame Transaction Authorization",
+    theme: "Wallet UX",
+    evidenceLevel: "Implementation",
+    evidenceScore: 70,
+    summary: "PR tracking evidence.",
+    caution: "Not production adoption.",
+    sources: [
+      { sourceType: "github_pr", semanticType: "client_implementation_pr", relationship: "direct", url: "https://github.com/ethereum/EIPs/pull/8368", title: "Frame PR", state: "open", evidenceKind: "implementation", evidenceId: "impl:frame:1" },
+      { sourceType: "github_pr", semanticType: "client_implementation_pr", relationship: "direct", url: "https://github.com/ethereum/EIPs/pull/8369", title: "Second PR", state: "open", evidenceKind: "implementation", evidenceId: "impl:frame:2" },
+    ],
+  };
+
+  const activities = __qualityTestHooks.proposalActivities(report, proposalId, developmentEvents, discussionPosts, emergingIssue);
+  const actions = __qualityTestHooks.proposalSourceActions(proposalId, { sourceUrl: "https://eips.ethereum.org/EIPS/eip-8368", officialSourceState: "official_body_parsed" }, {}, emergingIssue, adoption as never);
+  const specActivity = activities.find((item: { activityType: string }) => item.activityType === "SPEC_UPDATED");
+  assert.equal(activities.filter((item: { activityType: string }) => item.activityType === "SPEC_UPDATED").length, 1);
+  assert.ok(specActivity);
+  assert.match(specActivity.labelKo, /변경사항 3건/);
+  assert.ok(activities.some((item: { activityType: string }) => item.activityType === "GITHUB_PR_ACTIVITY"));
+  assert.ok(activities.some((item: { activityType: string }) => item.activityType === "DISCUSSION_ACTIVITY"));
+  assert.equal(actions.filter((item: { url: string }) => item.url === "https://github.com/ethereum/EIPs/pull/8368").length, 1);
+  assert.ok(actions.some((item: { url: string }) => item.url === "https://github.com/ethereum/EIPs/pull/8369"));
+});
+
+test("proposal intelligence extracts mechanism-specific explanation and keeps title-only fallback neutral", () => {
+  const specificSpec = {
+    factId: "spec:EIP-9001",
+    proposalId: "EIP-9001",
+    officialTitle: "AI Inference Proof Verification",
+    status: "Draft",
+    sourceUrl: "https://eips.ethereum.org/EIPS/eip-9001",
+    abstractText: "This proposal defines proof verification for AI inference outputs.",
+    motivationText: "Applications need a common verifier for inference proof claims.",
+    specificationIntroText: "The specification defines verifier inputs, proof payload metadata, and validation rules.",
+    parseState: "body_parsed",
+    officialSourceState: "official_body_parsed",
+  };
+  const sparseSpec = {
+    factId: "spec:EIP-9002",
+    proposalId: "EIP-9002",
+    officialTitle: "Sparse Governance Note",
+    status: "Draft",
+    sourceUrl: "https://eips.ethereum.org/EIPS/eip-9002",
+    abstractText: null,
+    motivationText: null,
+    specificationIntroText: null,
+    parseState: "title_only",
+    officialSourceState: "official_file_title_only",
+  };
+  const mechanism = __qualityTestHooks.extractProposalMechanism("EIP-9001", "AI Inference Proof Verification", specificSpec);
+  const summary = __qualityTestHooks.simpleProposalSummaryKo("EIP-9001", "AI Inference Proof Verification", `${specificSpec.abstractText} ${specificSpec.motivationText} ${specificSpec.specificationIntroText}`, "identity-compliance Proof Verification", specificSpec, mechanism);
+  const plain = __qualityTestHooks.plainProposalExplanationKo(summary, "identity-compliance", ["Proof Verification"], true, mechanism);
+  const change = __qualityTestHooks.changeExplanationForDomain("identity-compliance", ["Proof Verification"], true, mechanism);
+  const titleOnlyMechanism = __qualityTestHooks.extractProposalMechanism("EIP-9002", "Sparse Governance Note", sparseSpec);
+  const titleOnlySummary = __qualityTestHooks.simpleProposalSummaryKo("EIP-9002", "Sparse Governance Note", "", "unknown", sparseSpec, titleOnlyMechanism);
+  const titleOnlyPlain = __qualityTestHooks.plainProposalExplanationKo(titleOnlySummary, "unknown", [], false, titleOnlyMechanism);
+
+  assert.match(summary, /proof verification|검증|AI inference/);
+  assert.match(plain, /공식 명세|verifier|proof|검증/);
+  assert.ok(change);
+  assert.match(titleOnlySummary, /Ethereum 표준 제안/);
+  assert.match(titleOnlyPlain, /명세 정보만으로는 구체적 용도를 안전하게 요약하기 어렵습니다/);
+});
+
+test("proposal source actions dedupe identical canonical GitHub PR URLs", () => {
+  const proposalId = "EIP-9101";
+  const issue = emergingIssueWithSignals(proposalId, [
+    { source: "github_pr", url: "https://github.com/ethereum/EIPs/pull/9101", sourceId: "pr-9101" },
+    { source: "github_pr", url: "https://github.com/ethereum/EIPs/pull/9101#discussion_r1", sourceId: "pr-9101-duplicate" },
+  ]);
+
+  const actions = __qualityTestHooks.proposalSourceActions(proposalId, undefined, {}, issue, undefined);
+
+  assert.equal(actions.filter((item: { url: string }) => item.url === "https://github.com/ethereum/EIPs/pull/9101").length, 1);
+});
+
+test("proposal source actions preserve distinct GitHub PR URLs", () => {
+  const proposalId = "EIP-9102";
+  const issue = emergingIssueWithSignals(proposalId, [
+    { source: "github_pr", url: "https://github.com/ethereum/EIPs/pull/9102", sourceId: "pr-9102" },
+    { source: "github_pr", url: "https://github.com/ethereum/EIPs/pull/9103", sourceId: "pr-9103" },
+  ]);
+
+  const actions = __qualityTestHooks.proposalSourceActions(proposalId, undefined, {}, issue, undefined);
+
+  assert.ok(actions.some((item: { url: string }) => item.url === "https://github.com/ethereum/EIPs/pull/9102"));
+  assert.ok(actions.some((item: { url: string }) => item.url === "https://github.com/ethereum/EIPs/pull/9103"));
+});
+
+test("proposal activities preserve same-day distinct semantic activity types", () => {
+  const proposalId = "EIP-9104";
+  const report = { generatedAt: "2026-08-07T05:00:00.000Z" } as WeeklyRadarReport;
+  const issue = emergingIssueWithSignals(proposalId, [
+    { source: "github_pr", url: "https://github.com/ethereum/EIPs/pull/9104", sourceId: "pr-9104" },
+    { source: "ethereum_magicians", url: "https://ethereum-magicians.org/t/example/9104", sourceId: "topic-9104" },
+  ]);
+  const posts = [{
+    factId: "post:EIP-9104:1",
+    postId: "EIP-9104:1",
+    proposalId,
+    createdAt: "2026-08-07T04:00:00.000Z",
+    sourceUrl: "https://ethereum-magicians.org/t/example/9104",
+  }];
+
+  const activities = __qualityTestHooks.proposalActivities(report, proposalId, [specEvent(proposalId, "spec")], posts, issue);
+
+  assert.ok(activities.some((item: { activityType: string }) => item.activityType === "SPEC_UPDATED"));
+  assert.ok(activities.some((item: { activityType: string }) => item.activityType === "GITHUB_PR_ACTIVITY"));
+  assert.ok(activities.some((item: { activityType: string }) => item.activityType === "DISCUSSION_ACTIVITY"));
+});
+
+test("mechanism extraction keeps title-only proposals on neutral fallback", () => {
+  const spec = {
+    factId: "spec:EIP-9105",
+    proposalId: "EIP-9105",
+    officialTitle: "Confidential Agent Policy Verdicts",
+    status: "Draft",
+    sourceUrl: "https://eips.ethereum.org/EIPS/eip-9105",
+    parseState: "title_only",
+    officialSourceState: "official_file_title_only",
+  };
+
+  const mechanism = __qualityTestHooks.extractProposalMechanism("EIP-9105", "Confidential Agent Policy Verdicts", spec);
+  const summary = __qualityTestHooks.simpleProposalSummaryKo("EIP-9105", "Confidential Agent Policy Verdicts", "", "unknown", spec, mechanism);
+
+  assert.match(summary, /Ethereum 표준 제안/);
+  assert.doesNotMatch(summary, /policy verdict|credential|proof/);
+});
+
+test("pre-merge discussion summaries are bounded and not described as official specification", () => {
+  const spec = {
+    factId: "emerging:EIP-9106",
+    proposalId: "EIP-9106",
+    officialTitle: "Agent Execution Credentials",
+    status: "Draft",
+    sourceUrl: "https://ethereum-magicians.org/t/agent-execution-credentials/9106",
+    abstractText: "Discussion proposes credentials for agent execution requests.",
+    parseState: "title_only",
+    officialSourceState: "external_source_only",
+  };
+  const mechanism = __qualityTestHooks.extractProposalMechanism("EIP-9106", "Agent Execution Credentials", spec);
+  const summary = __qualityTestHooks.simpleProposalSummaryKo("EIP-9106", "Agent Execution Credentials", "credentials for agent execution requests", "accounts-wallets Agent Authorization", spec, mechanism);
+  const plain = __qualityTestHooks.plainProposalExplanationKo(summary, "accounts-wallets", ["Agent Authorization"], true, mechanism);
+
+  assert.match(plain, /토론\/PR 근거/);
+  assert.doesNotMatch(plain, /공식 명세 기준/);
+});
+
 test("preflight diagnostics allow external emerging drafts but block real specification failures", () => {
   const diagnostics = __qualityTestHooks.specificationPreflightDiagnostics(
     ["EIP-9001", "EIP-9002", "EIP-8037", "EIP-9004", "topic:magicians:77", "EIP-9006"],
@@ -1492,6 +1679,56 @@ function visibleReportHtml(html: string): string {
     .replace(/<script type="application\/json" id="technology-platform-api">[\s\S]*?<\/script>/, "")
     .replace(/<!-- EIPreporter chart data: [\s\S]*? -->/, "")
     .replace(/<script>[\s\S]*?<\/script>/, "");
+}
+
+function specEvent(proposalId: string, suffix: string) {
+  return {
+    factId: `event:${proposalId}:${suffix}`,
+    eventId: `${proposalId}:${suffix}`,
+    proposalId,
+    sourceType: "eips_git",
+    eventType: "content_hash_change",
+    semanticType: "normative_specification",
+    occurredAt: "2026-08-07T02:00:00.000Z",
+    detectedAt: "2026-08-07T02:10:00.000Z",
+    sourceUrl: `https://eips.ethereum.org/EIPS/eip-${proposalId.split("-")[1]}`,
+  };
+}
+
+function emergingIssueWithSignals(proposalId: string, signals: Array<{ source: string; url: string; sourceId: string }>) {
+  return {
+    issueId: `proposal:${proposalId}`,
+    title: `${proposalId} Test Proposal`,
+    primaryProposalId: proposalId,
+    relatedProposalIds: [],
+    eipIds: [proposalId],
+    status: "HOT_ISSUE",
+    stage: "IMPLEMENTATION",
+    heatScore: 80,
+    confidenceScore: 75,
+    sources: [...new Set(signals.map((signal) => signal.source))],
+    metrics: { velocity: [] },
+    scoreBreakdown: [],
+    sourceSignals: signals.map((signal) => ({
+      source: signal.source,
+      sourceId: signal.sourceId,
+      sourceRepo: signal.source === "github_pr" ? "ethereum/EIPs" : undefined,
+      url: signal.url,
+      title: `${proposalId} signal`,
+      primaryProposalId: proposalId,
+      relatedProposalIds: [],
+      extractedEipIds: [proposalId],
+      collectedAt: "2026-08-07T05:00:00.000Z",
+      facts: {},
+    })),
+    summaries: {
+      whatIsHappening: `${proposalId} activity.`,
+      whyMoving: "Emerging signal",
+      whyItMatters: "Separate semantic signals should remain visible.",
+      watchNext: "Watch next source update.",
+    },
+    facts: {},
+  } as EmergingIssue;
 }
 
 function dashboardV3QualityFixture(input: {

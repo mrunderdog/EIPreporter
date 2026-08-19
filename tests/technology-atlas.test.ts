@@ -83,6 +83,43 @@ test("Technology Atlas avoids domain-default technology copying and known false 
   assert.equal(eventTotal, 13);
 });
 
+test("Technology Atlas classifies agent credential and proof proposals without reviving false positives", () => {
+  const report = atlasFixtureReport();
+  const changes = [
+    event("ERC-9001", "AI Inference Proof Verification", "Draft", "Specification defines proof verification for AI inference outputs with verifier inputs and proof payload metadata."),
+    event("ERC-9002", "Unclonable Agent Execution Credentials", "Draft", "Specification defines execution credentials for autonomous agents and credential verification constraints."),
+    event("ERC-9003", "Confidential Agent Policy Verdicts", "Draft", "Specification defines confidential policy verdict attestations for agent execution authorization."),
+    event("ERC-9004", "Key Hash Based Tokens", "Draft", "Specification defines token records linked to key hash based authorization metadata."),
+    event("ERC-9005", "Token Transfer Policy", "Draft", "Specification defines token transfer policy, restricted transfer checks, and token eligibility metadata."),
+    event("ERC-9006", "Vault Settlement Request", "Draft", "Specification defines vault settlement requests, redemption request records, and vault accounting metadata."),
+  ];
+  report.ethereumTechRadar.recentChanges = {
+    total: changes.length,
+    byEventType: { new_proposal: 0, status_change: 0, final_transition: 0, withdrawn_transition: 0, content_hash_change: changes.length },
+    newProposals: [],
+    statusChanges: [],
+    finalTransitions: [],
+    withdrawnTransitions: [],
+    contentHashChanges: changes as never,
+  };
+  report.ethereumTechRadar.signalLayer.diffIntelligence = changes.map((item) => ({ proposalId: item.proposalId, title: item.title, changedFiles: [item.sourcePath], changedSections: ["Specification"], diffSummary: item.diffSummary, diffEvidence: item.diffEvidence, canonicalUrl: item.canonicalUrl }));
+  report.ethereumTechRadar.signalLayer.discussionHeat = [];
+  report.ethereumTechRadar.themeInsights = [
+    theme("Agent Credentials and Verification", changes.slice(0, 4)) as never,
+    theme("False Positive Guards", changes.slice(4)) as never,
+  ];
+
+  const atlas = buildTechnologyAtlas(report);
+  const byId = new Map(atlas.classifiedProposals.map((proposal) => [proposal.proposalId, proposal]));
+  assert.equal(atlas.domains.length, 8);
+  assert.equal(byId.get("ERC-9001")?.primaryDomain, "identity-compliance");
+  assert.equal(byId.get("ERC-9002")?.primaryDomain, "identity-compliance");
+  assert.equal(byId.get("ERC-9003")?.primaryDomain, "identity-compliance");
+  assert.ok(["accounts-wallets", "tokens-finance"].includes(byId.get("ERC-9004")?.primaryDomain ?? ""));
+  assert.notEqual(byId.get("ERC-9005")?.primaryDomain, "execution-state");
+  assert.notEqual(byId.get("ERC-9006")?.primaryDomain, "accounts-wallets");
+});
+
 function atlasFixtureReport(): WeeklyRadarReport {
   const events = [
     event("ERC-4337", "Account Abstraction Using Alt Mempool", "Review", "UserOperation bundler paymaster account abstraction wallet gas sponsorship"),
