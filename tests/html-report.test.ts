@@ -709,6 +709,184 @@ Vault implementations MUST expose deposit, mint, withdraw, and redeem flows.
   }
 });
 
+test("builds proposal intelligence for domain watch, detail, timeline, and use-case evidence levels", () => {
+  const directory = mkdtempSync(join(tmpdir(), "eipreporter-proposal-intel-"));
+  const previousErcPath = process.env.ERC_OFFICIAL_REPO_PATH;
+  const db = openDatabase(":memory:");
+  try {
+    const ercRoot = join(directory, "ERCs");
+    mkdirSync(join(ercRoot, "ERCS"), { recursive: true });
+    process.env.ERC_OFFICIAL_REPO_PATH = ercRoot;
+    writeProposalSource(ercRoot, "ERC-9001", "Wallet Authorization Conditions", "Draft", "This proposal defines a wallet authorization interface for delegated transaction permissions.", "Wallets can verify authorization, nonce, and permission constraints through a shared interface.");
+    writeProposalSource(ercRoot, "ERC-9002", "Wallet Authorization Baseline", "Final", "This standard describes a stable wallet authorization interface.", "The interface is final and does not imply production adoption.");
+    writeProposalSource(ercRoot, "ERC-9004", "Wallet Implementation Hook", "Draft", "This proposal defines wallet hook interfaces for account permission checks.", "Implementations can track hook integration through repository PRs.");
+
+    insertSnapshot(db, [
+      makeRecord("ERC-9001", "Draft", "hash-9001", "Wallet Authorization Conditions", "ERC"),
+      makeRecord("ERC-9002", "Final", "hash-9002", "Wallet Authorization Baseline", "ERC"),
+      makeRecord("ERC-9004", "Draft", "hash-9004", "Wallet Implementation Hook", "ERC"),
+    ]);
+    const report = buildWeeklyReport(db, new Date("2026-08-10T00:00:00.000Z"));
+    assert.ok(report);
+    report.ethereumTechRadar.themeInsights.push({
+      theme: "Wallet UX",
+      proposalCount: 2,
+      proposalCount180d: 2,
+      recentChangeCount: 1,
+      recentChangeCount7d: 1,
+      discussionProposalCount: 1,
+      contentChangeCount: 0,
+      maturitySignal: "medium",
+      momentumScore: 40,
+      dominantSubTrends: [],
+      representativeProposals: [
+        { id: "ERC-9001", title: "Wallet Authorization Conditions", status: "Draft", oneLineSummary: "Wallet authorization fixture", canonicalUrl: "https://ercs.ethereum.org/ERCS/erc-9001" },
+        { id: "ERC-9002", title: "Wallet Authorization Baseline", status: "Final", oneLineSummary: "Wallet authorization baseline fixture", canonicalUrl: "https://ercs.ethereum.org/ERCS/erc-9002" },
+        { id: "ERC-9004", title: "Wallet Implementation Hook", status: "Draft", oneLineSummary: "Wallet implementation hook fixture", canonicalUrl: "https://ercs.ethereum.org/ERCS/erc-9004" },
+      ],
+      trendInterpretation: "Fixture wallet authorization trend.",
+      interpretation: "Fixture wallet authorization trend.",
+    });
+    setReportEvents(report, [
+      makeChangeEvent(1, "status-9001", {
+        proposalId: "ERC-9001",
+        type: "status_change",
+        previousStatus: "Draft",
+        currentStatus: "Review",
+        sourceRepo: "ethereum/ercs",
+        sourcePath: "ERCS/erc-9001.md",
+        canonicalUrl: "https://ercs.ethereum.org/ERCS/erc-9001",
+        changeSemanticType: "metadata_status",
+        occurredAt: "2026-08-08T00:00:00.000Z",
+        detectedAt: "2026-08-08T00:00:00.000Z",
+        occurredAtSource: "git_commit",
+        timestampConfidence: "high",
+      }),
+    ]);
+    report.ethereumTechRadar.signalLayer.discussionHeat = [{
+      proposalId: "ERC-9001",
+      title: "Wallet Authorization Conditions",
+      status: "Draft",
+      theme: "Wallet UX",
+      discussionUrl: "https://ethereum-magicians.org/t/wallet-authorization-conditions/9001",
+      discussionLinks: ["https://ethereum-magicians.org/t/wallet-authorization-conditions/9001"],
+      discussionScore: 80,
+      discussionActivityScore: 90,
+      discussionTopicId: 9001,
+      discussionTitle: "Wallet Authorization Conditions",
+      discussionSource: "Ethereum Magicians",
+      discussionCreatedAt: "2026-08-01T00:00:00.000Z",
+      discussionLastActivityAt: "2026-08-09T00:00:00.000Z",
+      discussionReplyCount: 14,
+      discussionParticipantCount: 5,
+      discussionViewCount: 1000,
+      discussionFreshnessDays: 1,
+      discussionCollectionStatus: "posts_fully_collected",
+      discussionFetchAttempted: true,
+      postTimestampTrace: ["2026-08-09T00:00:00.000Z", "2026-08-09T01:00:00.000Z"],
+      postsInCurrent7d: 2,
+      postsInPrevious7d: 0,
+      latestPostAuthors: ["alice", "bob"],
+      activityLevel: "High",
+      whyItMatters: "Recent public discussion activity exists.",
+      canonicalUrl: "https://ercs.ethereum.org/ERCS/erc-9001",
+    }];
+    report.ethereumTechRadar.emergingLayer = {
+      generatedAt: report.generatedAt,
+      sourceStatus: [],
+      rawSignals: [],
+      issues: [{
+        issueId: "proposal:ERC-9003",
+        title: "Wallet authorization pre-merge discussion",
+        primaryProposalId: "ERC-9003",
+        relatedProposalIds: [],
+        eipIds: ["ERC-9003"],
+        status: "EARLY_SIGNAL",
+        stage: "PRE_MERGE",
+        heatScore: 44,
+        confidenceScore: 61,
+        sources: ["ethereum_magicians"],
+        metrics: { replyCount: 5, viewCount: 300, participantCount: 3, velocity: [] },
+        scoreBreakdown: [],
+        sourceSignals: [{ source: "ethereum_magicians", sourceId: "pre-9003", url: "https://ethereum-magicians.org/t/pre-merge-wallet-authorization/9003", title: "Wallet authorization pre-merge discussion", primaryProposalId: "ERC-9003", relatedProposalIds: [], extractedEipIds: ["ERC-9003"], collectedAt: report.generatedAt, facts: {} }],
+        summaries: { whatIsHappening: "공식 문서 전 단계의 Magicians 논의입니다.", whyMoving: "최근 토론 후보입니다.", whyItMatters: "공식 repository 반영 여부를 봐야 합니다.", watchNext: "공식 문서 반영 여부" },
+        facts: {},
+      }, {
+        issueId: "proposal:ERC-9004",
+        title: "Wallet implementation hook PR",
+        primaryProposalId: "ERC-9004",
+        relatedProposalIds: [],
+        eipIds: ["ERC-9004"],
+        status: "IMPLEMENTATION_WATCH",
+        stage: "IMPLEMENTATION",
+        heatScore: 58,
+        confidenceScore: 70,
+        sources: ["github_pr"],
+        metrics: { velocity: [] },
+        scoreBreakdown: [],
+        sourceSignals: [{ source: "github_pr", sourceId: "ethereum/ercs#9004", sourceRepo: "ethereum/ercs", url: "https://github.com/ethereum/ercs/pull/9004", title: "Wallet implementation hook PR", primaryProposalId: "ERC-9004", relatedProposalIds: [], extractedEipIds: ["ERC-9004"], collectedAt: report.generatedAt, facts: {} }],
+        summaries: { whatIsHappening: "GitHub PR 활동이 확인됩니다.", whyMoving: "PR 업데이트가 있습니다.", whyItMatters: "구현 추적과 채택을 분리해야 합니다.", watchNext: "PR merge 여부" },
+        facts: {},
+      }],
+      whatsHappeningNow: [],
+      emergingSignals: [],
+      decisionWatch: [],
+      generatedBy: "deterministic_emerging_signal_engine",
+    };
+    report.ethereumTechRadar.adoptionLayer = {
+      generatedBy: "deterministic",
+      collectionStatus: "collected",
+      items: [{
+        proposalId: "ERC-9004",
+        title: "Wallet Implementation Hook",
+        theme: "Wallet UX",
+        evidenceLevel: "Implementation",
+        evidenceScore: 80,
+        summary: "Implementation tracking evidence exists.",
+        caution: "Not production adoption.",
+        sources: [{ sourceType: "github_pr", semanticType: "client_implementation_pr", relationship: "direct", url: "https://github.com/example/wallet/pull/9004", title: "Track ERC-9004 hook", state: "open", evidenceKind: "implementation", evidenceId: "impl:ERC-9004:pr" }],
+      }],
+    };
+
+    const html = generateWeeklyHtml(report);
+    const api = embeddedPlatformApi(html);
+    const model = api.intelligenceSnapshot.views.dashboardV2.proposalIntelligence;
+    const domain = model.domains.find((item: { proposalIds: string[] }) => item.proposalIds.includes("ERC-9001"));
+    assert.ok(domain);
+    assert.equal(domain.watchItems[0].proposalId, "ERC-9001");
+    const baselineDomain = model.domains.find((item: { proposalIds: string[] }) => item.proposalIds.includes("ERC-9002"));
+    assert.ok(baselineDomain);
+    assert.ok(baselineDomain.watchItems.some((item: { proposalId: string; rankLabel: string }) => item.proposalId === "ERC-9002" && item.rankLabel === "BASELINE"));
+    assert.ok(domain.timeline.some((item: { proposalId: string; activityType: string }) => item.proposalId === "ERC-9001" && item.activityType === "STATUS_CHANGED"));
+    assert.ok(domain.timeline.some((item: { proposalId: string; activityType: string }) => item.proposalId === "ERC-9004" && item.activityType === "GITHUB_PR_ACTIVITY"));
+
+    const active = model.proposals.find((item: { proposalId: string }) => item.proposalId === "ERC-9001");
+    assert.ok(active);
+    assert.match(active.simpleSummary, /권한|계정|트랜잭션|지갑/);
+    assert.match(active.statusExplanation, /Draft|초기 단계/);
+    assert.ok(active.useCases.some((item: { evidenceLevel: string; areaKo: string }) => item.evidenceLevel === "SPECIFICATION_POTENTIAL" && item.areaKo === "Wallet"));
+
+    const implementation = model.proposals.find((item: { proposalId: string }) => item.proposalId === "ERC-9004");
+    assert.ok(implementation);
+    assert.ok(implementation.useCases.some((item: { evidenceLevel: string }) => item.evidenceLevel === "IMPLEMENTATION_TRACKED"));
+    assert.doesNotMatch(JSON.stringify(implementation), /실제 활용 확인|현재 활용됨/);
+
+    const premerge = model.proposals.find((item: { proposalId: string }) => item.proposalId === "ERC-9003");
+    assert.ok(premerge);
+    assert.ok(premerge.sourceActions.some((item: { labelKo: string }) => item.labelKo === "Ethereum Magicians"));
+    assert.ok(!premerge.sourceActions.some((item: { labelKo: string }) => item.labelKo === "공식 문서"));
+    assert.doesNotMatch(JSON.stringify(premerge), /ercs\.ethereum\.org\/ERCS\/erc-9003/);
+
+    assert.match(html, /관찰 중 Proposal|최근 명세 활동|설명 보기/);
+    assertNoPublicPathLeakage(html, "proposal intelligence fixture");
+  } finally {
+    db.close();
+    if (previousErcPath === undefined) delete process.env.ERC_OFFICIAL_REPO_PATH;
+    else process.env.ERC_OFFICIAL_REPO_PATH = previousErcPath;
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
 test("preflight diagnostics allow external emerging drafts but block real specification failures", () => {
   const diagnostics = __qualityTestHooks.specificationPreflightDiagnostics(
     ["EIP-9001", "EIP-9002", "EIP-8037", "EIP-9004", "topic:magicians:77", "EIP-9006"],
@@ -1756,6 +1934,29 @@ function makeRecord(
     canonicalUrl: `https://example.test/${proposalId}`,
     rawContentHash,
   };
+}
+
+function writeProposalSource(root: string, proposalId: string, title: string, status: string, abstractText: string, specificationText: string): void {
+  const [kind, rawNumber] = proposalId.split("-");
+  const number = Number(rawNumber);
+  const folder = kind === "ERC" ? "ERCS" : "EIPS";
+  const prefix = kind === "ERC" ? "erc" : "eip";
+  writeFileSync(join(root, folder, `${prefix}-${number}.md`), `---
+eip: ${number}
+title: ${title}
+status: ${status}
+---
+
+# ${proposalId}: ${title}
+
+## Abstract
+
+${abstractText}
+
+## Specification
+
+${specificationText}
+`, { encoding: "utf8" });
 }
 
 function emergingIssue(proposalId: string, heatScore: number, index: number, status: EmergingIssue["status"] = "EARLY_SIGNAL"): EmergingIssue {

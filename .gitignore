@@ -3,6 +3,7 @@ data/
 coverage/
 dist/
 reports/
+.sources/
 output/debug/
 .env
 *.sqlite
