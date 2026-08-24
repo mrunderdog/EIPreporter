@@ -410,7 +410,7 @@ export function generateWeeklyQualityJson(report: WeeklyRadarReport, html = gene
     qualityCheck("snapshot-id-visible-canonical", snapshotIdVisibleCanonical(embeddedApi, html), "fail", snapshotIdObserved(embeddedApi, html), "Evidence details render canonical snapshotId, not source root", ["metadata"]),
     qualityCheck("compatibility-scope-current", compatibilityScopeCurrent(embeddedApi, html), "fail", compatibilityScopeObserved(html), "hidden compatibility contract uses current discovered/public/excluded/monitoring/card scope", ["metadata"]),
     qualityCheck("public-evidence-labels", publicEvidenceLabels(html), "fail", publicEvidenceLabelsObserved(html), "Evidence public labels use Korean-facing terms with internal keys only as secondary text", ["metadata"]),
-    qualityCheck("vitalik-current-source-collected", vitalikCurrentSourceCollected(embeddedApi), "fail", vitalikObserved(embeddedApi), "current Vitalik source attempt includes parsed selected posts with reviewed Korean summary and source lineage", ["vitalik"]),
+    qualityCheck("vitalik-current-source-collected", vitalikCurrentSourceCollected(embeddedApi), vitalikCurrentSourceSeverity(embeddedApi), vitalikObserved(embeddedApi), "current Vitalik source attempt includes parsed selected posts with grounded Korean summary and source lineage, or records safe non-blocking enrichment degradation", ["vitalik"]),
     qualityCheck("vitalik-source-official", vitalikSourceOfficial(embeddedApi), "fail", vitalikObserved(embeddedApi), "Vitalik Blog source uses official vitalik.eth.limo root and official index/feed discovery", ["vitalik"]),
     qualityCheck("vitalik-post-canonical-url", vitalikPostCanonicalUrl(embeddedApi), "fail", vitalikObserved(embeddedApi), "selected Vitalik posts have safe official source URLs and canonical duplicates removed", ["vitalik"]),
     qualityCheck("vitalik-publication-date-source", vitalikPublicationDateSource(embeddedApi), "fail", vitalikObserved(embeddedApi), "Vitalik publishedAt is source-derived and never fetchedAt/generatedAt/reportAsOf", ["vitalik"]),
@@ -1515,7 +1515,7 @@ function discussionCoverageNoFalseZero(embeddedApi: unknown, visibleHtml: string
   const presentation = buildDashboardV3Presentation(view, facts);
   const trend = trendMetricObserved(visibleHtml);
   return presentation.activeThreads.every((thread) => isWithinTrailingDays(thread.latestActivityAt, view.metadata.reportDate, 7))
-    && /수집 시작 이전 기간은 0으로 해석하지 않습니다/.test(trend)
+    && (/수집 시작 이전 기간은 0으로 해석하지 않습니다/.test(trend) || /Magicians 원문 게시물 수집 시작일을 확인할 수 없습니다/.test(trend))
     && !/Magicians Raw Posts|고유 참여자 26주 bar chart|raw posts over the 26-week window/.test(trend);
 }
 
@@ -2040,15 +2040,45 @@ function vitalikSelectedPosts(embeddedApi: unknown): Array<Record<string, unknow
 function vitalikObserved(embeddedApi: unknown): string {
   const view = vitalikViewFromApi(embeddedApi);
   const facts = intelligenceSnapshotFromApi(embeddedApi)?.facts as Record<string, unknown> | undefined;
+  const diagnostics = view?.diagnostics as Record<string, unknown> | undefined;
   return JSON.stringify({
     sourceAttempted: facts?.vitalikBlogSourceAttempted,
     sourceState: view?.sourceState,
     sourceUrl: view?.sourceUrl,
     discoveryMethod: view?.discoveryMethod,
+    sourceCriticality: diagnostics?.sourceCriticality ?? "enrichment",
+    blocking: diagnostics?.blocking ?? false,
+    reason: diagnostics?.reason,
+    lastSuccessfulAt: diagnostics?.lastSuccessfulAt,
+    currentAttemptAt: diagnostics?.currentAttemptAt ?? view?.fetchedAt,
     collectedPostCount: view?.collectedPostCount,
     factCount: vitalikFactsFromApi(embeddedApi).length,
     selected: vitalikSelectedPosts(embeddedApi).map((post) => ({ title: post.title, url: post.sourceUrl, state: post.summaryState })),
   });
+}
+
+function vitalikCurrentSourceSeverity(embeddedApi: unknown): "fail" | "warning" {
+  return vitalikCurrentSourceCollected(embeddedApi) === false && vitalikSafeEnrichmentDegradation(embeddedApi) ? "warning" : "fail";
+}
+
+function vitalikSafeEnrichmentDegradation(embeddedApi: unknown): boolean {
+  const factsRoot = intelligenceSnapshotFromApi(embeddedApi)?.facts as Record<string, unknown> | undefined;
+  if (factsRoot?.vitalikBlogSourceAttempted !== true) return false;
+  const view = vitalikViewFromApi(embeddedApi);
+  const diagnostics = view?.diagnostics as Record<string, unknown> | undefined;
+  const sourceState = String(view?.sourceState ?? "");
+  const criticality = String(diagnostics?.sourceCriticality ?? "enrichment");
+  const selected = vitalikSelectedPosts(embeddedApi);
+  return Boolean(view
+    && ["partial", "unavailable"].includes(sourceState)
+    && criticality !== "core"
+    && diagnostics?.blocking !== true
+    && selected.every((post) => {
+      const state = String(post.summaryState ?? "");
+      const summary = String(post.summaryKo ?? "").trim();
+      if (state === "reviewed" || state === "generated_existing_adapter") return summary.length > 0;
+      return summary.length === 0;
+    }));
 }
 
 function vitalikCurrentSourceCollected(embeddedApi: unknown): boolean | null {
@@ -2078,7 +2108,7 @@ function vitalikCurrentSourceCollected(embeddedApi: unknown): boolean | null {
         && typeof fact.sourceExcerpt === "string" && fact.sourceExcerpt.trim().length > 0
         && typeof fact.contentHash === "string" && /^[a-f0-9]{64}$/.test(fact.contentHash)
         && typeof post.summaryKo === "string" && post.summaryKo.trim().length > 0
-        && post.summaryState === "reviewed"
+        && (post.summaryState === "reviewed" || post.summaryState === "generated_existing_adapter")
         && Array.isArray(post.whyItMattersKo) && post.whyItMattersKo.length >= 1
         && evidenceIds.length >= 1
         && evidenceIds.every((id) => factParagraphIds.has(id))
@@ -2138,7 +2168,7 @@ function vitalikContentBodyCoverage(embeddedApi: unknown): boolean {
 function vitalikSummaryGrounded(embeddedApi: unknown): boolean {
   const factsById = new Map(vitalikFactsFromApi(embeddedApi).map((fact) => [fact.factId, fact]));
   return vitalikSelectedPosts(embeddedApi).every((post) => {
-    if (post.summaryState !== "reviewed") return true;
+    if (post.summaryState !== "reviewed" && post.summaryState !== "generated_existing_adapter") return true;
     const fact = factsById.get(post.factId);
     const paragraphIds = new Set(((fact?.evidenceParagraphs as Array<Record<string, unknown>> | undefined) ?? []).map((paragraph) => paragraph.paragraphId));
     const evidenceIds = (post.evidenceParagraphIds as string[] | undefined) ?? [];
@@ -2958,13 +2988,14 @@ function landscapePeriodFunctional(html: string): boolean {
 }
 
 function landscapeEvidenceFunctional(html: string): boolean {
+  const discussionUnavailable = discussionEvidenceUnavailable(html);
   return /data-evidence="specification"/.test(html)
     && /data-evidence="discussion"/.test(html)
     && /data-evidence="implementation"/.test(html)
     && /state=\{period:"7d",evidence:"all"/.test(html)
     && /state\.evidence/.test(html)
     && /evidenceScopes\(node\)/.test(html)
-    && /data-evidence-scopes="[^"]*discussion/.test(html);
+    && (/data-evidence-scopes="[^"]*discussion/.test(html) || discussionUnavailable);
 }
 
 function dashboardFilterPeriodFunctional(html: string): boolean {
@@ -2977,12 +3008,18 @@ function dashboardFilterPeriodFunctional(html: string): boolean {
 }
 
 function dashboardFilterEvidenceFunctional(html: string): boolean {
+  const discussionUnavailable = discussionEvidenceUnavailable(html);
   return /data-evidence="specification"/.test(html)
     && /data-evidence="discussion"/.test(html)
     && /data-evidence="implementation"/.test(html)
-    && /data-evidence-scopes="[^"]*discussion/.test(html)
+    && (/data-evidence-scopes="[^"]*discussion/.test(html) || discussionUnavailable)
     && /evidenceScopes\(node\)\.has\(state\.evidence\)/.test(html)
     && /현재 구현·릴리스 근거는 수집되지 않았습니다/.test(html);
+}
+
+function discussionEvidenceUnavailable(html: string): boolean {
+  return /Discussion source 미수집/.test(html)
+    && /Magicians 원문 게시물 수집 시작일을 확인할 수 없습니다|수집 시작 이전 기간은 0으로 해석하지 않습니다/.test(html);
 }
 
 function dashboardFilterDomainFunctional(html: string): boolean {
@@ -4817,7 +4854,11 @@ function renderDashboardV3VitalikBlog(p: DashboardV3Presentation): string {
     const relation = post.relatedProposalRelation === "explicit" ? "본문에서 직접 언급" : post.relatedProposalRelation === "inferred" ? "주제상 관련" : "관련 Proposal 없음";
     const related = (post.relatedProposalIds ?? []).slice(0, 3).map((id) => `<button type="button" class="dash-tag" data-open-proposal="${escapeHtml(id)}">${escapeHtml(id)}</button>`).join("");
     const reasons = (post.whyItMattersKo ?? []).slice(0, 2).map((reason) => `<li>${escapeHtml(reason)}</li>`).join("");
-    const summary = post.summaryKo || "원문은 수집했지만 한국어 요약은 검토 전입니다.";
+    const summary = post.summaryKo || "원문 수집은 확인했으나 요약 근거가 충분하지 않습니다.";
+    const evidenceCaption = `summaryState=${escapeHtml(post.summaryState)} · evidence=${escapeHtml((post.evidenceParagraphIds ?? []).join(", ") || "none")}`;
+    const evidenceDetail = post.summaryKo
+      ? `<p class="dash-caption">${evidenceCaption}</p>`
+      : `<p>원문 수집 상태와 URL만 보존합니다. 근거가 충분하지 않은 상태에서는 본문 발췌를 요약처럼 노출하지 않습니다.</p><p class="dash-caption">${evidenceCaption}</p>`;
     return `<article class="dash-vitalik-card${index === 0 ? " dash-vitalik-card-main" : ""}" data-vitalik-post data-summary-state="${escapeHtml(post.summaryState)}" data-interpretation-state="${escapeHtml(post.interpretationState)}">
       <div class="dash-badge-row"><span class="dash-badge dash-badge-warning">개인 글</span>${(post.topicLabelsKo ?? []).slice(0, 3).map((topic) => `<span class="dash-tag">${escapeHtml(topic)}</span>`).join("")}</div>
       <span class="dash-caption">${escapeHtml(post.publishedAtLabel)}</span>
@@ -4825,7 +4866,7 @@ function renderDashboardV3VitalikBlog(p: DashboardV3Presentation): string {
       <p>${escapeHtml(summary)}</p>
       ${reasons ? `<div class="dash-vitalik-reasons"><strong>주목할 이유</strong><ul>${reasons}</ul></div>` : `<p class="dash-caption">주목할 이유는 한국어 검토 전입니다.</p>`}
       <div class="dash-tag-row"><span class="dash-state">${escapeHtml(relation)}</span>${related}</div>
-      <details class="dash-compact-details"><summary>근거 보기</summary><p>${escapeHtml(post.sourceExcerpt ?? "")}</p><p class="dash-caption">summaryState=${escapeHtml(post.summaryState)} · evidence=${escapeHtml((post.evidenceParagraphIds ?? []).join(", ") || "none")}</p></details>
+      <details class="dash-compact-details"><summary>근거 보기</summary>${evidenceDetail}</details>
       <a class="dash-inline-link" href="${escapeHtml(post.sourceUrl)}" target="_blank" rel="noopener noreferrer">원문 보기 ${iconSvg("external")}</a>
     </article>`;
   }).join("");

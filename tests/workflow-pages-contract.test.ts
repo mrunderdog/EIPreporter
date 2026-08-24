@@ -4,6 +4,7 @@ import test from "node:test";
 
 const workflow = readFileSync(".github/workflows/weekly-report.yml", "utf8");
 const emergingWorkflow = readFileSync(".github/workflows/emerging-scan.yml", "utf8");
+const packageJson = JSON.parse(readFileSync("package.json", "utf8")) as { scripts: Record<string, string> };
 
 test("weekly workflow deploys only the validated report through Pages", () => {
   assert.match(workflow, /^\s{2}weekly-report:\r?\n/m);
@@ -42,6 +43,23 @@ test("weekly workflow runs emerging scan before weekly report generation using s
   assert.match(workflow, /npm run scan:emerging -- --limit 60 --timeout-ms 8000 --no-telegram/);
   assert.match(workflow, /key: eipreporter-data-\$\{\{ runner\.os \}\}-\$\{\{ github\.run_id \}\}/);
   assert.match(workflow, /data\/eipreporter\.sqlite/);
+});
+
+test("weekly workflow schedule and manual dispatch share strict report pipeline semantics", () => {
+  const qualityIndex = workflow.indexOf("Validate weekly report quality");
+  const telegramIndex = workflow.indexOf("Send weekly report to Telegram");
+  const pagesIndex = workflow.indexOf("Prepare GitHub Pages site");
+
+  assert.match(workflow, /^\s{2}schedule:\r?\n\s{4}- cron: "17 0 \* \* 1"/m);
+  assert.match(workflow, /^\s{2}workflow_dispatch:\r?\n/m);
+  assert.match(workflow, /^\s{2}pull_request:\r?\n/m);
+  assert.match(workflow, /^\s{2}weekly-report:\r?\n/m);
+  assert.doesNotMatch(workflow, /if: \$\{\{ github\.event_name == 'workflow_dispatch' \}\}[\s\S]*?weekly-report:/);
+  assert.ok(qualityIndex > workflow.indexOf("Generate weekly HTML report"), "quality runs after report generation");
+  assert.ok(telegramIndex > qualityIndex, "Telegram send runs after quality");
+  assert.ok(pagesIndex > qualityIndex, "Pages preparation runs after quality");
+  assert.match(workflow, /if: \$\{\{ github\.ref == 'refs\/heads\/main' && github\.event_name != 'pull_request' \}\}/);
+  assert.match(packageJson.scripts["ci:scheduled-weekly"], /ci-scheduled-weekly\.ts/);
 });
 
 test("manual emerging workflow has no schedule and defaults to no Telegram", () => {

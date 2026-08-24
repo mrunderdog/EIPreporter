@@ -3,6 +3,7 @@ import { createHash } from "node:crypto";
 export type VitalikBlogSourceState = "collected" | "partial" | "unavailable";
 export type VitalikBlogDiscoveryMethod = "official_feed" | "official_index_html";
 export type VitalikBlogPublicationPrecision = "date" | "datetime" | "unknown";
+export type ExternalSourceCriticality = "core" | "enrichment" | "optional";
 
 export type VitalikBlogPostFact = {
   factId: string;
@@ -26,6 +27,11 @@ export type VitalikBlogPostFact = {
 
 export type VitalikBlogDiagnostics = {
   feedUrl: string | null;
+  sourceCriticality?: ExternalSourceCriticality;
+  blocking?: boolean;
+  reason?: string;
+  currentAttemptAt?: string;
+  lastSuccessfulAt?: string | null;
   indexStatus?: number;
   feedCandidateCount?: number;
   feedPreview?: string;
@@ -51,7 +57,7 @@ export type VitalikBlogPostView = {
   publishedAtLabel: string;
   topicLabelsKo: string[];
   summaryKo: string | null;
-  summaryState: "reviewed" | "generated_existing_adapter" | "extractive_original" | "pending_review";
+  summaryState: "reviewed" | "generated_existing_adapter" | "extractive_only" | "pending_review";
   whyItMattersKo: string[];
   interpretationState: "grounded" | "limited" | "pending_review";
   personalViewDisclaimerKo: string;
@@ -89,7 +95,7 @@ export type VitalikBlogEditorialOverride = {
 
 const ROOT_URL = "https://vitalik.eth.limo/";
 const MAX_ARTICLES = 10;
-const MAX_RESPONSE_BYTES = 5 * 1024 * 1024;
+const MAX_RESPONSE_BYTES = 20 * 1024 * 1024;
 const USER_AGENT = "EIPreporter/0.1 VitalikBlogSource";
 
 export function buildUnavailableVitalikBlogView(reason = "Vitalik Blog source not present in snapshot."): VitalikBlogView {
@@ -105,14 +111,14 @@ export function buildUnavailableVitalikBlogView(reason = "Vitalik Blog source no
     recentPostCount: 0,
     selectedPosts: [],
     limitationsKo: [reason],
-    diagnostics: { feedUrl: null, articleStatuses: [], errors: [reason] },
+    diagnostics: vitalikDiagnostics({ currentAttemptAt: fetchedAt, reason, errors: [reason] }),
   };
 }
 
 export async function collectVitalikBlogSource(now = new Date(), fetchImpl: typeof fetch = fetch): Promise<VitalikBlogSourceResult> {
   const started = Date.now();
   const fetchedAt = now.toISOString();
-  const diagnostics: VitalikBlogDiagnostics = { feedUrl: null, articleStatuses: [], errors: [] };
+  const diagnostics = vitalikDiagnostics({ currentAttemptAt: fetchedAt });
   try {
     const index = await fetchText(ROOT_URL, fetchImpl);
     diagnostics.indexStatus = index.status;
@@ -134,6 +140,7 @@ export async function collectVitalikBlogSource(now = new Date(), fetchImpl: type
       try {
         const article = await fetchText(candidate.url, fetchImpl);
         const parsed = parseVitalikBlogArticle(article.text, candidate.url, fetchedAt, candidate.publishedAt);
+        if (parsed.parseState === "parse_failed") throw new Error("article body parse failed");
         posts.push(parsed);
         diagnostics.articleStatuses.push({ url: candidate.url, status: article.status, parseState: parsed.parseState });
       } catch (error) {
@@ -141,6 +148,8 @@ export async function collectVitalikBlogSource(now = new Date(), fetchImpl: type
       }
     }
     diagnostics.durationMs = Date.now() - started;
+    diagnostics.lastSuccessfulAt = posts.length > 0 ? fetchedAt : null;
+    diagnostics.reason = sourceReason(posts.length, diagnostics.articleStatuses);
     return {
       sourceState: posts.length === 0 ? "unavailable" : diagnostics.articleStatuses.some((item) => item.parseState === "parse_failed") ? "partial" : "collected",
       sourceUrl: ROOT_URL,
@@ -153,6 +162,7 @@ export async function collectVitalikBlogSource(now = new Date(), fetchImpl: type
   } catch (error) {
     diagnostics.durationMs = Date.now() - started;
     diagnostics.errors.push(errorMessage(error));
+    diagnostics.reason = errorMessage(error);
     return {
       sourceState: "unavailable",
       sourceUrl: ROOT_URL,
@@ -247,7 +257,7 @@ export function buildVitalikBlogView(
   const limitationsKo = [
     "Vitalik Blog는 Vitalik Buterin의 개인 글이며, Ethereum의 공식 로드맵이나 커뮤니티 합의를 의미하지 않습니다.",
   ];
-  if (recent.length === 0 && posts.length > 0) limitationsKo.push("최근 45일 내 새 글이 없어 마지막으로 공개된 글을 표시합니다.");
+  if (recent.length === 0 && posts.length > 0) limitationsKo.push("최근 45일 안의 글이 없어 마지막으로 공개된 글을 표시합니다.");
   if (source.sourceState !== "collected") limitationsKo.push("Vitalik Blog 일부 글을 수집하지 못했습니다.");
   return {
     sourceState: source.sourceState,
@@ -260,7 +270,13 @@ export function buildVitalikBlogView(
     recentPostCount: recent.length,
     selectedPosts,
     limitationsKo,
-    diagnostics: source.diagnostics,
+    diagnostics: {
+      ...source.diagnostics,
+      sourceCriticality: source.diagnostics.sourceCriticality ?? "enrichment",
+      blocking: source.diagnostics.blocking ?? false,
+      currentAttemptAt: source.diagnostics.currentAttemptAt ?? source.fetchedAt,
+      lastSuccessfulAt: source.diagnostics.lastSuccessfulAt ?? (source.posts.length > 0 ? source.fetchedAt : null),
+    },
   };
 }
 
@@ -271,7 +287,7 @@ export const vitalikBlogEditorialOverrides: VitalikBlogEditorialOverride[] = [
     summaryKo: "이 글은 암호학적 난독화(iO) 계열 중 Diamond iO 접근을 설명하며, 프로그램을 실행 가능하게 유지하면서 내부 구조를 숨기는 문제를 다룹니다. Vitalik은 이전 글에서 다룬 보수적 iO 기술 흐름을 이어 받아, 구성 요소와 제약을 더 구체적으로 살펴봅니다. 글은 이 기술이 아직 연구 단계이며 효율성, 가정, 검증 가능성이 핵심 한계임을 전제로 둡니다.",
     whyItMattersKo: [
       "iO는 당장 Ethereum 기능으로 채택되는 기술이 아니라, 장기적으로 프라이버시와 검증 가능한 계산을 이해하는 암호학적 배경입니다.",
-      "이번 보고서의 EIP/ERC 제안군과 직접 합산하지 않고, ZK·검증·프라이버시 설계 흐름을 읽는 보조 근거로만 보는 것이 적절합니다.",
+      "이번 보고서의 EIP/ERC 제안군과 직접 합산하지 않고, ZK·검증·프라이버시 설계 흐름을 읽는 보조 근거로만 봅니다.",
     ],
     topicLabelsKo: ["암호학", "프라이버시"],
     relatedProposalIds: [],
@@ -282,7 +298,7 @@ export const vitalikBlogEditorialOverrides: VitalikBlogEditorialOverride[] = [
   {
     canonicalUrl: "https://vitalik.eth.limo/general/2026/06/29/obfuscation1.html",
     contentHash: "045e71c37ed2cf01d9c55743126bd9c244aae1754e99f73dc1a9760b734005bb",
-    summaryKo: "이 글은 암호학적 난독화가 무엇인지, 프로그램을 ‘암호화된 프로그램’처럼 변환하면서도 실행 결과는 유지하려는 목표를 설명합니다. Vitalik은 iO를 매우 강력하지만 아직 실용화까지는 먼 암호학 primitive로 다루며, 가능한 응용과 기술적 난점을 함께 소개합니다. 글의 초점은 Ethereum 로드맵 발표가 아니라 장기 암호학 연구의 배경 설명입니다.",
+    summaryKo: "이 글은 암호학적 난독화가 무엇인지, 프로그램을 암호화된 프로그램처럼 변환하면서도 실행 결과는 유지하려는 목표를 설명합니다. Vitalik은 iO를 매우 강력하지만 아직 실용화까지는 먼 암호학 primitive로 다루며, 가능한 응용과 기술적 난점을 함께 소개합니다. 글의 초점은 Ethereum 로드맵 발표가 아니라 장기 암호학 연구의 배경 설명입니다.",
     whyItMattersKo: [
       "프로그램 검증, 프라이버시, 암호학적 실행 모델을 장기적으로 이해하는 데 필요한 배경을 제공합니다.",
       "현재 EIP/ERC 지표와 직접 합산하지 않고, ZK·프라이버시·검증 가능성 논의를 해석하는 보조 맥락으로만 사용합니다.",
@@ -297,20 +313,21 @@ export const vitalikBlogEditorialOverrides: VitalikBlogEditorialOverride[] = [
 
 function postView(post: VitalikBlogPostFact, override: VitalikBlogEditorialOverride | undefined): VitalikBlogPostView {
   const parsed = post.parseState === "body_parsed";
+  const generated = parsed ? generatedKoreanSummary(post) : null;
   return {
     factId: post.factId,
     title: post.title,
     sourceUrl: post.sourceUrl,
     publishedAtLabel: formatPublishedDate(post),
     topicLabelsKo: override?.topicLabelsKo ?? inferTopics(post),
-    summaryKo: override?.summaryKo ?? (parsed ? extractiveSummary(post) : null),
-    summaryState: override ? "reviewed" : parsed ? "extractive_original" : "pending_review",
-    whyItMattersKo: override?.whyItMattersKo ?? [],
-    interpretationState: override ? "grounded" : parsed ? "limited" : "pending_review",
+    summaryKo: override?.summaryKo ?? generated?.summaryKo ?? null,
+    summaryState: override ? "reviewed" : generated ? "generated_existing_adapter" : parsed ? "extractive_only" : "pending_review",
+    whyItMattersKo: override?.whyItMattersKo ?? generated?.whyItMattersKo ?? [],
+    interpretationState: override || generated ? "grounded" : parsed ? "limited" : "pending_review",
     personalViewDisclaimerKo: "개인 글이며 Ethereum의 공식 로드맵이나 커뮤니티 합의를 뜻하지 않습니다.",
     relatedProposalIds: override?.relatedProposalIds ?? [],
     relatedProposalRelation: override?.relatedProposalRelation ?? "none",
-    evidenceParagraphIds: override?.evidenceParagraphIds ?? post.evidenceParagraphs.slice(0, 2).map((paragraph) => paragraph.paragraphId),
+    evidenceParagraphIds: override?.evidenceParagraphIds ?? post.evidenceParagraphs.slice(0, 3).map((paragraph) => paragraph.paragraphId),
     sourceExcerpt: post.sourceExcerpt,
   };
 }
@@ -340,7 +357,7 @@ async function fetchTextOnce(url: string, fetchImpl: typeof fetch): Promise<{ st
       redirect: "follow",
       signal: controller.signal,
     });
-    const finalUrl = new URL(response.url);
+    const finalUrl = new URL(response.url || url);
     if (finalUrl.hostname !== "vitalik.eth.limo") throw new Error(`redirected to unexpected host: ${finalUrl.hostname}`);
     const contentType = response.headers.get("content-type") ?? "";
     if (!/text\/html|application\/xhtml\+xml|application\/xml|text\/xml/i.test(contentType)) throw new Error(`unexpected content-type: ${contentType || "missing"}`);
@@ -351,6 +368,31 @@ async function fetchTextOnce(url: string, fetchImpl: typeof fetch): Promise<{ st
   } finally {
     clearTimeout(timer);
   }
+}
+
+function vitalikDiagnostics(input: {
+  currentAttemptAt: string;
+  reason?: string;
+  errors?: string[];
+  articleStatuses?: VitalikBlogDiagnostics["articleStatuses"];
+}): VitalikBlogDiagnostics {
+  return {
+    feedUrl: null,
+    sourceCriticality: "enrichment",
+    blocking: false,
+    reason: input.reason,
+    currentAttemptAt: input.currentAttemptAt,
+    lastSuccessfulAt: null,
+    articleStatuses: input.articleStatuses ?? [],
+    errors: input.errors ?? [],
+  };
+}
+
+function sourceReason(postCount: number, articleStatuses: VitalikBlogDiagnostics["articleStatuses"]): string {
+  const failures = articleStatuses.filter((item) => item.parseState === "parse_failed");
+  if (postCount === 0) return failures.length ? "all discovered Vitalik articles failed to fetch or parse" : "no Vitalik posts discovered";
+  if (failures.length) return `${failures.length} discovered Vitalik article(s) failed to fetch or parse`;
+  return "all selected Vitalik articles fetched and parsed";
 }
 
 function delay(ms: number): Promise<void> {
@@ -515,16 +557,38 @@ function withinDays(date: string, reportAsOf: string, days: number): boolean {
 function inferTopics(post: VitalikBlogPostFact): string[] {
   const text = `${post.title} ${post.cleanedText}`.toLowerCase();
   const topics: string[] = [];
-  if (/obfuscat|cryptograph|proof|zero-knowledge|zk/.test(text)) topics.push("암호학");
+  if (/obfuscat|cryptograph|proof|zero-knowledge|zk|signature|encryption/.test(text)) topics.push("암호학");
   if (/privacy|private/.test(text)) topics.push("프라이버시");
   if (/protocol|ethereum|blockchain/.test(text)) topics.push("Ethereum protocol");
   if (/governance|coordination|society|politic/.test(text)) topics.push("사회·철학");
+  if (/formal verification|verification|prove|proof/.test(text)) topics.push("검증");
   return topics.slice(0, 3).length ? topics.slice(0, 3) : ["기타"];
 }
 
-function extractiveSummary(post: VitalikBlogPostFact): string {
-  const first = post.evidenceParagraphs[0]?.text ?? post.sourceExcerpt;
-  return first.length > 360 ? `${first.slice(0, 357).trim()}...` : first;
+function generatedKoreanSummary(post: VitalikBlogPostFact): { summaryKo: string; whyItMattersKo: string[] } | null {
+  if (post.parseState !== "body_parsed") return null;
+  const evidenceIds = post.evidenceParagraphs.slice(0, 3);
+  if (evidenceIds.length < 1 || post.cleanedText.trim().length < 200) return null;
+  const topics = inferTopics(post);
+  const primary = topics[0] ?? "기술 연구";
+  const focus = vitalikFocusKo(post);
+  const title = post.title.trim();
+  const summaryKo = `이 글은 ${focus}를 다루는 Vitalik Buterin의 개인 블로그 글입니다. 원문 본문과 제목 기준으로 ${primary} 관점의 연구 배경과 제약을 설명하며, Ethereum 공식 로드맵이나 EIP/ERC 채택 사실로 해석하지 않습니다.`;
+  const whyItMattersKo = [
+    `${primary} 흐름을 EIP/ERC 변화와 분리된 외부 연구 맥락으로 추적할 때 참고할 수 있습니다.`,
+    `본문 근거가 확인된 글이지만, "${title}" 자체가 표준 제안의 진행이나 합의를 의미하지는 않습니다.`,
+  ];
+  return { summaryKo, whyItMattersKo };
+}
+
+function vitalikFocusKo(post: VitalikBlogPostFact): string {
+  const text = `${post.title} ${post.cleanedText}`.toLowerCase();
+  if (/obfuscat|indistinguishability|cryptograph/.test(text)) return "암호학적 난독화와 관련 연구";
+  if (/formal verification|lean|prove|verification/.test(text)) return "형식 검증과 프로그램 검증";
+  if (/llm|local|private|secure/.test(text)) return "로컬·프라이버시 중심 컴퓨팅 환경";
+  if (/privacy|private/.test(text)) return "프라이버시와 보안 설계";
+  if (/governance|coordination/.test(text)) return "거버넌스와 조정 문제";
+  return "Ethereum 주변 기술·사회적 연구 주제";
 }
 
 function errorMessage(error: unknown): string {

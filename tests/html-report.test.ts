@@ -1556,6 +1556,64 @@ test("Vitalik facts do not change core projection and usable count one remains v
   assert.equal(snapshot.views.dashboardV2.proposalExplorer.totalCurrent7d, 1);
 });
 
+test("partial optional Vitalik source degrades without publishing unsupported narrative or blocking weekly quality", () => {
+  const scenario = weeklySignalScenario(1, 1);
+  const article = readFileSync(join(process.cwd(), "tests", "fixtures", "vitalik-blog-article-1.html"), "utf8");
+  const fact = {
+    factId: "vitalik-blog:partial-fixture",
+    sourceType: "vitalik_blog_post",
+    title: "Obfuscation (Part II): Diamond iO",
+    sourceUrl: "https://vitalik.eth.limo/general/2026/07/28/obfuscation_part_ii_diamond_io.html",
+    canonicalUrl: "https://vitalik.eth.limo/general/2026/07/28/obfuscation_part_ii_diamond_io.html",
+    publishedAt: "2026-07-28",
+    publicationDatePrecision: "date",
+    author: "Vitalik Buterin",
+    originalLanguage: "en",
+    cleanedText: article.slice(0, 120),
+    sourceExcerpt: "In the last part of this series, we went through the full tech tree of the most mainstream and conservative line of cryptographic obfuscation protocols.",
+    headingTexts: [],
+    outboundLinks: [],
+    contentHash: "1111111111111111111111111111111111111111111111111111111111111111",
+    fetchedAt: "2026-08-24T00:17:00.000Z",
+    parseState: "metadata_only",
+    evidenceParagraphs: [{ paragraphId: "p1", text: "In the last part of this series, we went through the full tech tree of the most mainstream and conservative line of cryptographic obfuscation protocols." }],
+  };
+  scenario.report.vitalikBlog = {
+    sourceState: "partial",
+    sourceUrl: "https://vitalik.eth.limo/",
+    discoveryMethod: "official_feed",
+    fetchedAt: "2026-08-24T00:17:00.000Z",
+    latestPublishedAt: "2026-07-28",
+    posts: [fact],
+    diagnostics: {
+      feedUrl: "https://vitalik.eth.limo/feed.xml",
+      feedCandidateCount: 9,
+      articleStatuses: [
+        { url: fact.sourceUrl, status: 200, parseState: "body_parsed" },
+        { url: "https://vitalik.eth.limo/general/2026/08/21/unavailable.html", status: null, parseState: "parse_failed", error: "response too large" },
+      ],
+      errors: [],
+    },
+  } as never;
+  const directory = mkdtempSync(join(tmpdir(), "eipreporter-vitalik-partial-"));
+
+  try {
+    const outputPath = writeWeeklyHtmlReport(scenario.report, directory);
+    const html = readFileSync(outputPath, "utf8");
+    const quality = JSON.parse(readFileSync(outputPath.replace(/\.html$/, ".quality.json"), "utf8"));
+    const check = quality.checks.find((item: { id: string }) => item.id === "vitalik-current-source-collected");
+
+    assert.equal(quality.passed, true);
+    assert.equal(check?.severity, "warning");
+    assert.equal(check?.passed, false);
+    assert.match(check?.observed ?? "", /"blocking":false/);
+    assert.doesNotMatch(visibleReportHtml(html), /In the last part of this series/);
+    assert.match(visibleReportHtml(html), /원문 수집은 확인했으나/);
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
 test("weekly summary language check allows official English terms with Korean prose", () => {
   assert.equal(
     __qualityTestHooks.weeklySummaryTextQuality("해당 Proposal은 공식 원문 기준 계정·권한 및 EVM 실행 규칙 영역을 다루는 제안입니다. 구현·채택 여부는 이번 수집 범위에서 확인하지 않았습니다."),
