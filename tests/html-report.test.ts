@@ -1076,7 +1076,7 @@ test("pre-merge discussion summaries are bounded and not described as official s
 
 test("preflight diagnostics allow external emerging drafts but block real specification failures", () => {
   const diagnostics = __qualityTestHooks.specificationPreflightDiagnostics(
-    ["EIP-9001", "EIP-9002", "EIP-8037", "EIP-9004", "topic:magicians:77", "EIP-9006"],
+    ["EIP-9001", "EIP-9002", "EIP-8037", "EIP-9004", "topic:magicians:77", "EIP-9006", "EIP-9010"],
     [
       {
         proposalId: "EIP-9001",
@@ -1111,6 +1111,11 @@ test("preflight diagnostics allow external emerging drafts but block real specif
         parseState: "body_parsed",
         officialSourceState: "official_body_parsed",
       },
+      {
+        proposalId: "EIP-9010",
+        parseState: "title_only",
+        officialSourceState: "official_repository_unavailable",
+      },
     ],
   );
 
@@ -1119,8 +1124,9 @@ test("preflight diagnostics allow external emerging drafts but block real specif
   assert.deepEqual(diagnostics.bodyParsedIds, ["EIP-9006"]);
   assert.deepEqual(diagnostics.officialTitleOnlyIds, ["EIP-8037"]);
   assert.deepEqual(diagnostics.parseFailedIds, ["EIP-9004"]);
+  assert.deepEqual(diagnostics.repositoryUnavailableIds, ["EIP-9010"]);
   assert.deepEqual(diagnostics.requiredBodyTitleOnlyIds, ["EIP-8037"]);
-  assert.deepEqual(diagnostics.blockingIds, ["EIP-8037", "EIP-9004"]);
+  assert.deepEqual(diagnostics.blockingIds, ["EIP-8037", "EIP-9004", "EIP-9010"]);
 });
 
 test("preflight diagnostics keep missing specification evidence as an integrity failure input", () => {
@@ -1137,7 +1143,117 @@ test("preflight diagnostics keep missing specification evidence as an integrity 
 
   assert.deepEqual(diagnostics.officialMissingWithFallbackIds, ["EIP-9010"]);
   assert.deepEqual(diagnostics.missingEvidenceIds, ["topic:magicians:missing"]);
-  assert.deepEqual(diagnostics.blockingIds, []);
+  assert.deepEqual(diagnostics.blockingIds, ["topic:magicians:missing"]);
+});
+
+test("specification coverage quality reports proposal-level affected IDs and diagnostics", () => {
+  const embeddedApi = {
+    intelligenceSnapshot: {
+      monitoringUniverse: {
+        subjectRegistry: [
+          { proposalId: "EIP-9001", roles: ["monitored"] },
+          { proposalId: "EIP-9002", roles: ["monitored"] },
+          { proposalId: "EIP-9003", roles: ["monitored"] },
+          { proposalId: "EIP-9004", roles: ["monitored"] },
+          { proposalId: "EIP-9005", roles: ["excluded"] },
+          { proposalId: "topic:magicians:77", roles: ["proposal_intelligence"] },
+        ],
+      },
+      facts: {
+        specificationEvidence: [
+          { proposalId: "EIP-9001", parseState: "body_parsed", officialSourceState: "official_body_parsed" },
+          { proposalId: "EIP-9002", parseState: "title_only", officialSourceState: "official_file_not_found", sourceUrl: "https://ethereum-magicians.org/t/example/9002" },
+          { proposalId: "EIP-9003", parseState: "fetch_failed", officialSourceState: "official_file_parse_failed" },
+          { proposalId: "topic:magicians:77", parseState: "title_only", officialSourceState: "external_source_only", sourceUrl: "https://ethereum-magicians.org/t/unnumbered-topic/77" },
+        ],
+      },
+    },
+  };
+
+  const diagnostics = __qualityTestHooks.specificationCoverageDiagnostics(embeddedApi);
+  assert.equal(diagnostics.passed, false);
+  assert.equal(diagnostics.relevantProposalCount, 5);
+  assert.deepEqual(diagnostics.bodyParsedIds, ["EIP-9001"]);
+  assert.deepEqual(new Set(diagnostics.explicitFallbackIds), new Set(["EIP-9002", "topic:magicians:77"]));
+  assert.deepEqual(diagnostics.parseFailedIds, ["EIP-9003"]);
+  assert.deepEqual(diagnostics.missingEvidenceIds, ["EIP-9004"]);
+  assert.deepEqual(diagnostics.blockingIds, ["EIP-9003", "EIP-9004"]);
+
+  const check = __qualityTestHooks.specificationBodyCoverageQualityCheck(embeddedApi);
+  assert.equal(check.passed, false);
+  assert.deepEqual(check.affectedIds, ["EIP-9003", "EIP-9004"]);
+  assert.match(check.observed, /"relevantProposalCount":5/);
+});
+
+test("proposal-level quality failures cannot serialize with empty affected IDs", () => {
+  assert.throws(
+    () => __qualityTestHooks.qualityCheck("specification-body-coverage", false, "fail", "{}", "expected", []),
+    /empty affectedIds/,
+  );
+});
+
+test("historical timestamp source quality degrades safely when fallback events are excluded from ranking", () => {
+  const report = {
+    ethereumTechRadar: {
+      historicalInputDiagnostics: {
+        fallbackDetectedAtRatio: 0.255,
+        timestampQuality: {
+          weeklyRankingValidity: "invalid",
+          current7dFallbackRatio: 1,
+        },
+        gitBackfillDiagnostics: {
+          successRate: 1,
+          localHistoryFailed: 0,
+          apiHistoryFailed: 0,
+          rateLimitedCount: 0,
+          pathCaseFailures: 0,
+          shallowRepositoryDetected: 0,
+        },
+      },
+    },
+  };
+
+  assert.equal(__qualityTestHooks.historicalTimestampQuality(report as never), false);
+  assert.equal(__qualityTestHooks.historicalTimestampSourceSeverity(report as never), "warning");
+});
+
+test("historical timestamp source quality remains blocking when backfill integrity fails", () => {
+  const report = {
+    ethereumTechRadar: {
+      historicalInputDiagnostics: {
+        fallbackDetectedAtRatio: 0.4,
+        timestampQuality: {
+          weeklyRankingValidity: "invalid",
+          current7dFallbackRatio: 1,
+        },
+        gitBackfillDiagnostics: {
+          successRate: 0.5,
+          localHistoryFailed: 12,
+          apiHistoryFailed: 0,
+          rateLimitedCount: 0,
+          pathCaseFailures: 0,
+          shallowRepositoryDetected: 0,
+        },
+      },
+    },
+  };
+
+  assert.equal(__qualityTestHooks.historicalTimestampSourceSeverity(report as never), "fail");
+});
+
+test("domain search metadata consistency ignores absent fresh-state fixture proposals but blocks wrong rendered metadata", () => {
+  const sparseHtml = `
+    <button data-search="실행·상태 eip-8253" data-domain="execution-state"></button>
+    <button data-search="검증자·합의 eip-8333" data-domain="validators-consensus"></button>
+  `;
+  const wrongHtml = `
+    <article data-proposal-id="ERC-8049" data-domain="interoperability" data-search="erc-8049 cross-chain bridge"></article>
+    <button data-search="실행·상태 eip-8253" data-domain="execution-state"></button>
+    <button data-search="검증자·합의 eip-8333" data-domain="validators-consensus"></button>
+  `;
+
+  assert.equal(__qualityTestHooks.domainSearchMetadataConsistency(sparseHtml), true);
+  assert.equal(__qualityTestHooks.domainSearchMetadataConsistency(wrongHtml), false);
 });
 
 test("applies exact golden fixtures only when reportAsOf and input hash match", () => {

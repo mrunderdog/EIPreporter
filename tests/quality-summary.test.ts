@@ -36,6 +36,27 @@ test("quality summary reports failed checks and strict exit only when requested"
 
     assert.equal(__qualitySummaryTestHooks.main(["--file", "weekly-2026-08-04.quality.json"]), 0);
     assert.equal(__qualitySummaryTestHooks.main(["--file", "weekly-2026-08-04.quality.json", "--strict"]), 1);
+    assert.equal(__qualitySummaryTestHooks.main(["--strict", "weekly-2026-08-04.quality.json"]), 1);
+  } finally {
+    chdir(originalCwd);
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+test("strict quality fails when quality.passed is false even without failed check rows", () => {
+  const directory = mkdtempSync(join(tmpdir(), "eipreporter-quality-summary-"));
+  const originalCwd = cwd();
+  try {
+    chdir(directory);
+    writeFileSync("weekly-2026-08-05.quality.json", JSON.stringify({
+      passed: false,
+      checks: [
+        { id: "diagnostic-integrity", severity: "fail", passed: true },
+      ],
+    }), "utf8");
+
+    assert.equal(__qualitySummaryTestHooks.main(["weekly-2026-08-05.quality.json"]), 0);
+    assert.equal(__qualitySummaryTestHooks.main(["--strict", "weekly-2026-08-05.quality.json"]), 1);
   } finally {
     chdir(originalCwd);
     rmSync(directory, { recursive: true, force: true });

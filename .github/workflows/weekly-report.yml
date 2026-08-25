@@ -81,23 +81,8 @@ jobs:
           restore-keys: |
             eipreporter-data-${{ runner.os }}-
 
-      - name: Run CI source doctor
-        run: npm run ci:doctor
-
-      - name: Run tests
-        run: npm test
-
-      - name: Run typecheck
-        run: npm run typecheck
-
-      - name: Collect EIP and ERC proposals
-        run: npm run collect -- --trend-days 180 --change-days 7
-
-      - name: Run emerging scan
-        run: npm run scan:emerging -- --limit 60 --timeout-ms 8000 --no-telegram
-
-      - name: Generate weekly HTML report
-        run: npm run report:html -- --trend-days 180 --change-days 7
+      - name: Run shared weekly CI pipeline
+        run: npm run weekly:ci
 
       - name: Save persistent report state
         if: ${{ always() }}
@@ -139,53 +124,7 @@ jobs:
           retention-days: 30
 
       - name: Validate weekly report quality
-        shell: bash
-        run: |
-          set -euo pipefail
-
-          quality_path="reports/weekly-${{ steps.report-date.outputs.report_date }}.quality.json"
-
-          node -e '
-            const fs = require("fs");
-
-            const qualityPath = process.argv[1];
-            const quality = JSON.parse(
-              fs.readFileSync(qualityPath, "utf8")
-            );
-
-            const failed = (quality.checks || []).filter(
-              (check) =>
-                check.severity === "fail" &&
-                check.passed === false
-            );
-
-            if (quality.passed !== true || failed.length > 0) {
-              console.error(
-                `Quality gate failed for ${qualityPath}`
-              );
-
-              for (const check of failed) {
-                console.error("");
-                console.error(`[${check.id}]`);
-                console.error(
-                  `observed: ${JSON.stringify(check.observed ?? "")}`
-                );
-                console.error(
-                  `expected: ${JSON.stringify(check.expected ?? "")}`
-                );
-                console.error(
-                  `failureReason: ${check.failureReason ?? ""}`
-                );
-                console.error(
-                  `affectedIds: ${JSON.stringify(check.affectedIds ?? [])}`
-                );
-              }
-
-              process.exit(1);
-            }
-
-            console.log(`Quality gate passed for ${qualityPath}`);
-          ' "$quality_path"
+        run: npm run quality:strict -- reports/weekly-${{ steps.report-date.outputs.report_date }}.quality.json
 
       - name: Send weekly report to Telegram
         if: ${{ github.ref == 'refs/heads/main' && github.event_name != 'pull_request' }}

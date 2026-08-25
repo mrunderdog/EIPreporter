@@ -29,18 +29,16 @@ test("Pages site is prepared after strict quality and deploy job does not rebuil
 });
 
 test("weekly workflow runs emerging scan before weekly report generation using shared state", () => {
-  const collectIndex = workflow.indexOf("Collect EIP and ERC proposals");
-  const emergingIndex = workflow.indexOf("Run emerging scan");
-  const reportIndex = workflow.indexOf("Generate weekly HTML report");
+  const sharedIndex = workflow.indexOf("Run shared weekly CI pipeline");
   const saveIndex = workflow.indexOf("Save persistent report state");
   const sendIndex = workflow.indexOf("Send weekly report to Telegram");
 
-  assert.ok(collectIndex >= 0, "official collection step is present");
-  assert.ok(emergingIndex > collectIndex, "emerging scan runs after official collection");
-  assert.ok(reportIndex > emergingIndex, "weekly report is generated after emerging scan");
-  assert.ok(saveIndex > reportIndex, "shared DB/cache state is saved after report generation");
+  assert.ok(sharedIndex >= 0, "shared weekly CI step is present");
+  assert.ok(saveIndex > sharedIndex, "shared DB/cache state is saved after report generation");
   assert.ok(sendIndex > saveIndex, "only the completed weekly report is sent to Telegram");
-  assert.match(workflow, /npm run scan:emerging -- --limit 60 --timeout-ms 8000 --no-telegram/);
+  assert.match(packageJson.scripts["weekly:ci"], /ci-scheduled-weekly\.ts/);
+  assert.match(workflow, /npm run weekly:ci/);
+  assert.match(packageJson.scripts["ci:scheduled-weekly"], /ci-scheduled-weekly\.ts/);
   assert.match(workflow, /key: eipreporter-data-\$\{\{ runner\.os \}\}-\$\{\{ github\.run_id \}\}/);
   assert.match(workflow, /data\/eipreporter\.sqlite/);
 });
@@ -55,11 +53,13 @@ test("weekly workflow schedule and manual dispatch share strict report pipeline 
   assert.match(workflow, /^\s{2}pull_request:\r?\n/m);
   assert.match(workflow, /^\s{2}weekly-report:\r?\n/m);
   assert.doesNotMatch(workflow, /if: \$\{\{ github\.event_name == 'workflow_dispatch' \}\}[\s\S]*?weekly-report:/);
-  assert.ok(qualityIndex > workflow.indexOf("Generate weekly HTML report"), "quality runs after report generation");
+  assert.ok(qualityIndex > workflow.indexOf("Run shared weekly CI pipeline"), "quality runs after shared report generation");
+  assert.match(workflow, /npm run quality:strict -- reports\/weekly-\$\{\{ steps\.report-date\.outputs\.report_date \}\}\.quality\.json/);
   assert.ok(telegramIndex > qualityIndex, "Telegram send runs after quality");
   assert.ok(pagesIndex > qualityIndex, "Pages preparation runs after quality");
   assert.match(workflow, /if: \$\{\{ github\.ref == 'refs\/heads\/main' && github\.event_name != 'pull_request' \}\}/);
   assert.match(packageJson.scripts["ci:scheduled-weekly"], /ci-scheduled-weekly\.ts/);
+  assert.match(packageJson.scripts["quality:strict"], /quality-summary\.ts --strict/);
 });
 
 test("manual emerging workflow has no schedule and defaults to no Telegram", () => {

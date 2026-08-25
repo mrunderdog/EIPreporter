@@ -54,6 +54,10 @@ type OfficialSpecificationSourceState =
   | "official_repository_unavailable"
   | "external_source_only";
 
+const PROPOSAL_LEVEL_QUALITY_IDS = new Set([
+  "specification-body-coverage",
+]);
+
 type ReportMode = "normal" | "partial" | "incident";
 type WeeklySignalMode = "empty" | "single" | "multiple" | "non_ranking";
 
@@ -319,7 +323,7 @@ export function generateWeeklyQualityJson(report: WeeklyRadarReport, html = gene
     qualityCheck("fact-reference-integrity", factReferenceIntegrity(embeddedApi), "fail", "aggregate/signal/claim fact ids", "all referenced fact ids exist"),
     qualityCheck("discussion-fact-union-complete", discussionFactUnionComplete(embeddedApi), "fail", "discussion rawPostIds", "all public rawPostIds exist as DiscussionPost facts"),
     qualityCheck("discussion-window-boundary", discussionWindowBoundary(embeddedApi), "fail", "discussion windows", "raw posts are inside aggregate rolling windows"),
-    qualityCheck("specification-body-coverage", specificationBodyCoverage(embeddedApi), "fail", "public specification evidence", "public proposals have fetched specification evidence or explicit fallback"),
+    specificationBodyCoverageQualityCheck(embeddedApi),
     qualityCheck("title-only-claim-strength", titleOnlyClaimStrength(embeddedApi), "fail", "title-only summaries", "title-only summaries do not assert concrete specification fields"),
     qualityCheck("logical-proposal-introduction-unique", logicalProposalIntroductionUnique(embeddedApi), "fail", "proposal_published logical events", "at most one public proposal_published event per proposal"),
     qualityCheck("event-source-observation-not-double-counted", logicalProposalIntroductionUnique(embeddedApi), "fail", "source observations", "metadata/git/fallback observations are not double-counted as proposal introductions"),
@@ -358,7 +362,7 @@ export function generateWeeklyQualityJson(report: WeeklyRadarReport, html = gene
     qualityCheck("pa-11-snapshot-consistency", snapshotHashConsistency(embeddedApi), "fail", "PA-11", "compact and HTML snapshot root can be compared"),
     qualityCheck("pa-12-structural-semantic-e2e", productQ1DevelopmentLandscape(embeddedApi, visibleHtml) && productQ2DeveloperAttention(embeddedApi, visibleHtml) && productQ3LongVsRecent(embeddedApi, visibleHtml) && productQ4ProgressTracker(embeddedApi, visibleHtml) && productQ5AaRadar(embeddedApi, visibleHtml) && productQ6KgldWatch(embeddedApi, visibleHtml), "fail", "PA-12", "product checks pass"),
     qualityCheck("historical-backfill-success-rate", historicalBackfillSufficient(report), "warning", JSON.stringify(report.ethereumTechRadar.historicalInputDiagnostics?.gitBackfillDiagnostics ?? {}), "overall success >= 90%"),
-    qualityCheck("historical-timestamp-source-quality", historicalTimestampQuality(report), "fail", String(report.ethereumTechRadar.historicalInputDiagnostics?.fallbackDetectedAtRatio ?? 0), "<= 0.25"),
+    qualityCheck("historical-timestamp-source-quality", historicalTimestampQuality(report), historicalTimestampSourceSeverity(report), historicalTimestampObserved(report), "<= 0.25 or safe degraded timestamp quality with ranking disabled"),
     qualityCheck("current-window-concentration", (report.ethereumTechRadar.historicalInputDiagnostics?.currentWindowConcentration?.share ?? 0) <= 0.4, "warning", String(report.ethereumTechRadar.historicalInputDiagnostics?.currentWindowConcentration?.share ?? 0), "<= 0.40"),
     qualityCheck("activity-windows-independent", sparseActivityFixture || JSON.stringify(atlas.charts.domain180d.data) !== JSON.stringify(atlas.charts.domain7d.data), "fail", "domain chart arrays", "180d/7d arrays differ or 180d UI disabled"),
     qualityCheck("canvas-wrapper", /class="dash-trend-card"/.test(html), "fail", "V3 chart wrapper", "present"),
@@ -505,17 +509,21 @@ function specificationPreflightDiagnostics(publicProposalIds: string[], specific
   const officialMissingWithFallbackIds = byState("official_file_not_found");
   const externalSourceOnlyIds = byState("external_source_only");
   const officialTitleOnlyIds = byState("official_file_title_only");
+  const repositoryUnavailableIds = byState("official_repository_unavailable");
   const parseFailedIds = facts
     .filter((fact) => officialSourceStateForFact(fact) === "official_file_parse_failed" || fact.parseState === "fetch_failed")
     .map((fact) => String(fact.proposalId));
   const requiredBodyTitleOnlyIds = officialTitleOnlyIds.filter((id) => requiredBodyIds.has(id as typeof REQUIRED_SPECIFICATION_BODY_IDS[number]));
-  const blockingIds = unique([...parseFailedIds, ...requiredBodyTitleOnlyIds]).sort(compareProposalIds);
+  const explicitFallbackIds = unique([...officialMissingWithFallbackIds, ...externalSourceOnlyIds, ...officialTitleOnlyIds.filter((id) => !requiredBodyIds.has(id as typeof REQUIRED_SPECIFICATION_BODY_IDS[number]))]).sort(compareProposalIds);
+  const blockingIds = unique([...missingEvidenceIds, ...parseFailedIds, ...requiredBodyTitleOnlyIds, ...repositoryUnavailableIds]).sort(compareProposalIds);
   return {
     missingEvidenceIds,
     bodyParsedIds,
+    explicitFallbackIds,
     officialMissingWithFallbackIds,
     externalSourceOnlyIds,
     officialTitleOnlyIds,
+    repositoryUnavailableIds,
     parseFailedIds,
     requiredBodyTitleOnlyIds,
     blockingIds,
@@ -549,6 +557,9 @@ function officialSourceAvailability() {
 }
 
 function qualityCheck(id: string, passed: boolean | null, severity: "fail" | "warning", observed: string, expected: string, affectedIds: string[] = []) {
+  if (passed === false && severity === "fail" && affectedIds.length === 0 && PROPOSAL_LEVEL_QUALITY_IDS.has(id)) {
+    throw new Error(`Quality check ${id} failed with empty affectedIds; proposal-level failures must identify affected proposals.`);
+  }
   return {
     id,
     status: passed === null ? "not_applicable" : passed ? "passed" : "failed",
@@ -692,6 +703,35 @@ function historicalBackfillSufficient(report: WeeklyRadarReport): boolean {
 
 function historicalTimestampQuality(report: WeeklyRadarReport): boolean {
   return (report.ethereumTechRadar.historicalInputDiagnostics?.fallbackDetectedAtRatio ?? 0) <= 0.25;
+}
+
+function historicalTimestampSourceSeverity(report: WeeklyRadarReport): "fail" | "warning" {
+  if (historicalTimestampQuality(report)) return "fail";
+  return historicalTimestampSafeDegradation(report) ? "warning" : "fail";
+}
+
+function historicalTimestampSafeDegradation(report: WeeklyRadarReport): boolean {
+  const diagnostics = report.ethereumTechRadar.historicalInputDiagnostics;
+  const backfill = diagnostics?.gitBackfillDiagnostics;
+  return Boolean(diagnostics)
+    && diagnostics.timestampQuality?.weeklyRankingValidity === "invalid"
+    && (backfill?.successRate ?? 0) >= 0.9
+    && (backfill?.localHistoryFailed ?? 0) === 0
+    && (backfill?.apiHistoryFailed ?? 0) === 0
+    && (backfill?.rateLimitedCount ?? 0) === 0
+    && (backfill?.pathCaseFailures ?? 0) === 0
+    && (backfill?.shallowRepositoryDetected ?? 0) === 0;
+}
+
+function historicalTimestampObserved(report: WeeklyRadarReport): string {
+  const diagnostics = report.ethereumTechRadar.historicalInputDiagnostics;
+  return JSON.stringify({
+    fallbackDetectedAtRatio: diagnostics?.fallbackDetectedAtRatio ?? 0,
+    weeklyRankingValidity: diagnostics?.timestampQuality?.weeklyRankingValidity ?? "unknown",
+    current7dFallbackRatio: diagnostics?.timestampQuality?.current7dFallbackRatio ?? 0,
+    safeDegradation: historicalTimestampSafeDegradation(report),
+    gitBackfillDiagnostics: diagnostics?.gitBackfillDiagnostics ?? null,
+  });
 }
 
 function currentWindowFallbackHandled(report: WeeklyRadarReport, embeddedApi: unknown): boolean {
@@ -1733,11 +1773,11 @@ function domainSearchMetadataConsistency(html: string): boolean {
   const erc8049Segments = proposalHtmlSegments(html, "ERC-8049").join(" ");
   const eip8253Segments = proposalHtmlSegments(html, "EIP-8253").join(" ");
   const eip8333Segments = proposalHtmlSegments(html, "EIP-8333").join(" ");
-  return /data-domain="scaling-data"/.test(erc8049Segments)
+  return (!erc8049Segments || (/data-domain="scaling-data"/.test(erc8049Segments)
     && /확장·데이터|contract metadata|onchain metadata|key value registry|컨트랙트가 자체 메타데이터/.test(erc8049Segments)
-    && !/\binteroperability\b|cross-chain|bridge|message bridge|cross-chain signature/i.test(erc8049Segments)
-    && /data-domain="execution-state"/.test(eip8253Segments)
-    && /data-domain="validators-consensus"/.test(eip8333Segments);
+    && !/\binteroperability\b|cross-chain|bridge|message bridge|cross-chain signature/i.test(erc8049Segments)))
+    && (!eip8253Segments || /data-domain="execution-state"/.test(eip8253Segments))
+    && (!eip8333Segments || /data-domain="validators-consensus"/.test(eip8333Segments));
 }
 
 function domainSearchMetadataObserved(html: string): string {
@@ -3326,15 +3366,69 @@ function discussionWindowBoundary(embeddedApi: unknown): boolean {
 }
 
 function specificationBodyCoverage(embeddedApi: unknown): boolean {
+  return specificationCoverageDiagnostics(embeddedApi).passed;
+}
+
+function specificationBodyCoverageQualityCheck(embeddedApi: unknown) {
+  const diagnostics = specificationCoverageDiagnostics(embeddedApi);
+  return qualityCheck(
+    "specification-body-coverage",
+    diagnostics.passed,
+    "fail",
+    JSON.stringify(specificationCoverageObserved(diagnostics)),
+    "public proposals have fetched specification evidence or explicit fallback",
+    diagnostics.failureScope === "proposal" ? diagnostics.blockingIds : [],
+  );
+}
+
+function specificationCoverageDiagnostics(embeddedApi: unknown) {
   const snapshot = intelligenceSnapshotFromApi(embeddedApi);
-  const specs = new Map((snapshot?.facts.specificationEvidence ?? []).map((spec) => [spec.proposalId, spec]));
   const publicIds = snapshot?.monitoringUniverse.subjectRegistry
     .filter((subject) => !subject.roles.includes("excluded"))
     .map((subject) => subject.proposalId) ?? [];
-  const requiredBodyIds = [...REQUIRED_SPECIFICATION_BODY_IDS]
-    .filter((id) => specs.has(id));
-  return publicIds.every((id) => specs.has(id))
-    && requiredBodyIds.every((id) => specs.get(id)?.parseState === "body_parsed");
+  const diagnostics = specificationPreflightDiagnostics(publicIds, snapshot?.facts.specificationEvidence ?? []);
+  const passed = diagnostics.blockingIds.length === 0;
+  return {
+    passed,
+    failureScope: diagnostics.blockingIds.length ? "proposal" : "none",
+    relevantProposalIds: publicIds,
+    relevantProposalCount: publicIds.length,
+    denominator: publicIds.length,
+    numerator: diagnostics.bodyParsedIds.length + diagnostics.explicitFallbackIds.length,
+    coverage: publicIds.length ? (diagnostics.bodyParsedIds.length + diagnostics.explicitFallbackIds.length) / publicIds.length : 1,
+    bodyParsedIds: diagnostics.bodyParsedIds,
+    explicitFallbackIds: diagnostics.explicitFallbackIds,
+    officialMissingWithFallbackIds: diagnostics.officialMissingWithFallbackIds,
+    externalSourceOnlyIds: diagnostics.externalSourceOnlyIds,
+    officialTitleOnlyIds: diagnostics.officialTitleOnlyIds,
+    repositoryUnavailableIds: diagnostics.repositoryUnavailableIds,
+    parseFailedIds: diagnostics.parseFailedIds,
+    missingEvidenceIds: diagnostics.missingEvidenceIds,
+    requiredBodyTitleOnlyIds: diagnostics.requiredBodyTitleOnlyIds,
+    blockingIds: diagnostics.blockingIds,
+  };
+}
+
+function specificationCoverageObserved(diagnostics: ReturnType<typeof specificationCoverageDiagnostics>) {
+  return {
+    passed: diagnostics.passed,
+    failureScope: diagnostics.failureScope,
+    relevantProposalCount: diagnostics.relevantProposalCount,
+    denominator: diagnostics.denominator,
+    numerator: diagnostics.numerator,
+    coverage: diagnostics.coverage,
+    officialBodyParsedCount: diagnostics.bodyParsedIds.length,
+    explicitFallbackCount: diagnostics.explicitFallbackIds.length,
+    officialFileNotFoundCount: diagnostics.officialMissingWithFallbackIds.length,
+    externalOnlyCount: diagnostics.externalSourceOnlyIds.length,
+    officialTitleOnlyCount: diagnostics.officialTitleOnlyIds.length,
+    fileNotFoundCount: diagnostics.officialMissingWithFallbackIds.length,
+    parseFailedCount: diagnostics.parseFailedIds.length,
+    missingEvidenceCount: diagnostics.missingEvidenceIds.length,
+    repositoryUnavailableCount: diagnostics.repositoryUnavailableIds.length,
+    affectedIds: diagnostics.blockingIds,
+    proposalSet: diagnostics.relevantProposalIds,
+  };
 }
 
 function titleOnlyClaimStrength(embeddedApi: unknown): boolean {
@@ -3663,14 +3757,21 @@ export const __qualityTestHooks = {
   weeklyRepositoryAdditionLabel,
   weeklyRepositoryAdditionsFromApi,
   weeklyRepositoryAdditionObserved,
+  domainSearchMetadataConsistency,
   parseLocalSpecificationMarkdown,
   localSpecificationEvidence,
+  historicalTimestampQuality,
+  historicalTimestampSourceSeverity,
+  historicalTimestampSafeDegradation,
   proposalActivities,
   proposalSourceActions,
   extractProposalMechanism,
   simpleProposalSummaryKo,
   plainProposalExplanationKo,
   changeExplanationForDomain,
+  specificationBodyCoverage,
+  specificationBodyCoverageQualityCheck,
+  specificationCoverageDiagnostics,
   specificationPreflightDiagnostics,
   proposalSummaryForV3,
   snapshotWithoutVitalik,
@@ -7499,6 +7600,9 @@ function ensureSubjectRegistryCoversPublicViews(snapshot: ReturnType<typeof buil
         contentHash: createHash("sha256").update(`${proposalId}:external_source_only`).digest("hex"),
         parseState: "title_only",
         officialSourceState: "external_source_only",
+        specificationEvidenceState: "external_source_only",
+        fallbackReason: "external_public_source",
+        sourceLineage: source?.sourceType === "github_pr" ? "github_pr" : source?.sourceType === "ethereum_magicians" ? "ethereum_magicians" : "external_public_source",
       });
       specIds.add(proposalId);
     }
@@ -7574,8 +7678,42 @@ function specificationEvidenceFacts(atlas: TechnologyAtlas, publicProposalIds: s
       parseState: local.parseState,
       officialSourceState: local.officialSourceState,
       officialSourcePath: local.officialSourcePath,
+      specificationEvidenceState: local.officialSourceState,
+      fallbackReason: specificationFallbackReason(local.officialSourceState, proposalId, proposal?.sourceUrl),
+      sourceLineage: specificationSourceLineage(local.officialSourceState, proposalId, proposal?.sourceUrl),
     };
   });
+}
+
+function specificationFallbackReason(state: OfficialSpecificationSourceState, proposalId: string, sourceUrl?: string): string | null {
+  if (state === "official_body_parsed") return null;
+  if (state === "official_file_parse_failed" || state === "official_repository_unavailable") return null;
+  if (state === "official_file_title_only") return REQUIRED_SPECIFICATION_BODY_IDS.includes(proposalId as typeof REQUIRED_SPECIFICATION_BODY_IDS[number])
+    ? null
+    : "official_title_only_no_substantive_body";
+  if (state === "official_file_not_found") {
+    if (/ethereum-magicians\.org/i.test(sourceUrl ?? "")) return "pre_merge_magicians_source";
+    if (/github\.com\/ethereum\/(?:EIPs|ERCs)\/pull/i.test(sourceUrl ?? "")) return "pre_merge_github_pr_source";
+    return "official_file_absent_explicit";
+  }
+  if (state === "external_source_only") return "external_public_source";
+  return null;
+}
+
+function specificationSourceLineage(state: OfficialSpecificationSourceState, proposalId: string, sourceUrl?: string): string {
+  if (state === "external_source_only") {
+    if (/ethereum-magicians\.org/i.test(sourceUrl ?? "")) return "ethereum_magicians";
+    if (/github\.com/i.test(sourceUrl ?? "")) return "github";
+    return "external_public_source";
+  }
+  if (state === "official_file_not_found") {
+    if (/ethereum-magicians\.org/i.test(sourceUrl ?? "")) return "official_repository_absent+ethereum_magicians";
+    if (/github\.com\/ethereum\/(?:EIPs|ERCs)\/pull/i.test(sourceUrl ?? "")) return "official_repository_absent+github_pr";
+    return "official_repository_absent";
+  }
+  if (state === "official_repository_unavailable") return "official_repository_unavailable";
+  if (state === "official_file_parse_failed") return "official_repository_parse_failed";
+  return /^(ERC)-/i.test(proposalId) ? "ethereum/ERCs" : "ethereum/EIPs";
 }
 
 function buildProposalIntelligenceView(

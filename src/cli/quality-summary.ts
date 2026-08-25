@@ -7,6 +7,10 @@ type QualityCheck = {
   id?: string;
   passed?: boolean | null;
   severity?: string;
+  observed?: unknown;
+  expected?: unknown;
+  failureReason?: string;
+  affectedIds?: string[];
 };
 
 type QualityJson = {
@@ -40,8 +44,18 @@ function main(argv = process.argv.slice(2)): number {
   console.log(`Actual failures: ${actualFailures.length}`);
   console.log(`Dashboard V2 failures: ${dashboardV2Failures.length}`);
   console.log(`Failed IDs: ${failedIds.length ? failedIds.join(", ") : "none"}`);
+  if (actualFailures.length) {
+    for (const check of actualFailures) {
+      console.error("");
+      console.error(`[${check.id ?? "unknown"}]`);
+      console.error(`observed: ${JSON.stringify(check.observed ?? "")}`);
+      console.error(`expected: ${JSON.stringify(check.expected ?? "")}`);
+      console.error(`failureReason: ${check.failureReason ?? ""}`);
+      console.error(`affectedIds: ${JSON.stringify(check.affectedIds ?? [])}`);
+    }
+  }
 
-  return options.strict && actualFailures.length > 0 ? 1 : 0;
+  return options.strict && (parsed.passed !== true || actualFailures.length > 0) ? 1 : 0;
 }
 
 function parseArgs(argv: string[]) {
@@ -55,6 +69,8 @@ function parseArgs(argv: string[]) {
       if (!file) throw new Error("--file requires a path");
       options.file = file;
       index += 1;
+    } else if (!options.file) {
+      options.file = arg;
     } else {
       throw new Error(`Unknown argument: ${arg}`);
     }
