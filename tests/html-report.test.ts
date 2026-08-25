@@ -1614,6 +1614,101 @@ test("partial optional Vitalik source degrades without publishing unsupported na
   }
 });
 
+test("production quality treats exact partial extractive Vitalik shape as non-blocking only when no unsupported narrative is published", () => {
+  const scenario = weeklySignalScenario(1, 1);
+  const html = htmlWithVitalikView(scenario.html, {
+    sourceState: "partial",
+    sourceUrl: "https://vitalik.eth.limo/",
+    discoveryMethod: "official_feed",
+    fetchedAt: "2026-08-24T00:17:00.000Z",
+    latestPublishedAt: "2026-07-28",
+    collectedPostCount: 9,
+    diagnostics: {
+      feedUrl: "https://vitalik.eth.limo/feed.xml",
+      sourceCriticality: "enrichment",
+      blocking: false,
+      reason: "1 discovered Vitalik article(s) failed to fetch or parse",
+      currentAttemptAt: "2026-08-24T00:17:00.000Z",
+      articleStatuses: [{ url: "https://vitalik.eth.limo/general/2026/08/21/unavailable.html", status: null, parseState: "parse_failed", error: "response too large" }],
+      errors: [],
+    },
+    selectedPosts: [{
+      title: "Obfuscation (Part II): Diamond iO",
+      sourceUrl: "https://vitalik.eth.limo/general/2026/07/28/obfuscation_part_ii_diamond_io.html",
+      summaryState: "extractive_original",
+      summaryKo: null,
+      evidenceParagraphIds: [],
+      interpretationState: "limited",
+    }],
+  });
+
+  const api = embeddedPlatformApi(html);
+  const passed = __qualityTestHooks.vitalikCurrentSourceCollected(api);
+  const severity = __qualityTestHooks.vitalikCurrentSourceSeverity(api);
+
+  assert.equal(severity, "warning");
+  assert.equal(passed, false);
+  assert.equal(__qualityTestHooks.vitalikSafeEnrichmentDegradation(api), true);
+});
+
+test("production quality blocks partial Vitalik reviewed summary when lineage is missing", () => {
+  const scenario = weeklySignalScenario(1, 1);
+  const html = htmlWithVitalikView(scenario.html, {
+    sourceState: "partial",
+    sourceUrl: "https://vitalik.eth.limo/",
+    discoveryMethod: "official_feed",
+    fetchedAt: "2026-08-24T00:17:00.000Z",
+    latestPublishedAt: "2026-07-28",
+    collectedPostCount: 1,
+    diagnostics: {
+      feedUrl: "https://vitalik.eth.limo/feed.xml",
+      sourceCriticality: "enrichment",
+      blocking: false,
+      reason: "partial source",
+      currentAttemptAt: "2026-08-24T00:17:00.000Z",
+      articleStatuses: [],
+      errors: [],
+    },
+    selectedPosts: [{
+      factId: "vitalik-blog:unsafe-reviewed",
+      title: "Reviewed Without Lineage",
+      sourceUrl: "https://vitalik.eth.limo/general/2026/08/21/reviewed.html",
+      summaryState: "reviewed",
+      summaryKo: "근거가 없는 한국어 요약입니다.",
+      whyItMattersKo: ["근거가 없는 주목 이유입니다."],
+      evidenceParagraphIds: [],
+      interpretationState: "grounded",
+      personalViewDisclaimerKo: "개인 글이며 Ethereum의 공식 로드맵이나 커뮤니티 합의를 뜻하지 않습니다.",
+    }],
+  }, [{
+    factId: "vitalik-blog:unsafe-reviewed",
+    sourceType: "vitalik_blog_post",
+    title: "Reviewed Without Lineage",
+    sourceUrl: "https://vitalik.eth.limo/general/2026/08/21/reviewed.html",
+    canonicalUrl: "https://vitalik.eth.limo/general/2026/08/21/reviewed.html",
+    publishedAt: "2026-08-21",
+    publicationDatePrecision: "date",
+    author: "Vitalik Buterin",
+    originalLanguage: "en",
+    cleanedText: "This is enough source body text to prove the article was parsed, but the selected reviewed summary has no lineage. ".repeat(3),
+    sourceExcerpt: "This is enough source body text to prove the article was parsed.",
+    headingTexts: [],
+    outboundLinks: [],
+    contentHash: "2222222222222222222222222222222222222222222222222222222222222222",
+    fetchedAt: "2026-08-24T00:17:00.000Z",
+    parseState: "body_parsed",
+    evidenceParagraphs: [{ paragraphId: "p1", text: "This is enough source body text to prove the article was parsed." }],
+  }]);
+
+  const api = embeddedPlatformApi(html);
+  const passed = __qualityTestHooks.vitalikCurrentSourceCollected(api);
+  const severity = __qualityTestHooks.vitalikCurrentSourceSeverity(api);
+
+  assert.equal(severity, "fail");
+  assert.equal(passed, false);
+  assert.equal(__qualityTestHooks.vitalikSafeEnrichmentDegradation(api), false);
+});
+
 test("weekly summary language check allows official English terms with Korean prose", () => {
   assert.equal(
     __qualityTestHooks.weeklySummaryTextQuality("해당 Proposal은 공식 원문 기준 계정·권한 및 EVM 실행 규칙 영역을 다루는 제안입니다. 구현·채택 여부는 이번 수집 범위에서 확인하지 않았습니다."),
@@ -1985,6 +2080,34 @@ function htmlForOfficialSourceFixture(): string {
 
 function embeddedPlatformApi(html: string) {
   return JSON.parse(html.match(/<script type="application\/json" id="technology-platform-api">([\s\S]*?)<\/script>/)?.[1] ?? "{}");
+}
+
+function htmlWithVitalikView(html: string, vitalikBlog: Record<string, unknown>, vitalikFacts: Record<string, unknown>[] = []): string {
+  const match = html.match(/<script type="application\/json" id="technology-platform-api">([\s\S]*?)<\/script>/);
+  assert.ok(match);
+  const api = JSON.parse(match[1] ?? "{}");
+  api.intelligenceSnapshot.facts.vitalikBlogSourceAttempted = true;
+  api.intelligenceSnapshot.facts.vitalikBlogPosts = vitalikFacts.length > 0 ? vitalikFacts : Array.from({ length: 9 }, (_, index) => ({
+    factId: `vitalik-blog:partial-${index + 1}`,
+    sourceType: "vitalik_blog_post",
+    title: index === 0 ? "Obfuscation (Part II): Diamond iO" : `Vitalik post ${index + 1}`,
+    sourceUrl: `https://vitalik.eth.limo/general/2026/07/${28 - index}/post-${index + 1}.html`,
+    canonicalUrl: `https://vitalik.eth.limo/general/2026/07/${28 - index}/post-${index + 1}.html`,
+    publishedAt: "2026-07-28",
+    publicationDatePrecision: "date",
+    author: "Vitalik Buterin",
+    originalLanguage: "en",
+    cleanedText: "metadata only",
+    sourceExcerpt: "metadata only",
+    headingTexts: [],
+    outboundLinks: [],
+    contentHash: "1111111111111111111111111111111111111111111111111111111111111111",
+    fetchedAt: "2026-08-24T00:17:00.000Z",
+    parseState: "metadata_only",
+    evidenceParagraphs: [],
+  }));
+  api.intelligenceSnapshot.views.vitalikBlog = vitalikBlog;
+  return html.replace(match[1] ?? "{}", JSON.stringify(api));
 }
 
 function canonicalQualityFixture(input: {

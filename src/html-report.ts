@@ -2069,6 +2069,7 @@ function vitalikSafeEnrichmentDegradation(embeddedApi: unknown): boolean {
   const sourceState = String(view?.sourceState ?? "");
   const criticality = String(diagnostics?.sourceCriticality ?? "enrichment");
   const selected = vitalikSelectedPosts(embeddedApi);
+  const factsById = new Map(vitalikFactsFromApi(embeddedApi).map((fact) => [String(fact.factId ?? ""), fact]));
   return Boolean(view
     && ["partial", "unavailable"].includes(sourceState)
     && criticality !== "core"
@@ -2076,9 +2077,23 @@ function vitalikSafeEnrichmentDegradation(embeddedApi: unknown): boolean {
     && selected.every((post) => {
       const state = String(post.summaryState ?? "");
       const summary = String(post.summaryKo ?? "").trim();
-      if (state === "reviewed" || state === "generated_existing_adapter") return summary.length > 0;
-      return summary.length === 0;
+      const whyItMatters = Array.isArray(post.whyItMattersKo) ? post.whyItMattersKo : [];
+      if (state === "reviewed" || state === "generated_existing_adapter") {
+        return vitalikSelectedPostHasGroundedLineage(post, factsById.get(String(post.factId ?? "")));
+      }
+      return summary.length === 0 && whyItMatters.length === 0;
     }));
+}
+
+function vitalikSelectedPostHasGroundedLineage(post: Record<string, unknown>, fact: Record<string, unknown> | undefined): boolean {
+  const evidenceIds = Array.isArray(post.evidenceParagraphIds) ? post.evidenceParagraphIds.map(String) : [];
+  const factParagraphIds = new Set((Array.isArray(fact?.evidenceParagraphs) ? fact.evidenceParagraphs : []).map((item: unknown) => String((item as Record<string, unknown>).paragraphId ?? "")));
+  return Boolean(fact
+    && fact.parseState === "body_parsed"
+    && typeof post.summaryKo === "string" && post.summaryKo.trim().length > 0
+    && Array.isArray(post.whyItMattersKo) && post.whyItMattersKo.length >= 1
+    && evidenceIds.length >= 1
+    && evidenceIds.every((id) => factParagraphIds.has(id)));
 }
 
 function vitalikCurrentSourceCollected(embeddedApi: unknown): boolean | null {
@@ -2096,8 +2111,6 @@ function vitalikCurrentSourceCollected(embeddedApi: unknown): boolean | null {
     && typeof view.latestPublishedAt === "string"
     && selected.every((post) => {
       const fact = factById.get(String(post.factId ?? ""));
-      const evidenceIds = Array.isArray(post.evidenceParagraphIds) ? post.evidenceParagraphIds.map(String) : [];
-      const factParagraphIds = new Set((Array.isArray(fact?.evidenceParagraphs) ? fact.evidenceParagraphs : []).map((item: unknown) => String((item as Record<string, unknown>).paragraphId ?? "")));
       const publishedAt = typeof fact?.publishedAt === "string" ? fact.publishedAt : null;
       return Boolean(fact
         && fact.parseState === "body_parsed"
@@ -2107,11 +2120,8 @@ function vitalikCurrentSourceCollected(embeddedApi: unknown): boolean | null {
         && typeof fact.cleanedText === "string" && fact.cleanedText.trim().length > 0
         && typeof fact.sourceExcerpt === "string" && fact.sourceExcerpt.trim().length > 0
         && typeof fact.contentHash === "string" && /^[a-f0-9]{64}$/.test(fact.contentHash)
-        && typeof post.summaryKo === "string" && post.summaryKo.trim().length > 0
         && (post.summaryState === "reviewed" || post.summaryState === "generated_existing_adapter")
-        && Array.isArray(post.whyItMattersKo) && post.whyItMattersKo.length >= 1
-        && evidenceIds.length >= 1
-        && evidenceIds.every((id) => factParagraphIds.has(id))
+        && vitalikSelectedPostHasGroundedLineage(post, fact)
         && typeof post.personalViewDisclaimerKo === "string" && post.personalViewDisclaimerKo.includes("공식 로드맵")
         && publishedAt !== null
         && publishedAt <= reportAsOf.slice(0, 10));
@@ -3675,6 +3685,9 @@ export const __qualityTestHooks = {
   snapshotHash,
   validateWeeklyCollectionPreflight,
   vitalikNoCoreMetricContamination,
+  vitalikCurrentSourceCollected,
+  vitalikCurrentSourceSeverity,
+  vitalikSafeEnrichmentDegradation,
   aaDirectionEvidenceValid,
   aaDirectionEvidenceV2,
 };
