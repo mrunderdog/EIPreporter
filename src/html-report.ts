@@ -56,6 +56,7 @@ type OfficialSpecificationSourceState =
 
 const PROPOSAL_LEVEL_QUALITY_IDS = new Set([
   "specification-body-coverage",
+  "dashboard-filter-search-functional",
 ]);
 
 type ReportMode = "normal" | "partial" | "incident";
@@ -298,7 +299,15 @@ export function generateWeeklyQualityJson(report: WeeklyRadarReport, html = gene
     qualityCheck("dashboard-filter-status-functional", dashboardFilterStatusFunctional(html), "fail", dashboardFilterObserved(html), "status filter is backed by lifecycle status metadata"),
     qualityCheck("dashboard-filter-aa-functional", dashboardFilterAaFunctional(html), "fail", dashboardFilterObserved(html), "AA filter is backed by data-aa metadata"),
     qualityCheck("dashboard-filter-kgld-functional", dashboardFilterKgldFunctional(html), "fail", dashboardFilterObserved(html), "KGLD filter is backed by data-kgld metadata"),
-    qualityCheck("dashboard-filter-search-functional", dashboardFilterSearchFunctional(html), "fail", dashboardFilterObserved(html), "search input filters data-search metadata"),
+    qualityCheck(
+      "dashboard-filter-search-functional",
+      dashboardFilterSearchFunctional(html),
+      "fail",
+      dashboardFilterObserved(html),
+      "search input filters data-search metadata",
+      dashboardFilterSearchAffectedIds(html),
+      dashboardFilterSearchFailureReason(html),
+    ),
     qualityCheck("dashboard-filter-reset-functional", dashboardFilterResetFunctional(html), "fail", dashboardFilterObserved(html), "reset restores period/evidence/domain/status/aa/kgld/confirmed/query/page/pageSize"),
     qualityCheck("dashboard-filter-pagination-functional", dashboardFilterPaginationFunctional(html), "fail", dashboardFilterObserved(html), "pagination uses matched filter result indexes"),
     qualityCheck("dashboard-filter-empty-state-functional", dashboardFilterEmptyStateFunctional(html), "fail", dashboardFilterObserved(html), "empty sections and implementation not-collected state are explicit"),
@@ -556,7 +565,7 @@ function officialSourceAvailability() {
   };
 }
 
-function qualityCheck(id: string, passed: boolean | null, severity: "fail" | "warning", observed: string, expected: string, affectedIds: string[] = []) {
+function qualityCheck(id: string, passed: boolean | null, severity: "fail" | "warning", observed: string, expected: string, affectedIds: string[] = [], failureReason?: string) {
   if (passed === false && severity === "fail" && affectedIds.length === 0 && PROPOSAL_LEVEL_QUALITY_IDS.has(id)) {
     throw new Error(`Quality check ${id} failed with empty affectedIds; proposal-level failures must identify affected proposals.`);
   }
@@ -568,7 +577,7 @@ function qualityCheck(id: string, passed: boolean | null, severity: "fail" | "wa
     observed,
     expected,
     affectedIds,
-    failureReason: passed === false ? `${id} did not meet expected condition.` : "",
+    failureReason: passed === false ? failureReason ?? `${id} did not meet expected condition.` : "",
   };
 }
 
@@ -3113,16 +3122,33 @@ function dashboardFilterSearchFunctional(html: string): boolean {
   const explorerRows = filterableProposalTags(html);
   return /data-proposal-search/.test(html)
     && explorerRows.length > 0
-    && explorerRows.every((tag) => {
-      const proposalId = attrValue(tag, "data-open-proposal") ?? attrValue(tag, "data-proposal-id");
-      const search = attrValue(tag, "data-search");
-      return Boolean(proposalId)
-        && Boolean(search)
-        && search === search.toLowerCase()
-        && !/\bundefined\b|\bnull\b/.test(search)
-        && search.includes(String(proposalId).toLowerCase());
-    })
+    && dashboardFilterSearchFailures(html).length === 0
     && /\(d\.search\|\|""\)\.toLowerCase\(\)\.includes\(state\.query\)/.test(html);
+}
+
+function dashboardFilterSearchFailures(html: string): Array<{ proposalId: string | null; reason: string }> {
+  return filterableProposalTags(html).flatMap((tag) => {
+    const proposalId = attrValue(tag, "data-open-proposal") ?? attrValue(tag, "data-proposal-id");
+    const search = attrValue(tag, "data-search");
+    const normalizedSearch = search?.toLowerCase().trim();
+    if (!proposalId) return [{ proposalId: null, reason: "missing_proposal_id" }];
+    if (!normalizedSearch) return [{ proposalId, reason: "missing_or_empty_search" }];
+    if (/\bundefined\b|\bnull\b/.test(normalizedSearch)) return [{ proposalId, reason: "invalid_search_token" }];
+    if (!normalizedSearch.includes(proposalId.toLowerCase())) return [{ proposalId, reason: "proposal_id_missing_from_search" }];
+    return [];
+  });
+}
+
+function dashboardFilterSearchAffectedIds(html: string): string[] {
+  return [...new Set(dashboardFilterSearchFailures(html)
+    .map(({ proposalId }) => proposalId)
+    .filter((proposalId): proposalId is string => Boolean(proposalId)))].sort(compareProposalIds);
+}
+
+function dashboardFilterSearchFailureReason(html: string): string | undefined {
+  const samples = dashboardFilterSearchFailures(html).slice(0, 5)
+    .map(({ proposalId, reason }) => `${proposalId ?? "unknown"}:${reason}`);
+  return samples.length ? `dashboard search contract failed: ${samples.join(", ")}` : undefined;
 }
 
 function dashboardFilterResetFunctional(html: string): boolean {
@@ -3151,6 +3177,7 @@ function dashboardFilterObserved(html: string): string {
   const statuses = [...new Set(filterableAttributeValues(html, "data-status"))].sort();
   const statusOptions = [...filterOptionValues(html, "data-status-filter")].sort();
   const proposalRows = filterableProposalTags(html);
+  const proposalSearchFailures = dashboardFilterSearchFailures(html);
   return JSON.stringify({
     periodAttrs: (html.match(/data-c(?:7|30|180)=/g) ?? []).length,
     evidenceScopes: (html.match(/data-evidence-scopes=/g) ?? []).length,
@@ -3160,6 +3187,8 @@ function dashboardFilterObserved(html: string): string {
     statusOptions,
     proposalSearchRows: proposalRows.length,
     proposalRowsMissingSearch: proposalRows.filter((tag) => !attrValue(tag, "data-search")).length,
+    proposalSearchFailureCount: proposalSearchFailures.length,
+    proposalSearchFailureSamples: proposalSearchFailures.slice(0, 5).map(({ proposalId, reason }) => `${proposalId ?? "unknown"}:${reason}`),
     statusPredicate: /state\.status!=="all"&&d\.status!==state\.status/.test(html),
     statusAllBypass: /d\.status!=="all"/.test(html),
     searchPredicate: /\(d\.search\|\|""\)\.toLowerCase\(\)\.includes\(state\.query\)/.test(html),
@@ -3799,10 +3828,12 @@ export const __qualityTestHooks = {
   qualityCheck,
   dashboardFilterStatusFunctional,
   dashboardFilterSearchFunctional,
+  dashboardFilterSearchAffectedIds,
   dashboardFilterObserved,
   domainCrossViewConsistencyV4,
   buildDashboardV3Presentation,
   renderDashboardV3,
+  renderKgldBoard,
   heroRepositoryCountConsistency,
   magiciansCurrentWindowCards,
   knownDomainClassifierRegression,
@@ -5186,7 +5217,7 @@ function renderDashboardV3AA(p: DashboardV3Presentation): string {
 function renderDashboardV3Kgld(p: DashboardV3Presentation): string {
   const cards = p.kgldItems.map((rawItem) => {
     const item = kgldPresentationItem(rawItem);
-    return `<article class="dash-kgld-card dash-filterable" data-kind="proposal" data-open-proposal="${escapeHtml(item.proposalId)}" data-domain="kgld" data-status="all" data-aa="false" data-kgld="true" data-search="${escapeHtml(`${item.proposalId} ${item.title} ${item.action}`.toLowerCase())}" data-evidence-state="${escapeHtml(canonicalEvidenceStateFromLabel(item.evidenceLevel))}" data-evidence-scopes="specification" tabindex="0">
+    return `<article class="dash-kgld-card dash-filterable" data-kind="proposal" data-open-proposal="${escapeHtml(item.proposalId)}" data-domain="kgld" data-status="all" data-aa="false" data-kgld="true" data-search="${escapeHtml(proposalSearchText(item.proposalId, item.title, item.action))}" data-evidence-state="${escapeHtml(canonicalEvidenceStateFromLabel(item.evidenceLevel))}" data-evidence-scopes="specification" tabindex="0">
     ${proposalDetailTrigger(item.proposalId, item.proposalId)}
     <h3>${escapeHtml(item.title)}</h3>
     <dl>
@@ -5389,7 +5420,7 @@ function renderKgldBoard(view: ReturnType<typeof buildDashboardV2View>): string 
     ["Monitor", view.kgldBoard.groups.monitor],
     ["No Action", view.kgldBoard.groups.no_action],
   ] as const;
-  return `<section class="research-section v2-section" id="kgld-board"><div class="section-head"><h2>KGLD Watch</h2><p>Research Now, Monitor, No Action만 action 기준으로 정리합니다.</p></div><div class="kgld-action-grid">${columns.map(([label, items]) => items.length ? `<section><h3>${label}</h3>${items.map((item) => `<article class="kgld-watch-item v2-filterable" data-kgld="true" data-aa="false" data-domain="kgld" data-status="all" data-search="${escapeHtml(`${item.proposalId} ${item.title} ${item.internalAction}`)}" data-open-proposal="${escapeHtml(item.proposalId)}" data-evidence-id="${escapeHtml(item.evidenceIds?.[0] ?? `spec:${item.proposalId}`)}"><b>${proposalAnchor(item.proposalId, item.title)}</b><p><b>Affected process:</b> ${escapeHtml(item.affectedKgldProcess)}</p><p><b>Action:</b> ${escapeHtml(item.internalAction)}</p><p><b>Next trigger:</b> ${escapeHtml(item.nextTrigger)}</p><p><b>Evidence maturity:</b> ${escapeHtml(item.evidenceMaturity)}</p><button type="button" data-open-proposal="${escapeHtml(item.proposalId)}">Inspector</button></article>`).join("")}</section>` : "").join("") || '<p class="empty">KGLD action 없음</p>'}</div></section>`;
+  return `<section class="research-section v2-section" id="kgld-board"><div class="section-head"><h2>KGLD Watch</h2><p>Research Now, Monitor, No Action만 action 기준으로 정리합니다.</p></div><div class="kgld-action-grid">${columns.map(([label, items]) => items.length ? `<section><h3>${label}</h3>${items.map((item) => `<article class="kgld-watch-item v2-filterable" data-kgld="true" data-aa="false" data-domain="kgld" data-status="all" data-search="${escapeHtml(proposalSearchText(item.proposalId, item.title, item.internalAction))}" data-open-proposal="${escapeHtml(item.proposalId)}" data-evidence-id="${escapeHtml(item.evidenceIds?.[0] ?? `spec:${item.proposalId}`)}"><b>${proposalAnchor(item.proposalId, item.title)}</b><p><b>Affected process:</b> ${escapeHtml(item.affectedKgldProcess)}</p><p><b>Action:</b> ${escapeHtml(item.internalAction)}</p><p><b>Next trigger:</b> ${escapeHtml(item.nextTrigger)}</p><p><b>Evidence maturity:</b> ${escapeHtml(item.evidenceMaturity)}</p><button type="button" data-open-proposal="${escapeHtml(item.proposalId)}">Inspector</button></article>`).join("")}</section>` : "").join("") || '<p class="empty">KGLD action 없음</p>'}</div></section>`;
 }
 
 function renderEvidenceQualityV2(view: ReturnType<typeof buildDashboardV2View>): string {
@@ -5966,7 +5997,7 @@ function filterAttrsForProposal(proposal: { domainId: string; status: string; is
     Number(proposal.counts?.rawPosts ?? 0) > 0 ? "discussion" : "",
   ].filter(Boolean));
   const scopes = forcedScopes ?? inferredScopes;
-  const searchText = [
+  const searchText = proposalSearchText(
     proposal.proposalId,
     proposal.title ?? "",
     audited.labelKo,
@@ -5974,13 +6005,22 @@ function filterAttrsForProposal(proposal: { domainId: string; status: string; is
     audited.description ?? "",
     ...(audited.secondaryTags ?? []),
     ...(audited.searchTerms ?? []),
-  ].join(" ").toLowerCase();
+  );
   return `data-domain="${escapeHtml(audited.domainId)}" data-status="${escapeHtml(lifecycleStageForStatus(proposal.status))}" data-aa="${proposal.isAA}" data-kgld="${proposal.kgldRelevance}" data-search="${escapeHtml(searchText)}" data-evidence-state="${escapeHtml(canonicalEvidenceStateFromLabel(proposal.evidenceState ?? "confirmed"))}" data-evidence-label="${escapeHtml(evidenceStateLabelV3(proposal.evidenceState ?? "confirmed"))}" data-evidence-scopes="${escapeHtml(scopes.join(" "))}" ${periodDataAttrs(proposal.counts ?? {})}`;
 }
 
 function filterAttrsForProposalId(view: ReturnType<typeof buildDashboardV2View>, proposalId: string, forcedScopes?: string[]): string {
   const proposal = view.proposalExplorer.rows.find((row) => row.proposalId === proposalId);
-  return proposal ? filterAttrsForProposal(proposal, forcedScopes) : `data-domain="unknown" data-status="Unknown" data-aa="false" data-kgld="false" data-search="${escapeHtml(proposalId.toLowerCase())}" data-evidence-state="confirmed" data-evidence-label="공식 근거 확인" data-evidence-scopes="${escapeHtml((forcedScopes ?? ["specification"]).join(" "))}" data-c7="0" data-c30="0" data-c180="0" data-period-count="0"`;
+  return proposal ? filterAttrsForProposal(proposal, forcedScopes) : `data-domain="unknown" data-status="Unknown" data-aa="false" data-kgld="false" data-search="${escapeHtml(proposalSearchText(proposalId))}" data-evidence-state="confirmed" data-evidence-label="공식 근거 확인" data-evidence-scopes="${escapeHtml((forcedScopes ?? ["specification"]).join(" "))}" data-c7="0" data-c30="0" data-c180="0" data-period-count="0"`;
+}
+
+function proposalSearchText(...parts: Array<string | null | undefined>): string {
+  return parts
+    .filter((part): part is string => typeof part === "string")
+    .join(" ")
+    .replace(/\s+/g, " ")
+    .trim()
+    .toLowerCase();
 }
 
 function filterAttrsForTopic(topic: { domainId: string; proposalIds: string[]; name: string; evidenceState: string }): string {

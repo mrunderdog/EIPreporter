@@ -1936,6 +1936,43 @@ test("dashboard filters are functional for cold-state explorer rows without Fina
   assert.equal(__qualityTestHooks.dashboardFilterSearchFunctional(html), true, __qualityTestHooks.dashboardFilterObserved(html));
 });
 
+test("KGLD proposal search metadata is rendered in canonical lowercase", () => {
+  const fixture = dashboardV3QualityFixture({ repositoryAdditions: 1, rawPosts: 0, activeThreads: 0 });
+  const view = fixture.api.intelligenceSnapshot.views.dashboardV2 as { kgldBoard: { groups: { research_now: Array<Record<string, unknown>> } } };
+  view.kgldBoard.groups.research_now = [{
+    proposalId: "EIP-9999",
+    title: "Mixed Case Title",
+    internalAction: "Research Now",
+    affectedKgldProcess: "Settlement",
+    nextTrigger: "Review",
+    evidenceMaturity: "Official",
+    evidenceIds: [],
+  }];
+
+  const html = withDashboardFilterScript(`<input data-proposal-search>${__qualityTestHooks.renderKgldBoard(view as never)}`);
+  assert.match(html, /data-search="eip-9999 mixed case title research now"/);
+  assert.equal(__qualityTestHooks.dashboardFilterSearchFunctional(html), true, __qualityTestHooks.dashboardFilterObserved(html));
+});
+
+test("dashboard search accepts legacy mixed-case metadata using browser semantics", () => {
+  const html = withDashboardFilterScript('<input data-proposal-search><article class="kgld-watch-item v2-filterable" data-kind="proposal" data-open-proposal="EIP-9999" data-search="EIP-9999 Mixed Case Title"></article>');
+  assert.equal(__qualityTestHooks.dashboardFilterSearchFunctional(html), true, __qualityTestHooks.dashboardFilterObserved(html));
+  assert.deepEqual(__qualityTestHooks.dashboardFilterSearchAffectedIds(html), []);
+});
+
+test("dashboard search identifies the proposal missing from normalized metadata", () => {
+  const html = withDashboardFilterScript('<input data-proposal-search><article class="kgld-watch-item v2-filterable" data-kind="proposal" data-open-proposal="EIP-9999" data-search="mixed case title"></article>');
+  assert.equal(__qualityTestHooks.dashboardFilterSearchFunctional(html), false, __qualityTestHooks.dashboardFilterObserved(html));
+  assert.deepEqual(__qualityTestHooks.dashboardFilterSearchAffectedIds(html), ["EIP-9999"]);
+  assert.throws(() => __qualityTestHooks.qualityCheck(
+    "dashboard-filter-search-functional",
+    false,
+    "fail",
+    __qualityTestHooks.dashboardFilterObserved(html),
+    "search input filters data-search metadata",
+  ));
+});
+
 test("domain cross-view consistency v4 ignores aged-out live fixtures but keeps rendered rows canonical", () => {
   const fixture = dashboardV3QualityFixture({ repositoryAdditions: 2, rawPosts: 0, activeThreads: 0 });
   assert.equal(__qualityTestHooks.domainCrossViewConsistencyV4(fixture.api, fixture.html), true);
