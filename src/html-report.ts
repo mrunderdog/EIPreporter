@@ -1644,16 +1644,24 @@ function knownDomainClassifierRegression(): boolean {
 function domainCrossViewConsistencyV4(embeddedApi: unknown, html: string): boolean {
   const view = dashboardV2FromApi(embeddedApi);
   if (!view || !domainCrossViewConsistency(embeddedApi)) return false;
-  const eip8198 = view.proposalExplorer.rows.find((row) => row.proposalId === "EIP-8198");
-  const eip8298 = view.proposalExplorer.rows.find((row) => row.proposalId === "EIP-8298");
-  const segments8198 = proposalHtmlSegments(html, "EIP-8198").join(" ");
-  const segments8298 = proposalHtmlSegments(html, "EIP-8298").join(" ");
-  return eip8198?.domainId === "validators-consensus"
-    && eip8298?.domainId === "execution-state"
-    && /data-domain="validators-consensus"|검증자·합의|slot-duration|consensus-layer/.test(segments8198)
-    && /data-domain="execution-state"|실행·상태|SETCODEFROM|EVM-opcode|runtime-semantics/.test(segments8298)
-    && !/EIP-8198[\s\S]{0,700}확장·데이터/.test(segments8198)
-    && !/EIP-8298[\s\S]{0,700}계정·권한/.test(segments8298);
+  return currentDomainFixtureConsistent(view, html, "EIP-8198", "validators-consensus", /data-domain="validators-consensus"|검증자·합의|slot-duration|consensus-layer/, /EIP-8198[\s\S]{0,700}확장·데이터/)
+    && currentDomainFixtureConsistent(view, html, "EIP-8298", "execution-state", /data-domain="execution-state"|실행·상태|SETCODEFROM|EVM-opcode|runtime-semantics/, /EIP-8298[\s\S]{0,700}계정·권한/);
+}
+
+function currentDomainFixtureConsistent(
+  view: NonNullable<ReturnType<typeof dashboardV2FromApi>>,
+  html: string,
+  proposalId: string,
+  expectedDomainId: string,
+  positiveSegmentPattern: RegExp,
+  negativeSegmentPattern: RegExp,
+): boolean {
+  const row = view.proposalExplorer.rows.find((proposal) => proposal.proposalId === proposalId);
+  if (!row) return true;
+  const segments = proposalHtmlSegments(html, proposalId).join(" ");
+  return row.domainId === expectedDomainId
+    && positiveSegmentPattern.test(segments)
+    && !negativeSegmentPattern.test(segments);
 }
 
 function domainConsistencyObserved(embeddedApi: unknown): string {
@@ -3079,9 +3087,14 @@ function dashboardFilterDomainFunctional(html: string): boolean {
 }
 
 function dashboardFilterStatusFunctional(html: string): boolean {
+  const options = filterOptionValues(html, "data-status-filter");
+  const statuses = filterableAttributeValues(html, "data-status")
+    .filter((status) => status !== "all");
   return /data-status-filter/.test(html)
-    && /data-status="Final"/.test(html)
-    && /state\.status!=="all"&&d\.status!==state\.status/.test(html);
+    && statuses.length > 0
+    && statuses.every((status) => options.has(status))
+    && /state\.status!=="all"&&d\.status!==state\.status/.test(html)
+    && /d\.status!=="all"/.test(html);
 }
 
 function dashboardFilterAaFunctional(html: string): boolean {
@@ -3097,8 +3110,18 @@ function dashboardFilterKgldFunctional(html: string): boolean {
 }
 
 function dashboardFilterSearchFunctional(html: string): boolean {
+  const explorerRows = filterableProposalTags(html);
   return /data-proposal-search/.test(html)
-    && /data-search="[^"]*eip-8198/.test(html)
+    && explorerRows.length > 0
+    && explorerRows.every((tag) => {
+      const proposalId = attrValue(tag, "data-open-proposal") ?? attrValue(tag, "data-proposal-id");
+      const search = attrValue(tag, "data-search");
+      return Boolean(proposalId)
+        && Boolean(search)
+        && search === search.toLowerCase()
+        && !/\bundefined\b|\bnull\b/.test(search)
+        && search.includes(String(proposalId).toLowerCase());
+    })
     && /\(d\.search\|\|""\)\.toLowerCase\(\)\.includes\(state\.query\)/.test(html);
 }
 
@@ -3125,12 +3148,43 @@ function dashboardFilterEmptyStateFunctional(html: string): boolean {
 }
 
 function dashboardFilterObserved(html: string): string {
+  const statuses = [...new Set(filterableAttributeValues(html, "data-status"))].sort();
+  const statusOptions = [...filterOptionValues(html, "data-status-filter")].sort();
+  const proposalRows = filterableProposalTags(html);
   return JSON.stringify({
     periodAttrs: (html.match(/data-c(?:7|30|180)=/g) ?? []).length,
     evidenceScopes: (html.match(/data-evidence-scopes=/g) ?? []).length,
     filterScopes: (html.match(/data-filter-scope=/g) ?? []).length,
     emptyStates: (html.match(/data-section-empty|data-implementation-empty/g) ?? []).length,
+    statuses,
+    statusOptions,
+    proposalSearchRows: proposalRows.length,
+    proposalRowsMissingSearch: proposalRows.filter((tag) => !attrValue(tag, "data-search")).length,
+    statusPredicate: /state\.status!=="all"&&d\.status!==state\.status/.test(html),
+    statusAllBypass: /d\.status!=="all"/.test(html),
+    searchPredicate: /\(d\.search\|\|""\)\.toLowerCase\(\)\.includes\(state\.query\)/.test(html),
   });
+}
+
+function filterOptionValues(html: string, markerAttribute: string): Set<string> {
+  const select = html.match(new RegExp(`<select[^>]*${markerAttribute}[^>]*>[\\s\\S]*?<\\/select>`, "i"))?.[0] ?? "";
+  return new Set([...select.matchAll(/<option value="([^"]+)">/g)]
+    .map((match) => match[1])
+    .filter((value) => value !== "all"));
+}
+
+function filterableAttributeValues(html: string, attribute: string): string[] {
+  return [...html.matchAll(new RegExp(`\\b${attribute}="([^"]*)"`, "g"))].map((match) => match[1]);
+}
+
+function filterableProposalTags(html: string): string[] {
+  return [...html.matchAll(/<[^>]+(?:dash-filterable|v2-filterable|dash-explorer-row|dash-explorer-card)[^>]*>/g)]
+    .map((match) => match[0])
+    .filter((tag) => /\bdata-kind="proposal"|\bdata-open-proposal=|\bdata-proposal-id=/.test(tag));
+}
+
+function attrValue(tag: string, attribute: string): string | null {
+  return tag.match(new RegExp(`\\b${attribute}="([^"]*)"`))?.[1] ?? null;
 }
 
 function landscapeStatusEnumConsistency(html: string): boolean {
@@ -3743,6 +3797,10 @@ export const __qualityTestHooks = {
   monitoringScopeReferenceCount,
   monitoringScopeWording,
   qualityCheck,
+  dashboardFilterStatusFunctional,
+  dashboardFilterSearchFunctional,
+  dashboardFilterObserved,
+  domainCrossViewConsistencyV4,
   buildDashboardV3Presentation,
   renderDashboardV3,
   heroRepositoryCountConsistency,

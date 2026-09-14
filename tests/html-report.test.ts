@@ -1926,6 +1926,32 @@ test("weekly repository addition quality uses canonical rows and empty state", (
   assert.match(zero.html, /최근 기간 공식 저장소 신규 반영이 없습니다/);
 });
 
+test("dashboard filters are functional for cold-state explorer rows without Final or aged fixture proposals", () => {
+  const fixture = dashboardV3QualityFixture({ repositoryAdditions: 2, rawPosts: 0, activeThreads: 0 });
+  const html = withDashboardFilterScript(fixture.html);
+  assert.doesNotMatch(html, /data-status="Final"/);
+  assert.doesNotMatch(html, /data-search="[^"]*eip-8198/i);
+
+  assert.equal(__qualityTestHooks.dashboardFilterStatusFunctional(html), true, __qualityTestHooks.dashboardFilterObserved(html));
+  assert.equal(__qualityTestHooks.dashboardFilterSearchFunctional(html), true, __qualityTestHooks.dashboardFilterObserved(html));
+});
+
+test("domain cross-view consistency v4 ignores aged-out live fixtures but keeps rendered rows canonical", () => {
+  const fixture = dashboardV3QualityFixture({ repositoryAdditions: 2, rawPosts: 0, activeThreads: 0 });
+  assert.equal(__qualityTestHooks.domainCrossViewConsistencyV4(fixture.api, fixture.html), true);
+
+  const wrong = dashboardV3QualityFixture({ repositoryAdditions: 1, rawPosts: 0, activeThreads: 0 });
+  const wrongRow = wrong.api.intelligenceSnapshot.views.dashboardV2.proposalExplorer.rows[0];
+  wrongRow.proposalId = "EIP-8198";
+  wrongRow.domainId = "scaling-data";
+  wrongRow.domain = "확장·데이터";
+  wrong.api.intelligenceSnapshot.facts.specificationEvidence[0].proposalId = "EIP-8198";
+  assert.equal(__qualityTestHooks.domainCrossViewConsistencyV4(
+    wrong.api,
+    '<article data-open-proposal="EIP-8198" data-search="eip-8198" data-domain="scaling-data">EIP-8198 확장·데이터</article>',
+  ), false);
+});
+
 test("weekly repository count invariants survive changed next-week counts", () => {
   for (const repositoryAdditions of [2, 3]) {
     const fixture = dashboardV3QualityFixture({ repositoryAdditions, proposalCreatedOffsetDays: -2, rawPosts: 0, activeThreads: 0, reportDate: "2026-08-14" });
@@ -1948,6 +1974,17 @@ function visibleReportHtml(html: string): string {
     .replace(/<script type="application\/json" id="technology-platform-api">[\s\S]*?<\/script>/, "")
     .replace(/<!-- EIPreporter chart data: [\s\S]*? -->/, "")
     .replace(/<script>[\s\S]*?<\/script>/, "");
+}
+
+function withDashboardFilterScript(html: string): string {
+  return `${html}<script>
+    function matches(node){
+      const d=node.dataset;
+      if(state.status!=="all"&&d.status!==state.status&&d.status!=="all")return false;
+      if(state.query&&!(d.search||"").toLowerCase().includes(state.query))return false;
+      return true;
+    }
+  </script>`;
 }
 
 function specEvent(proposalId: string, suffix: string) {

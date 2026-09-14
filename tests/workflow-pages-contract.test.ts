@@ -4,6 +4,7 @@ import test from "node:test";
 
 const workflow = readFileSync(".github/workflows/weekly-report.yml", "utf8");
 const emergingWorkflow = readFileSync(".github/workflows/emerging-scan.yml", "utf8");
+const scheduledWeeklyCli = readFileSync("src/cli/ci-scheduled-weekly.ts", "utf8");
 const packageJson = JSON.parse(readFileSync("package.json", "utf8")) as { scripts: Record<string, string> };
 
 test("weekly workflow deploys only the validated report through Pages", () => {
@@ -60,6 +61,16 @@ test("weekly workflow schedule and manual dispatch share strict report pipeline 
   assert.match(workflow, /if: \$\{\{ github\.ref == 'refs\/heads\/main' && github\.event_name != 'pull_request' \}\}/);
   assert.match(packageJson.scripts["ci:scheduled-weekly"], /ci-scheduled-weekly\.ts/);
   assert.match(packageJson.scripts["quality:strict"], /quality-summary\.ts --strict/);
+});
+
+test("weekly CI command delegates strict quality diagnostics to the shared validator", () => {
+  assert.match(scheduledWeeklyCli, /run\("quality:strict"/);
+  assert.doesNotMatch(scheduledWeeklyCli, /Strict quality failed for/);
+  assert.doesNotMatch(scheduledWeeklyCli, /severity === "fail" && check\.passed === false/);
+});
+
+test("weekly cold CI command runs in isolated temporary state", () => {
+  assert.match(packageJson.scripts["weekly:ci:cold"], /ci-weekly-cold\.ts/);
 });
 
 test("manual emerging workflow has no schedule and defaults to no Telegram", () => {

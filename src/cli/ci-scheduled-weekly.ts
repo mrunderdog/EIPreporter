@@ -29,15 +29,7 @@ function run(label: string, args: string[], env: Record<string, string> = {}): v
 
 function validateLatestWeeklyQuality(): void {
   const qualityPath = latestReportPath(/weekly-\d{4}-\d{2}-\d{2}\.quality\.json$/);
-  const quality = JSON.parse(readFileSync(qualityPath, "utf8")) as {
-    passed?: boolean;
-    checks?: Array<{ id?: string; severity?: string; passed?: boolean }>;
-  };
-  const failed = (quality.checks ?? []).filter((check) => check.severity === "fail" && check.passed === false);
-  if (quality.passed !== true || failed.length > 0) {
-    throw new Error(`Strict quality failed for ${qualityPath}: ${failed.map((check) => check.id ?? "unknown").join(", ") || "quality.passed=false"}`);
-  }
-  console.log(`Strict quality passed for ${qualityPath}`);
+  run("quality:strict", ["run", "quality:strict", "--", qualityPath]);
 }
 
 function validatePublicReportLeakage(): void {

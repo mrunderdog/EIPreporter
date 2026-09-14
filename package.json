@@ -12,6 +12,7 @@
     "ci:verify": "node --experimental-strip-types src/cli/ci-verify.ts",
     "ci:scheduled-weekly": "node --experimental-strip-types src/cli/ci-scheduled-weekly.ts",
     "weekly:ci": "node --experimental-strip-types src/cli/ci-scheduled-weekly.ts",
+    "weekly:ci:cold": "node --experimental-strip-types src/cli/ci-weekly-cold.ts",
     "ci:preflight": "node --experimental-strip-types src/cli/preflight.ts",
     "diff": "node --experimental-strip-types src/cli/diff.ts",
     "report:weekly": "node --experimental-strip-types src/cli/html-report.ts",
