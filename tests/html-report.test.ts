@@ -8,7 +8,7 @@ import test from "node:test";
 import { insertSnapshot, openDatabase } from "../src/db.ts";
 import { __qualityTestHooks, generateWeeklyDebugJson, generateWeeklyHtml, weeklyDebugJsonPath, writeWeeklyHtmlReport } from "../src/html-report.ts";
 import { buildWeeklyReport } from "../src/report.ts";
-import type { ChangeEvent, EmergingIssue, ProposalRecord, WeeklyRadarReport } from "../src/types.ts";
+import type { ChangeEvent, DiscussionHeatItem, EmergingIssue, ProposalRecord, WeeklyRadarReport } from "../src/types.ts";
 
 function assertHtmlDoesNotContain(html: string, forbidden: string | RegExp, context: string): void {
   const match = typeof forbidden === "string" ? html.indexOf(forbidden) : html.search(forbidden);
@@ -2083,6 +2083,64 @@ test("V3 Magicians cards expose proposal identity for dashboard search", () => {
   assert.equal(__qualityTestHooks.dashboardFilterSearchFunctional(html), true, __qualityTestHooks.dashboardFilterObserved(html));
 });
 
+test("preserves multiple discussion threads per proposal across canonical views", () => {
+  const db = openDatabase(":memory:");
+  try {
+    const proposalIds = Array.from({ length: 8 }, (_, index) => `ERC-${9001 + index}`);
+    insertSnapshot(db, proposalIds.map((proposalId) => makeRecord(proposalId, "Draft", `hash-${proposalId}`, `${proposalId} discussion fixture`)));
+    const report = buildWeeklyReport(db, new Date("2026-08-08T00:00:00.000Z"));
+    assert.ok(report);
+    const threadCounts = [
+      ["ERC-9001", "29634", 22], ["ERC-9001", "29724", 3], ["ERC-9002", "29725", 9], ["ERC-9003", "29726", 8], ["ERC-9004", "29727", 4],
+      ["ERC-9005", "29728", 2], ["ERC-9006", "29729", 2], ["ERC-9007", "29730", 2], ["ERC-9008", "29731", 2],
+    ] as const;
+    report.ethereumTechRadar.signalLayer.discussionHeat = threadCounts.map(([proposalId, threadId, count]) => discussionThreadFixture(proposalId, threadId, count));
+    const firstThread = report.ethereumTechRadar.signalLayer.discussionHeat.find((item) => item.discussionTopicId === 29634)!;
+    const laterThread = report.ethereumTechRadar.signalLayer.discussionHeat.find((item) => item.discussionTopicId === 29724)!;
+    firstThread.authorParticipatedCurrent7d = true;
+    laterThread.authorParticipatedCurrent7d = true;
+    laterThread.discussionLastActivityAt = "2026-08-07T23:00:00.000Z";
+    firstThread.discussionAnalysis = discussionAnalysisFixture("first insight");
+    laterThread.discussionAnalysis = discussionAnalysisFixture("later insight");
+
+    const html = generateWeeklyHtml(report);
+    const api = embeddedPlatformApi(html);
+    const attention = api.intelligenceSnapshot.views.developerAttention;
+    const view = api.intelligenceSnapshot.views.dashboardV2;
+    const p1 = attention.activity.find((item: { proposalId: string }) => item.proposalId === "ERC-9001");
+    const p1Threads = view.developerActivity.threads.filter((thread: { proposalId: string }) => thread.proposalId === "ERC-9001");
+    const presentation = __qualityTestHooks.buildDashboardV3Presentation(view, api.intelligenceSnapshot.facts);
+    const cards = html.match(/<article class="dash-thread-card dash-filterable[^>]*>/g) ?? [];
+
+    assert.equal(attention.activity.length, 8);
+    assert.equal(attention.summary.activeThreads, 9);
+    assert.equal(attention.summary.rawPosts, 54);
+    assert.deepEqual(p1.activeThreadIds, ["29634", "29724"]);
+    assert.equal(p1.rawPostCount, 25);
+    assert.equal(p1.lastActivityAt, "2026-08-07T23:00:00.000Z");
+    assert.equal(p1.authorResponses, 2);
+    assert.deepEqual(p1.validatedInsights.map((insight: { summaryKo: string }) => insight.summaryKo).sort(), ["first insight", "later insight"]);
+    const sourceStrip = __qualityTestHooks.sourceStripForProposalIds(report, { classifiedProposals: [], heldProposals: [] } as never, ["ERC-9001"]);
+    assert.equal(sourceStrip.discussionThreadCount, 2);
+    assert.equal(sourceStrip.discussionPostsCurrent7d, 25);
+    assert.equal(sourceStrip.items[0]?.recentPostCount, 25);
+    assert.equal(__qualityTestHooks.discussionPostCountForProposalIds(report, ["ERC-9001"]), 25);
+    assert.equal(__qualityTestHooks.signalRingForDomain({ representativeProposals: [{ proposalId: "ERC-9001" }] } as never, new Map([["ERC-9001", [firstThread, laterThread]]]), report).posts, 25);
+    assert.deepEqual(p1Threads.map((thread: { threadId: string; rawPostCount: number }) => [thread.threadId, thread.rawPostCount]), [["29634", 22], ["29724", 3]]);
+    assert.equal(new Set(presentation.activeThreads.flatMap((thread: { evidenceIds: string[] }) => thread.evidenceIds)).size, 54);
+    assert.equal(presentation.domains.reduce((sum: number, domain: { rawPosts: number }) => sum + domain.rawPosts, 0), 54);
+    assert.equal(cards.length, 9);
+    assert.ok(cards.filter((card) => /data-open-proposal="ERC-9001"/.test(card)).every((card) => /data-thread-id="(?:29634|29724)"/.test(card)));
+    assert.equal(__qualityTestHooks.discussionActiveThreadConsistency(api), true);
+    assert.equal(__qualityTestHooks.aaNonAaRegression(api), true);
+    assert.equal(__qualityTestHooks.finalDeveloperActivityCanonicalConsistency(api, visibleReportHtml(html)), true);
+    assert.equal(__qualityTestHooks.periodCountConsistency(api), true);
+    assert.equal(__qualityTestHooks.magiciansCurrentWindowCards(api, visibleReportHtml(html)), true);
+  } finally {
+    db.close();
+  }
+});
+
 function visibleReportHtml(html: string): string {
   return html
     .replace(/<style>[\s\S]*?<\/style>/, "")
@@ -2191,6 +2249,7 @@ function dashboardV3QualityFixture(input: {
   }));
   const proposalCreatedDate = dateOffset(reportDate, input.proposalCreatedOffsetDays ?? 0);
   const threads = threadIds.map((proposalId, index) => ({
+    threadId: `thread-${index + 1}`,
     proposalId,
     title: `${proposalId} discussion`,
     rawPostCount: postCounts[index] ?? 0,
@@ -2198,7 +2257,7 @@ function dashboardV3QualityFixture(input: {
     latestActivityAt: `${reportDate}T03:00:00.000Z`,
     sourceUrl: `https://ethereum-magicians.org/t/${proposalId.toLowerCase()}/1`,
     sourcePath: `discussion/${proposalId}`,
-    evidenceIds: [`post:${proposalId}:1`],
+    evidenceIds: Array.from({ length: postCounts[index] ?? 0 }, (_, postIndex) => `post:${proposalId}:${index + 1}:${postIndex + 1}`),
     collectionStatus: "posts_fully_collected",
     daily: [{ date: reportDate, rawPostCount: postCounts[index] ?? 0 }],
   }));
@@ -2217,6 +2276,13 @@ function dashboardV3QualityFixture(input: {
       occurredAt: `${proposalCreatedDate}T01:00:00.000Z`,
     })),
     developmentEvents: weeklyItems,
+    discussionPosts: threads.flatMap((thread) => thread.evidenceIds.map((evidenceId) => ({
+      factId: evidenceId,
+      postId: evidenceId.replace(/^post:/, ""),
+      proposalId: thread.proposalId,
+      threadId: thread.threadId,
+      createdAt: thread.latestActivityAt,
+    }))),
   };
   const view = {
     metadata: { generatedAt, reportDate, sourceMode: "snapshot" },
@@ -2229,7 +2295,7 @@ function dashboardV3QualityFixture(input: {
     overview: {
       weeklyUsableCount: { value: input.repositoryAdditions },
       activeMagiciansThreadCount: { value: input.activeThreads },
-      rawPostCount: { value: input.rawPosts },
+      rawPostCount: { value: input.rawPosts, evidenceIds: threads.flatMap((thread) => thread.evidenceIds) },
       uniqueParticipantCount: { value: input.rawPosts },
     },
     monitoringScope: { monitoredProposalCount: proposalRows.length, detailedProposalCount: input.activeThreads, discussionThreadCount: input.activeThreads },
@@ -2414,14 +2480,11 @@ function canonicalQualityFixture(input: {
     return {
       proposalId,
       title: `${proposalId} title`,
+      activeThreadIds: threadIds.filter((_, threadIndex) => threadIndex % input.topProposals.length === index),
       rawPostIds,
       rawPostCount: rawPostIds.length,
     };
   });
-  for (let index = input.topProposals.length; index < input.threadCount; index += 1) {
-    const proposalId = `ERC-${9000 + index}`;
-    activity.push({ proposalId, title: `${proposalId} title`, rawPostIds: [], rawPostCount: 0 });
-  }
   const technologyPostIds = postIds.slice(0, input.technologyMapPostCount);
   const domains = Array.from({ length: 8 }, (_, index) => {
     const rawPostIds = index === 0 ? technologyPostIds : [];
@@ -2475,7 +2538,7 @@ function canonicalQualityFixture(input: {
       inputSnapshotHash: input.inputSnapshotHash ?? fixture?.inputSnapshotHash ?? "unregistered-input-hash",
     },
     facts: {
-      discussionPosts: postIds.map((postId, index) => ({ postId, factId: `post:${postId}`, createdAt: input.reportAsOf })),
+      discussionPosts: postIds.map((postId, index) => ({ postId, factId: `post:${postId}`, proposalId: input.topProposals[index % input.topProposals.length], threadId: threadIds[index % threadIds.length], createdAt: input.reportAsOf })),
       developmentEvents: [],
       specificationEvidence: [],
     },
@@ -2605,6 +2668,43 @@ function distributeCounts(total: number, buckets: number): number[] {
     index += 1;
   }
   return counts;
+}
+
+function discussionThreadFixture(proposalId: string, threadId: string, count: number): DiscussionHeatItem {
+  const windowStart = Date.parse("2026-08-01T00:00:00.000Z");
+  return {
+    proposalId,
+    title: `${proposalId} discussion fixture`,
+    status: "Draft",
+    theme: "Unclassified",
+    discussionUrl: `https://ethereum-magicians.org/t/${proposalId.toLowerCase()}/${threadId}`,
+    discussionLinks: [],
+    discussionScore: 1,
+    whyItMatters: "Multiple thread aggregation fixture.",
+    canonicalUrl: `https://example.test/${proposalId}`,
+    discussionTopicId: Number(threadId),
+    discussionTitle: `${proposalId} thread ${threadId}`,
+    discussionSource: "Ethereum Magicians",
+    discussionLastActivityAt: new Date(windowStart + (count - 1) * 60_000).toISOString(),
+    postTimestampTrace: Array.from({ length: count }, (_, index) => new Date(windowStart + index * 60_000).toISOString()),
+    latestPostAuthors: Array.from({ length: count }, (_, index) => `user-${threadId}-${index}`),
+  };
+}
+
+function discussionAnalysisFixture(text: string): NonNullable<DiscussionHeatItem["discussionAnalysis"]> {
+  const item = { text, sourcePostIds: [1], sourceUsernames: ["author"], sourceDates: ["2026-08-01T00:00:00.000Z"] };
+  return {
+    analysisAttempted: true,
+    analysisCompleted: true,
+    analyzedPostCount: 1,
+    contentAvailable: true,
+    keyIssues: [item],
+    objections: [],
+    alternatives: [],
+    unresolvedQuestions: [],
+    proposalAuthorResponses: [],
+    specificationReferences: [],
+  };
 }
 
 function makeRecord(

@@ -263,7 +263,7 @@ export function generateWeeklyQualityJson(report: WeeklyRadarReport, html = gene
     qualityCheck("developer-attention-summary-present", developerAttentionSummaryPresent(embeddedApi, visibleHtml), "fail", "developer attention cards", "each activity card has proposalSummaryKo"),
     qualityCheck("developer-attention-summary-source", developerAttentionSummarySource(embeddedApi), "fail", "summary evidence", "each activity card has official source URL"),
     qualityCheck("discussion-card-summary-union", discussionCardSummaryUnion(embeddedApi), "fail", "developer attention post ids", "card rawPostIds union equals summary rawPostIds"),
-    qualityCheck("discussion-active-thread-consistency", discussionActiveThreadConsistency(embeddedApi), "fail", "developer attention active threads", "activity card count equals activeThreadCount"),
+    qualityCheck("discussion-active-thread-consistency", discussionActiveThreadConsistency(embeddedApi), "fail", "developer attention active threads", "activity thread and post unions equal summary canonical ids"),
     qualityCheck("weekly-usable-cross-view-consistency", weeklyUsableCrossViewConsistency(embeddedApi), "fail", "weekly usable events", "focus, landscape, weekly scores use same usable event set"),
     qualityCheck("aa-discussion-deduplication", aaDiscussionDeduplication(embeddedApi, visibleText), "fail", "AA discussion", "summary uses unique thread/post count and keeps track assignment separate"),
     qualityCheck("aa-zero-vs-not-collected", aaZeroVsNotCollected(embeddedApi, visibleHtml), "fail", "AA-01", "uncollected AA metrics are not rendered as numeric zero"),
@@ -2377,13 +2377,13 @@ function magiciansCurrentWindowCards(embeddedApi: unknown, visibleHtml: string):
   const presentation = buildDashboardV3Presentation(view, facts);
   const segment = visibleHtml.match(/<section class="dash-panel dash-section" id="magicians"[\s\S]*?<\/section>/)?.[0] ?? "";
   const cards = segment.match(/<article class="dash-thread-card[\s\S]*?<\/article>/g) ?? [];
-  const renderedIds = cards.map((card) => card.match(/<span class="dash-proposal-pill">([^<]+)<\/span>/)?.[1]).filter((id): id is string => Boolean(id));
-  const expectedIds = presentation.activeThreads.map((thread) => thread.proposalId);
+  const renderedThreadIds = cards.map((card) => attrValue(card, "data-thread-id")).filter((id): id is string => Boolean(id));
+  const expectedThreadIds = presentation.activeThreads.map((thread) => thread.threadId);
   const renderedPostTotal = cards.reduce((sum, card) => sum + Number(card.match(/<strong>(\d+)<span>원문 게시물<\/span><\/strong>/)?.[1] ?? 0), 0);
   const expectedPostTotal = presentation.activeThreads.reduce((sum, thread) => sum + Number(thread.rawPostCount ?? 0), 0);
   return presentation.activeThreads.length === view.developerActivity.activeThreadCount
-    && setEquals(new Set(renderedIds), new Set(expectedIds))
-    && renderedIds.length === expectedIds.length
+    && setEquals(new Set(renderedThreadIds), new Set(expectedThreadIds))
+    && renderedThreadIds.length === expectedThreadIds.length
     && renderedPostTotal === expectedPostTotal
     && expectedPostTotal === Number(view.developerActivity.rawPostCount ?? expectedPostTotal)
     && presentation.activeThreads.every((thread) => isWithinTrailingDays(thread.latestActivityAt, view.metadata.reportDate, 7));
@@ -2399,6 +2399,7 @@ function magiciansCurrentWindowObserved(embeddedApi: unknown, visibleHtml: strin
     activeThreads: presentation?.activeThreads.map((thread) => ({ proposalId: thread.proposalId, rawPostCount: thread.rawPostCount, latestActivityAt: thread.latestActivityAt })) ?? [],
     renderedCards: cards.map((card) => ({
       proposalId: card.match(/<span class="dash-proposal-pill">([^<]+)<\/span>/)?.[1] ?? "missing",
+      threadId: attrValue(card, "data-thread-id") ?? "missing",
       rawPostCount: Number(card.match(/<strong>(\d+)<span>원문 게시물<\/span><\/strong>/)?.[1] ?? 0),
     })),
   });
@@ -2727,8 +2728,14 @@ function discussionCardSummaryUnion(embeddedApi: unknown): boolean {
 function discussionActiveThreadConsistency(embeddedApi: unknown): boolean {
   const attention = dashboardFromApi(embeddedApi)?.developerAttention;
   if (!attention) return false;
-  return attention.activity.length === attention.summary.activeThreads
-    && attention.summary.activeThreadIds?.length === attention.summary.activeThreads;
+  const activityThreadIds = new Set(attention.activity.flatMap((item) => stringList(item.activeThreadIds)));
+  const activityPostIds = new Set(attention.activity.flatMap((item) => stringList(item.rawPostIds)));
+  const summaryThreadIds = new Set(stringList(attention.summary.activeThreadIds));
+  const summaryPostIds = new Set(stringList(attention.summary.rawPostIds));
+  return setEquals(activityThreadIds, summaryThreadIds)
+    && setEquals(activityPostIds, summaryPostIds)
+    && summaryThreadIds.size === attention.summary.activeThreads
+    && summaryPostIds.size === attention.summary.rawPosts;
 }
 
 function weeklyUsableCrossViewConsistency(embeddedApi: unknown): boolean {
@@ -2925,16 +2932,21 @@ function aaNonAaRegression(embeddedApi: unknown): boolean {
   });
   const technologyAggregate = snapshot.aggregates.discussion?.technology_map_set as { rawPostIds?: string[]; rawPostCount?: number } | undefined;
   const technologyUnion = new Set(dashboard.technologyLandscape.flatMap((domain) => stringList(domain.discussion?.rawPostIds)));
-  const developerAggregate = snapshot.aggregates.discussion?.developer_activity_set as { rawPosts?: number; activeThreads?: number; rawPostIds?: string[] } | undefined;
+  const developerAggregate = snapshot.aggregates.discussion?.developer_activity_set as { rawPosts?: number; activeThreads?: number; rawPostIds?: string[]; activeThreadIds?: string[] } | undefined;
   const developerUnion = new Set(dashboard.developerAttention.activity.flatMap((item) => stringList(item.rawPostIds)));
+  const developerThreadUnion = new Set(dashboard.developerAttention.activity.flatMap((item) => stringList(item.activeThreadIds)));
   const executiveTop3 = dashboard.executivePulse.whatChanged.magiciansActivity.map((item) => item.proposalIds[0]).join(",");
   const attentionTop3 = dashboard.developerAttention.activity.slice(0, 3).map((item) => item.proposalId).join(",");
   const kgldGroups = dashboard.kgldWatch.groups;
   return Boolean(developerAggregate && technologyAggregate)
     && developerAggregate!.rawPosts === developerUnion.size
     && dashboard.developerAttention.summary.rawPosts === developerUnion.size
-    && dashboard.developerAttention.summary.activeThreads === dashboard.developerAttention.activity.length
+    && setEquals(developerUnion, new Set(stringList(developerAggregate!.rawPostIds)))
+    && setEquals(developerUnion, new Set(stringList(dashboard.developerAttention.summary.rawPostIds)))
+    && setEquals(developerThreadUnion, new Set(stringList(developerAggregate!.activeThreadIds)))
+    && setEquals(developerThreadUnion, new Set(stringList(dashboard.developerAttention.summary.activeThreadIds)))
     && developerAggregate!.activeThreads === dashboard.developerAttention.summary.activeThreads
+    && developerThreadUnion.size === developerAggregate!.activeThreads
     && stringList(developerAggregate!.rawPostIds).length === developerAggregate!.rawPosts
     && executiveTop3 === attentionTop3
     && domainDiscussionConsistent
@@ -3758,15 +3770,19 @@ function finalDeveloperActivityCanonicalConsistency(embeddedApi: unknown, visibl
   const dashboard = snapshot?.views;
   if (!snapshot || !dashboard) return false;
   const factIds = new Set(snapshot.facts.discussionPosts.map((post) => post.postId));
-  const aggregate = snapshot.aggregates.discussion?.developer_activity_set as { rawPostIds?: string[]; activeThreads?: number; rawPosts?: number } | undefined;
+  const aggregate = snapshot.aggregates.discussion?.developer_activity_set as { rawPostIds?: string[]; activeThreadIds?: string[]; activeThreads?: number; rawPosts?: number } | undefined;
   const cardIds = new Set(dashboard.developerAttention.activity.flatMap((item) => stringList(item.rawPostIds)));
+  const cardThreadIds = new Set(dashboard.developerAttention.activity.flatMap((item) => stringList(item.activeThreadIds)));
   const executiveTop = dashboard.executivePulse.whatChanged.magiciansActivity.map((item) => item.proposalIds[0]).join(",");
   const cardTop = dashboard.developerAttention.activity.slice(0, 3).map((item) => item.proposalId).join(",");
   return Boolean(aggregate)
     && [...cardIds].every((id) => factIds.has(id))
+    && setEquals(cardIds, new Set(stringList(aggregate!.rawPostIds)))
+    && setEquals(cardIds, new Set(stringList(dashboard.developerAttention.summary.rawPostIds)))
+    && setEquals(cardThreadIds, new Set(stringList(aggregate!.activeThreadIds)))
+    && setEquals(cardThreadIds, new Set(stringList(dashboard.developerAttention.summary.activeThreadIds)))
     && cardIds.size === aggregate!.rawPosts
-    && cardIds.size === dashboard.developerAttention.summary.rawPosts
-    && dashboard.developerAttention.activity.length === dashboard.developerAttention.summary.activeThreads
+    && cardThreadIds.size === aggregate!.activeThreads
     && dashboard.developerAttention.summary.activeThreads === aggregate!.activeThreads
     && executiveTop === cardTop
     && new RegExp(`${dashboard.developerAttention.summary.rawPosts}`).test(visibleHtml);
@@ -3813,6 +3829,7 @@ export const __qualityTestHooks = {
   GOLDEN_FIXTURE_VERSION,
   GOLDEN_FIXTURES,
   aaNonAaRegression,
+  discussionActiveThreadConsistency,
   finalDeveloperActivityCanonicalConsistency,
   finalGoldenExpected,
   finalGoldenFixtureDateScope,
@@ -3839,12 +3856,16 @@ export const __qualityTestHooks = {
   dashboardFilterSearchAffectedIds,
   dashboardFilterObserved,
   developerAttentionDashboard,
+  discussionPostCountForProposalIds,
   domainCrossViewConsistencyV4,
   buildDashboardV3Presentation,
   renderDashboardV3,
   renderKgldBoard,
+  signalRingForDomain,
+  sourceStripForProposalIds,
   heroRepositoryCountConsistency,
   magiciansCurrentWindowCards,
+  periodCountConsistency,
   knownDomainClassifierRegression,
   knownDomainFixtureExpectations,
   knownDomainRuntimeMismatches,
@@ -4169,12 +4190,12 @@ export function buildDashboardV2View(snapshot: WeeklyRadarReport) {
   const eventFacts = developmentEventFacts(report);
   const specFacts = specificationEvidenceFacts(atlas, publicProposalIdsForSnapshot(atlas, legacy), report.generatedAt);
   const postFacts = discussionPostFacts(report, specFacts.map((fact) => fact.proposalId));
-  const discussionByProposal = discussionMap(report);
+  const representativeDiscussionByProposal = representativeDiscussionByProposalForReport(report);
   const kgldIds = new Set(Object.values(legacy.kgldWatch.groups).flat().map((item) => item.proposalId));
   const aaIds = new Set(legacy.accountAbstraction.tracks.flatMap((track) => track.proposalIds));
   const proposals = [...atlas.classifiedProposals, ...atlas.heldProposals]
     .map((proposal) => {
-      const discussion = discussionByProposal.get(proposal.proposalId);
+      const discussion = representativeDiscussionByProposal.get(proposal.proposalId);
       const proposalEvents7d = usable7d.filter((event) => event.proposalId === proposal.proposalId);
       const proposalEvents30d = events30d.filter((event) => event.proposalId === proposal.proposalId);
       const proposalEvents180d = events180d.filter((event) => event.proposalId === proposal.proposalId);
@@ -4314,11 +4335,12 @@ export function buildDashboardV2View(snapshot: WeeklyRadarReport) {
     });
     topics = topics.sort((a, b) => b.current7dConfirmedChanges - a.current7dConfirmedChanges || b.rawPostCount - a.rawPostCount || a.name.localeCompare(b.name));
   }
-  const threads = report.ethereumTechRadar.signalLayer.discussionHeat.map((discussion) => {
-    const posts = postFacts.filter((post) => post.proposalId === discussion.proposalId);
+  const threads = discussionThreads(report).map((discussion) => {
+    const threadId = discussionThreadKey(discussion);
+    const posts = postFacts.filter((post) => post.threadId === threadId);
     const collectionStatus = discussionCollectionStatus(discussion);
     return {
-      threadId: String(discussion.discussionTopicId ?? discussion.proposalId),
+      threadId,
       proposalId: discussion.proposalId,
       title: collectionStatus === "posts_fully_collected" ? discussion.discussionTitle ?? discussion.title : discussion.proposalId,
       rawPostCount: posts.length,
@@ -4328,7 +4350,7 @@ export function buildDashboardV2View(snapshot: WeeklyRadarReport) {
       collectionStatus,
       relevanceState: posts.some((post) => post.relevanceState === "technical") ? "classified" : "unclassified",
       sourceUrl: discussion.discussionUrl ?? discussion.canonicalUrl ?? proposalUrl(discussion.proposalId),
-      sourcePath: `ethereumTechRadar.signalLayer.discussionHeat[proposalId=${discussion.proposalId}]`,
+      sourcePath: `ethereumTechRadar.signalLayer.discussionHeat[threadId=${threadId}]`,
       evidenceIds: posts.map((post) => `post:${post.postId}`),
       daily: dailyPostCounts(posts, report.changePeriod.from, report.changePeriod.to),
     };
@@ -4609,13 +4631,13 @@ function currentDeveloperActivityThreads(view: ReturnType<typeof buildDashboardV
       .filter((thread) => thread.rawPostCount > 0 && isWithinTrailingDays(thread.latestActivityAt, view.metadata.reportDate, 7))
       .sort((a, b) => b.rawPostCount - a.rawPostCount || String(b.latestActivityAt ?? "").localeCompare(String(a.latestActivityAt ?? "")) || compareProposalIds(a.proposalId, b.proposalId));
   }
-  const postsByProposal = new Map<string, NonNullable<DashboardV3Facts["discussionPosts"]>>();
+  const postsByThread = new Map<string, NonNullable<DashboardV3Facts["discussionPosts"]>>();
   for (const post of facts.discussionPosts ?? []) {
     if (!canonicalPostIds.has(String(post.postId))) continue;
-    postsByProposal.set(post.proposalId, [...(postsByProposal.get(post.proposalId) ?? []), post]);
+    postsByThread.set(post.threadId, [...(postsByThread.get(post.threadId) ?? []), post]);
   }
   const rows = view.developerActivity.threads.flatMap((thread) => {
-    const posts = postsByProposal.get(thread.proposalId) ?? [];
+    const posts = postsByThread.get(thread.threadId) ?? [];
     if (posts.length === 0) return [];
     const latestActivityAt = posts.map((post) => post.createdAt).sort().at(-1) ?? thread.latestActivityAt;
     return [{
@@ -4668,7 +4690,10 @@ function buildDashboardV3Presentation(view: ReturnType<typeof buildDashboardV2Vi
   const activeThreads = currentDeveloperActivityThreads(view, facts);
   const current7dThreadProposalIds = new Set(activeThreads
     .map((thread) => thread.proposalId));
-  const current7dRawPostsByProposal = new Map(activeThreads.map((thread) => [thread.proposalId, thread.rawPostCount]));
+  const current7dRawPostsByProposal = new Map<string, number>();
+  for (const thread of activeThreads) {
+    current7dRawPostsByProposal.set(thread.proposalId, (current7dRawPostsByProposal.get(thread.proposalId) ?? 0) + thread.rawPostCount);
+  }
   const domains = view.filters.domains.map((domainId) => {
     const proposals = view.proposalExplorer.rows.filter((proposal) => proposal.domainId === domainId);
     const topics = view.topicActivityMap.points.filter((topic) => topic.domainId === domainId);
@@ -5160,7 +5185,7 @@ function visibleWeeklySummary(summary: string): string {
 function renderDashboardV3Magicians(p: DashboardV3Presentation): string {
   const view = p.view;
   const maxPosts = Math.max(1, ...p.activeThreads.map((thread) => thread.rawPostCount));
-  const cards = p.activeThreads.map((thread, index) => `<article class="dash-thread-card dash-filterable ${index === 0 ? "dash-thread-featured" : ""}" ${filterAttrsForProposalId(view, thread.proposalId, ["discussion"])} data-kind="proposal" data-open-proposal="${escapeHtml(thread.proposalId)}" data-evidence-id="${escapeHtml(publicEvidenceId(thread.evidenceIds, thread.proposalId))}">
+  const cards = p.activeThreads.map((thread, index) => `<article class="dash-thread-card dash-filterable ${index === 0 ? "dash-thread-featured" : ""}" ${filterAttrsForProposalId(view, thread.proposalId, ["discussion"])} data-kind="proposal" data-open-proposal="${escapeHtml(thread.proposalId)}" data-thread-id="${escapeHtml(thread.threadId)}" data-evidence-id="${escapeHtml(publicEvidenceId(thread.evidenceIds, thread.proposalId))}">
     <div class="dash-thread-head"><span class="dash-proposal-pill">${escapeHtml(thread.proposalId)}</span><span class="dash-state">${escapeHtml(collectionLabel(thread.collectionStatus))}</span></div>
     <h3>${escapeHtml(thread.title)}</h3>
     <div class="dash-thread-metrics"><strong>${thread.rawPostCount}<span>원문 게시물</span></strong><em>${thread.uniqueParticipantCount}명 참여</em><em>최근 게시 ${escapeHtml(shortDate(thread.latestActivityAt))}</em></div>
@@ -6371,13 +6396,13 @@ function eventInWindow(event: ChangeEvent, reportEndAt: string, days: number): b
 
 function discussionWindowAggregates(report: WeeklyRadarReport, atlas: TechnologyAtlas) {
   const all = mainReportProposals(atlas);
-  const discussionByProposal = discussionMap(report);
+  const threadsByProposal = discussionThreadsByProposal(report);
   const windowStart = report.changePeriod.from;
   const windowEnd = report.changePeriod.to;
   const postsForDiscussion = (discussion: DiscussionHeatItem) => discussionPostRows(discussion, windowStart, windowEnd);
   const aggregateFor = (scopeType: string, scopeId: string, proposalIds: string[]) => {
     const unique = [...new Set(proposalIds)];
-    const discussions = unique.map((id) => discussionByProposal.get(id)).filter((discussion): discussion is DiscussionHeatItem => Boolean(discussion));
+    const discussions = unique.flatMap((id) => threadsByProposal.get(id) ?? []);
     const posts = dedupeDiscussionPosts(discussions.flatMap(postsForDiscussion));
     const rawPostIds = posts.filter((post) => post.relevanceState !== "deleted").map((post) => post.postId);
     const validTechnicalPostIds = posts.filter((post) => post.relevanceState === "technical").map((post) => post.postId);
@@ -6407,13 +6432,14 @@ function discussionWindowAggregates(report: WeeklyRadarReport, atlas: Technology
     };
   };
   const topicAggregates = topicProgressRows(atlas).map((topic) => aggregateFor("topic", slugifyTopic(topic.topic), topic.proposals));
-  const proposalAggregates = report.ethereumTechRadar.signalLayer.discussionHeat
-    .filter((discussion) => postsForDiscussion(discussion).length > 0)
-    .sort((a, b) => (postsForDiscussion(b).length - postsForDiscussion(a).length)
-      || ((b.participantCountCurrent7d ?? 0) - (a.participantCountCurrent7d ?? 0))
-      || String(b.discussionLastActivityAt ?? "").localeCompare(String(a.discussionLastActivityAt ?? "")))
+  const proposalAggregates = [...threadsByProposal.keys()]
+    .map((proposalId) => aggregateFor("proposal_card", proposalId, [proposalId]))
+    .filter((aggregate) => aggregate.rawPostCount > 0 && aggregate.activeThreadCount > 0)
+    .sort((a, b) => (b.rawPostCount - a.rawPostCount)
+      || (b.uniqueParticipantCount - a.uniqueParticipantCount)
+      || String(b.windowEnd).localeCompare(String(a.windowEnd))
+      || compareProposalIds(a.scopeId, b.scopeId))
     .slice(0, 8)
-    .map((discussion) => aggregateFor("proposal_card", discussion.proposalId, [discussion.proposalId]));
   return {
     coreTopics: aggregateFor("core_topics", "core_topics", selectFrontPageTopics(atlas).flatMap((topic) => topic.proposals)),
     mapEvidence: aggregateFor("map_evidence", "map_evidence", atlas.domains.flatMap((domain) => domain.representativeProposals.map((proposal) => proposal.proposalId))),
@@ -6436,8 +6462,8 @@ function discussionPostRows(discussion: DiscussionHeatItem, windowStart: string,
     .sort((left, right) => left.timestamp.localeCompare(right.timestamp) || left.traceIndex - right.traceIndex);
   return timestamps.map(({ timestamp: createdAt, traceIndex }, index) => {
     return {
-      postId: `${discussion.discussionTopicId ?? discussion.proposalId}:${traceIndex}:${createdAt}`,
-      topicId: discussion.discussionTopicId ? String(discussion.discussionTopicId) : discussion.proposalId,
+      postId: `${discussionThreadKey(discussion)}:${traceIndex}:${createdAt}`,
+      topicId: discussionThreadKey(discussion),
       proposalId: discussion.proposalId,
       createdAt,
       username: discussion.latestPostAuthors?.[index % Math.max(1, discussion.latestPostAuthors.length)] ?? `participant-${index + 1}`,
@@ -6453,6 +6479,21 @@ function dedupeDiscussionPosts(posts: ReturnType<typeof discussionPostRows>) {
   const byId = new Map<string, ReturnType<typeof discussionPostRows>[number]>();
   for (const post of posts) byId.set(post.postId, post);
   return [...byId.values()];
+}
+
+function discussionPostCountForProposalIds(report: WeeklyRadarReport, proposalIds: string[]): number {
+  const threadsByProposal = discussionThreadsByProposal(report);
+  const threads = [...new Set(proposalIds)].flatMap((proposalId) => threadsByProposal.get(proposalId) ?? []);
+  return dedupeDiscussionPosts(threads.flatMap((thread) => discussionPostRows(thread, report.changePeriod.from, report.changePeriod.to)))
+    .filter((post) => post.relevanceState !== "deleted").length;
+}
+
+function latestDiscussionActivityAt(threads: DiscussionHeatItem[]): string | null {
+  const timestamps = threads
+    .map((thread) => thread.discussionLastActivityAt ?? "")
+    .filter((timestamp) => Number.isFinite(Date.parse(timestamp)))
+    .sort((left, right) => Date.parse(right) - Date.parse(left));
+  return timestamps[0] ?? null;
 }
 
 function topicDashboardItem(
@@ -6628,11 +6669,13 @@ function technologyLandscapeDashboard(
 }
 
 function developerAttentionDashboard(report: WeeklyRadarReport, atlas: TechnologyAtlas, discussions: ReturnType<typeof discussionWindowAggregates>) {
-  const discussionByProposal = discussionMap(report);
+  const threadsByProposal = discussionThreadsByProposal(report);
+  const representativeDiscussionByProposal = representativeDiscussionByProposalForReport(report);
   const active = discussions.proposals
     .filter((aggregate) => aggregate.rawPostCount > 0 && aggregate.activeThreadCount > 0)
     .map((aggregate) => {
-      const discussion = discussionByProposal.get(aggregate.scopeId);
+      const proposalThreads = threadsByProposal.get(aggregate.scopeId) ?? [];
+      const discussion = representativeDiscussionByProposal.get(aggregate.scopeId);
       if (!discussion) return null;
       const proposal = proposalById(atlas, discussion.proposalId);
       const specification = localSpecificationEvidence(discussion.proposalId);
@@ -6647,6 +6690,8 @@ function developerAttentionDashboard(report: WeeklyRadarReport, atlas: Technolog
         confidence: proposalSummaryConfidence(discussion.proposalId),
       },
       threadUrl: discussion.discussionUrl,
+      threadUrls: unique(proposalThreads.map((thread) => thread.discussionUrl).filter((url): url is string => Boolean(url))),
+      activeThreadIds: aggregate.activeThreadIds,
       rawPostIds: aggregate.rawPostIds,
       rawPostCount: aggregate.rawPostCount,
       validTechnicalPostIds: aggregate.validTechnicalPostIds,
@@ -6654,9 +6699,9 @@ function developerAttentionDashboard(report: WeeklyRadarReport, atlas: Technolog
       analyzedPostIds: aggregate.analyzedPostIds,
       analyzedPostCount: aggregate.analyzedPostCount,
       participantCount: aggregate.uniqueParticipantCount,
-      lastActivityAt: discussion.discussionLastActivityAt ?? null,
-      authorResponses: discussion.authorParticipatedCurrent7d ? 1 : 0,
-      validatedInsights: validatedDiscussionInsights(discussion),
+        lastActivityAt: latestDiscussionActivityAt(proposalThreads),
+        authorResponses: proposalThreads.filter((thread) => thread.authorParticipatedCurrent7d).length,
+        validatedInsights: validatedDiscussionInsightsForThreads(proposalThreads),
       };
     })
     .filter((item): item is NonNullable<typeof item> => Boolean(item));
@@ -7791,6 +7836,15 @@ function specificationEvidenceFacts(atlas: TechnologyAtlas, publicProposalIds: s
       sourceLineage: specificationSourceLineage(local.officialSourceState, proposalId, proposal?.sourceUrl),
     };
   });
+}
+
+function validatedDiscussionInsightsForThreads(threads: DiscussionHeatItem[]) {
+  const byIdentity = new Map<string, ReturnType<typeof validatedDiscussionInsights>[number]>();
+  for (const insight of threads.flatMap(validatedDiscussionInsights)) {
+    const identity = JSON.stringify([insight.category, insight.summaryKo, insight.sourcePostIds, insight.sourceUrls]);
+    byIdentity.set(identity, insight);
+  }
+  return [...byIdentity.values()];
 }
 
 function specificationFallbackReason(state: OfficialSpecificationSourceState, proposalId: string, sourceUrl?: string): string | null {
@@ -9072,13 +9126,14 @@ function sourceCoverage(report: WeeklyRadarReport, atlas: TechnologyAtlas) {
 }
 
 function coverageForProposals(report: WeeklyRadarReport, proposals: ReturnType<typeof mainReportProposals>) {
-  const discussionByProposal = discussionMap(report);
+  const threadsByProposal = discussionThreadsByProposal(report);
   const implementationIds = implementationEvidenceIds(report);
-  const discussions = proposals.map((proposal) => discussionByProposal.get(proposal.proposalId));
+  const discussionGroups = proposals.map((proposal) => threadsByProposal.get(proposal.proposalId) ?? []);
+  const discussions = discussionGroups.flat();
   const denominator = proposals.length;
-  const threadUrlConfirmed = discussions.filter((discussion) => Boolean(discussion?.discussionUrl)).length;
-  const postsFullyCollected = discussions.filter((discussion) => discussionCollectionStatus(discussion) === "posts_fully_collected").length;
-  const postsPartiallyCollected = discussions.filter((discussion) => discussionCollectionStatus(discussion) === "posts_partially_collected").length;
+  const threadUrlConfirmed = discussionGroups.filter((threads) => threads.some((discussion) => Boolean(discussion.discussionUrl))).length;
+  const postsFullyCollected = discussionGroups.filter((threads) => threads.length > 0 && threads.every((discussion) => discussionCollectionStatus(discussion) === "posts_fully_collected")).length;
+  const postsPartiallyCollected = discussionGroups.filter((threads) => threads.some((discussion) => discussionCollectionStatus(discussion) === "posts_partially_collected")).length;
   const recent7dActiveThreads = discussions.filter((discussion) => hasTraceableRecentPosts(discussion)).length;
   return {
     proposalCount: proposals.length,
@@ -9090,7 +9145,7 @@ function coverageForProposals(report: WeeklyRadarReport, proposals: ReturnType<t
     postFetchAttempted: discussions.filter((discussion) => Boolean(discussion?.discussionFetchAttempted)).length,
     postFetchNotAttempted: discussions.filter((discussion) => Boolean(discussion?.discussionUrl) && !discussion?.discussionFetchAttempted).length,
     recent7dActiveThreads,
-    recent7dPostCount: discussions.reduce((sum, discussion) => sum + (hasTraceableRecentPosts(discussion) ? discussion!.postsInCurrent7d ?? 0 : 0), 0),
+    recent7dPostCount: discussionPostCountForProposalIds(report, proposals.map((proposal) => proposal.proposalId)),
     uncollectedThreadData: discussions.filter((discussion) => ["url_confirmed", "fetch_failed", "parse_failed", "posts_partially_collected"].includes(discussionCollectionStatus(discussion))).length,
     implementationEvidenceConfirmed: proposals.filter((proposal) => implementationIds.has(proposal.proposalId)).length,
     fetchFailed: discussions.filter((discussion) => discussionCollectionStatus(discussion) === "fetch_failed").length,
@@ -9100,10 +9155,10 @@ function coverageForProposals(report: WeeklyRadarReport, proposals: ReturnType<t
 }
 
 function proposalEvidencePayload(report: WeeklyRadarReport, atlas: TechnologyAtlas) {
-  const discussions = discussionMap(report);
+  const representativeDiscussionByProposal = representativeDiscussionByProposalForReport(report);
   const implementationIds = implementationEvidenceIds(report);
   return mainReportProposals(atlas).map((proposal) => {
-    const discussion = discussions.get(proposal.proposalId);
+    const discussion = representativeDiscussionByProposal.get(proposal.proposalId);
     return {
       proposalId: proposal.proposalId,
       specification: {
@@ -9328,8 +9383,58 @@ function mainReportProposals(atlas: TechnologyAtlas) {
   return atlas.classifiedProposals.filter((proposal) => proposal.classificationConfidence >= 80);
 }
 
-function discussionMap(report: WeeklyRadarReport): Map<string, DiscussionHeatItem> {
-  return new Map(report.ethereumTechRadar.signalLayer.discussionHeat.map((discussion) => [discussion.proposalId, discussion]));
+function discussionThreadKey(discussion: DiscussionHeatItem): string {
+  if (discussion.discussionTopicId != null) return String(discussion.discussionTopicId);
+  const url = discussion.discussionUrl ?? discussion.canonicalUrl ?? "";
+  if (url) {
+    try {
+      const parsed = new URL(url);
+      parsed.hash = "";
+      parsed.search = "";
+      parsed.pathname = parsed.pathname.replace(/\/+$/, "");
+      return `url:${parsed.toString()}`;
+    } catch {
+      return `url:${url.replace(/[?#].*$/, "").replace(/\/+$/, "")}`;
+    }
+  }
+  return `fallback:${discussion.proposalId}:${String(discussion.discussionTitle ?? discussion.title ?? "").trim().toLowerCase()}:${discussion.discussionCreatedAt ?? ""}`;
+}
+
+function discussionThreadsByProposal(report: WeeklyRadarReport): Map<string, DiscussionHeatItem[]> {
+  const byProposal = new Map<string, Map<string, DiscussionHeatItem>>();
+  for (const discussion of report.ethereumTechRadar.signalLayer.discussionHeat) {
+    const threads = byProposal.get(discussion.proposalId) ?? new Map<string, DiscussionHeatItem>();
+    const key = discussionThreadKey(discussion);
+    const existing = threads.get(key);
+    if (!existing || (discussion.postTimestampTrace?.length ?? 0) > (existing.postTimestampTrace?.length ?? 0)) {
+      threads.set(key, discussion);
+    }
+    byProposal.set(discussion.proposalId, threads);
+  }
+  return new Map([...byProposal.entries()].map(([proposalId, threads]) => [proposalId, [...threads.values()]]));
+}
+
+function discussionThreads(report: WeeklyRadarReport): DiscussionHeatItem[] {
+  return [...discussionThreadsByProposal(report).values()].flat();
+}
+
+function representativeDiscussionByProposalForReport(report: WeeklyRadarReport): Map<string, DiscussionHeatItem> {
+  const entries = [...discussionThreadsByProposal(report).entries()].map(([proposalId, threads]) => {
+    const representative = [...threads].sort((left, right) => {
+      const collected = Number(discussionCollectionStatus(right) === "posts_fully_collected") - Number(discussionCollectionStatus(left) === "posts_fully_collected");
+      if (collected) return collected;
+      const recentPosts = discussionPostRows(right, report.changePeriod.from, report.changePeriod.to).length - discussionPostRows(left, report.changePeriod.from, report.changePeriod.to).length;
+      if (recentPosts) return recentPosts;
+      const rightActivity = Date.parse(right.discussionLastActivityAt ?? "");
+      const leftActivity = Date.parse(left.discussionLastActivityAt ?? "");
+      const latestActivity = (Number.isFinite(rightActivity) ? rightActivity : Number.NEGATIVE_INFINITY)
+        - (Number.isFinite(leftActivity) ? leftActivity : Number.NEGATIVE_INFINITY);
+      if (latestActivity) return latestActivity;
+      return discussionThreadKey(left).localeCompare(discussionThreadKey(right));
+    })[0]!;
+    return [proposalId, representative] as const;
+  });
+  return new Map(entries);
 }
 
 function implementationEvidenceIds(report: WeeklyRadarReport): Set<string> {
@@ -9339,31 +9444,33 @@ function implementationEvidenceIds(report: WeeklyRadarReport): Set<string> {
 }
 
 function sourceStripForProposalIds(report: WeeklyRadarReport, atlas: TechnologyAtlas, proposalIds: string[]) {
-  const discussionByProposal = discussionMap(report);
+  const threadsByProposal = discussionThreadsByProposal(report);
+  const representativeDiscussionByProposal = representativeDiscussionByProposalForReport(report);
   const implementationIds = implementationEvidenceIds(report);
   const ids = [...new Set(proposalIds)];
-  const discussions = ids.map((id) => discussionByProposal.get(id)).filter((item): item is DiscussionHeatItem => Boolean(item));
+  const discussions = ids.flatMap((id) => threadsByProposal.get(id) ?? []);
   const collected = discussions.filter((item) => discussionCollectionStatus(item) === "posts_fully_collected");
   return {
     specificationCount: ids.length,
     discussionThreadCount: discussions.filter((item) => item.discussionUrl).length,
     postsCollectedCount: collected.length,
     postsPartiallyCollectedCount: discussions.filter((item) => discussionCollectionStatus(item) === "posts_partially_collected").length,
-    discussionPostsCurrent7d: collected.reduce((sum, item) => sum + (hasTraceableRecentPosts(item) ? item.postsInCurrent7d ?? 0 : 0), 0),
+    discussionPostsCurrent7d: discussionPostCountForProposalIds(report, ids),
     discussionDataUncollectedCount: discussions.filter((item) => ["url_confirmed", "fetch_failed", "parse_failed"].includes(discussionCollectionStatus(item))).length,
     implementationEvidenceCount: ids.filter((id) => implementationIds.has(id)).length,
     items: ids.map((id) => {
       const proposal = proposalById(atlas, id);
-      const discussion = discussionByProposal.get(id);
+      const proposalThreads = threadsByProposal.get(id) ?? [];
+      const discussion = representativeDiscussionByProposal.get(id);
       return {
         proposalId: id,
         title: proposal?.title ?? id,
         specificationUrl: proposalUrl(id),
         discussionUrl: discussion?.discussionUrl ?? null,
         discussionStatus: discussionStatusLabel(discussion),
-        recentPostCount: discussion?.postsInCurrent7d ?? 0,
-        lastPostAt: discussion?.discussionLastActivityAt ?? null,
-        keyIssues: discussion?.discussionAnalysis?.analysisCompleted === true ? discussion.keyIssues?.slice(0, 3) ?? [] : [],
+        recentPostCount: discussionPostCountForProposalIds(report, [id]),
+        lastPostAt: latestDiscussionActivityAt(proposalThreads),
+        keyIssues: unique(proposalThreads.flatMap((thread) => thread.discussionAnalysis?.analysisCompleted === true ? thread.keyIssues ?? [] : [])).slice(0, 3),
         implementationFound: implementationIds.has(id),
       };
     }),
@@ -10025,11 +10132,11 @@ function sourceCoveragePanel(report: WeeklyRadarReport, atlas: TechnologyAtlas):
 
 function executiveSignalMap(atlas: TechnologyAtlas, report: WeeklyRadarReport): string {
   const ordered = ["execution-state", "scaling-data", "validators-consensus", "governance-process", "accounts-wallets", "tokens-finance", "identity-compliance", "interoperability"];
-  const discussionByProposal = discussionMap(report);
+  const threadsByProposal = discussionThreadsByProposal(report);
   const cells = ordered.map((id) => {
     const domain = atlas.domains.find((item) => item.domain.id === id);
     if (!domain) return "";
-    const ring = signalRingForDomain(domain, discussionByProposal);
+    const ring = signalRingForDomain(domain, threadsByProposal, report);
     const discussionPosts = ring.posts;
     const changed = domain.activeProposalCount7d;
     const badges = [
@@ -10043,13 +10150,12 @@ function executiveSignalMap(atlas: TechnologyAtlas, report: WeeklyRadarReport): 
   return `<div class="signal-map"><div class="signal-map-head"><h3>Executive Technology Signal Map</h3><p>위치는 고정하고, 크기는 최근 7일 변경 Proposal 수를 반영합니다. ring은 Magicians 댓글 활동입니다.</p></div><div class="signal-grid">${cells}</div></div>`;
 }
 
-function signalRingForDomain(domain: DomainActivity, discussionByProposal: Map<string, DiscussionHeatItem>): { posts: number; className: string; label: string } {
+function signalRingForDomain(domain: DomainActivity, threadsByProposal: Map<string, DiscussionHeatItem[]>, report: WeeklyRadarReport): { posts: number; className: string; label: string } {
   const discussions = domain.representativeProposals
-    .map((proposal) => discussionByProposal.get(proposal.proposalId))
-    .filter((item): item is DiscussionHeatItem => Boolean(item));
+    .flatMap((proposal) => threadsByProposal.get(proposal.proposalId) ?? []);
   const collected = discussions.filter((discussion) => discussionCollectionStatus(discussion) === "posts_fully_collected");
   const partial = discussions.filter((discussion) => discussionCollectionStatus(discussion) === "posts_partially_collected");
-  const posts = collected.reduce((sum, discussion) => sum + (hasTraceableRecentPosts(discussion) ? discussion.postsInCurrent7d ?? 0 : 0), 0);
+  const posts = discussionPostCountForProposalIds(report, domain.representativeProposals.map((proposal) => proposal.proposalId));
   if (posts > 0) return { posts, className: "ring-active", label: `최근 7일 댓글 ${posts}` };
   if (collected.length > 0) return { posts: 0, className: "ring-zero", label: "최근 댓글 0" };
   if (partial.length > 0) return { posts: 0, className: "ring-uncollected", label: "일부 게시물만 수집" };
@@ -10254,16 +10360,12 @@ function atlasDiscussionSection(report: WeeklyRadarReport, atlas: TechnologyAtla
 }
 
 function discussionMatrix(report: WeeklyRadarReport, atlas: TechnologyAtlas): string {
-  const discussions = discussionMap(report);
   const rows = topicProgressRows(atlas).slice(0, 8).map((topic) => {
     const x = topic.proposals.reduce((sum, id) => {
       const proposal = proposalById(atlas, id);
       return sum + (proposal?.activity.current7d.newProposalCount ?? 0) + (proposal?.activity.current7d.statusChangeCount ?? 0) + (proposal?.activity.current7d.bodyChangeCount ?? 0);
     }, 0);
-    const y = topic.proposals.reduce((sum, id) => {
-      const discussion = discussions.get(id);
-      return sum + (hasTraceableRecentPosts(discussion) ? discussion!.postsInCurrent7d ?? 0 : 0);
-    }, 0);
+    const y = discussionPostCountForProposalIds(report, topic.proposals);
     const left = Math.min(92, 8 + x * 12);
     const bottom = Math.min(86, 8 + y * 10);
     return `<span class="matrix-dot" style="left:${left}%;bottom:${bottom}%;width:${Math.min(42, 14 + topic.proposals.length * 5)}px;height:${Math.min(42, 14 + topic.proposals.length * 5)}px" title="${escapeHtml(topic.topic)}">${escapeHtml(topic.coverKo.slice(0, 2))}</span>`;
@@ -10377,11 +10479,11 @@ function atlasKgldSection(atlas: TechnologyAtlas): string {
 }
 
 function atlasProposalAppendix(report: WeeklyRadarReport, atlas: TechnologyAtlas): string {
-  const discussions = discussionMap(report);
+  const representativeDiscussionByProposal = representativeDiscussionByProposalForReport(report);
   const rows = [...atlas.classifiedProposals, ...atlas.heldProposals]
     .filter((proposal) => proposal.title && proposal.title !== proposal.proposalId)
     .slice(0, 80)
-    .map((proposal) => `<tr><td><b>${proposalLink(proposal.proposalId)}</b></td><td>${formatProposalTitle(proposal.proposalId, proposal.title)}</td><td>${escapeHtml(displayAppendixDomain(atlas, proposal))}</td><td>${escapeHtml(displayTopicForProposal(proposal) ?? "Appendix only")}</td><td>${linkProposalText(proposal.technologies.slice(0, 3).map(displayTechnologyName).join(", ") || "확인된 기술 없음")}</td><td>${escapeHtml(classificationBandLabel(proposal.classificationConfidence))}</td><td>${escapeHtml(proposal.recentActivity)}</td><td>${appendixLinks(proposal.proposalId, discussions.get(proposal.proposalId))}</td></tr>`)
+    .map((proposal) => `<tr><td><b>${proposalLink(proposal.proposalId)}</b></td><td>${formatProposalTitle(proposal.proposalId, proposal.title)}</td><td>${escapeHtml(displayAppendixDomain(atlas, proposal))}</td><td>${escapeHtml(displayTopicForProposal(proposal) ?? "Appendix only")}</td><td>${linkProposalText(proposal.technologies.slice(0, 3).map(displayTechnologyName).join(", ") || "확인된 기술 없음")}</td><td>${escapeHtml(classificationBandLabel(proposal.classificationConfidence))}</td><td>${escapeHtml(proposal.recentActivity)}</td><td>${appendixLinks(proposal.proposalId, representativeDiscussionByProposal.get(proposal.proposalId))}</td></tr>`)
     .join("");
   return `<section class="section research-section atlas-appendix-section" id="proposal-appendix"><details class="atlas-appendix"><summary>Proposal 근거 appendix</summary><p class="muted">본문에 쓰인 Proposal 근거를 같은 기준으로 정리했습니다.</p><div class="table-wrap"><table class="table"><thead><tr><th>Proposal</th><th>제목</th><th>주요 영역</th><th>주제</th><th>확인된 기술</th><th>판정 수준</th><th>최근 이벤트</th><th>링크</th></tr></thead><tbody>${rows || '<tr><td colspan="8" class="muted">표시할 proposal 근거가 없습니다.</td></tr>'}</tbody></table></div></details></section>`;
 }
