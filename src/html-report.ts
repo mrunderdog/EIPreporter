@@ -3835,8 +3835,10 @@ export const __qualityTestHooks = {
   qualityCheck,
   dashboardFilterStatusFunctional,
   dashboardFilterSearchFunctional,
+  dashboardFilterSearchFailures,
   dashboardFilterSearchAffectedIds,
   dashboardFilterObserved,
+  developerAttentionDashboard,
   domainCrossViewConsistencyV4,
   buildDashboardV3Presentation,
   renderDashboardV3,
@@ -5158,7 +5160,7 @@ function visibleWeeklySummary(summary: string): string {
 function renderDashboardV3Magicians(p: DashboardV3Presentation): string {
   const view = p.view;
   const maxPosts = Math.max(1, ...p.activeThreads.map((thread) => thread.rawPostCount));
-  const cards = p.activeThreads.map((thread, index) => `<article class="dash-thread-card dash-filterable ${index === 0 ? "dash-thread-featured" : ""}" ${filterAttrsForProposalId(view, thread.proposalId, ["discussion"])} data-kind="proposal" data-evidence-id="${escapeHtml(publicEvidenceId(thread.evidenceIds, thread.proposalId))}">
+  const cards = p.activeThreads.map((thread, index) => `<article class="dash-thread-card dash-filterable ${index === 0 ? "dash-thread-featured" : ""}" ${filterAttrsForProposalId(view, thread.proposalId, ["discussion"])} data-kind="proposal" data-open-proposal="${escapeHtml(thread.proposalId)}" data-evidence-id="${escapeHtml(publicEvidenceId(thread.evidenceIds, thread.proposalId))}">
     <div class="dash-thread-head"><span class="dash-proposal-pill">${escapeHtml(thread.proposalId)}</span><span class="dash-state">${escapeHtml(collectionLabel(thread.collectionStatus))}</span></div>
     <h3>${escapeHtml(thread.title)}</h3>
     <div class="dash-thread-metrics"><strong>${thread.rawPostCount}<span>원문 게시물</span></strong><em>${thread.uniqueParticipantCount}명 참여</em><em>최근 게시 ${escapeHtml(shortDate(thread.latestActivityAt))}</em></div>
@@ -6628,6 +6630,7 @@ function technologyLandscapeDashboard(
 function developerAttentionDashboard(report: WeeklyRadarReport, atlas: TechnologyAtlas, discussions: ReturnType<typeof discussionWindowAggregates>) {
   const discussionByProposal = discussionMap(report);
   const active = discussions.proposals
+    .filter((aggregate) => aggregate.rawPostCount > 0 && aggregate.activeThreadCount > 0)
     .map((aggregate) => {
       const discussion = discussionByProposal.get(aggregate.scopeId);
       if (!discussion) return null;

@@ -2027,6 +2027,62 @@ test("Magicians current-window cards compare thread cards separately from raw po
   assert.equal(__qualityTestHooks.magiciansCurrentWindowCards(fixture.api, fixture.html), true);
 });
 
+test("developer attention excludes zero-post aggregates from canonical activity", () => {
+  const report = {
+    changePeriod: { from: "2026-08-01T00:00:00.000Z", to: "2026-08-08T00:00:00.000Z" },
+    ethereumTechRadar: {
+      signalLayer: {
+        discussionHeat: [
+          { proposalId: "EIP-9001", title: "A", discussionUrl: "https://example.test/a" },
+          { proposalId: "EIP-9002", title: "B", discussionUrl: "https://example.test/b" },
+          { proposalId: "ERC-9003", title: "C", discussionUrl: "https://example.test/c" },
+        ],
+      },
+    },
+  } as WeeklyRadarReport;
+  const aggregate = (scopeId: string, rawPostIds: string[], activeThreadCount: number) => ({
+    scopeId,
+    rawPostIds,
+    rawPostCount: rawPostIds.length,
+    activeThreadCount,
+    validTechnicalPostIds: null,
+    validTechnicalPostCount: null,
+    analyzedPostIds: [],
+    analyzedPostCount: 0,
+    uniqueParticipantCount: 0,
+  });
+  const attention = __qualityTestHooks.developerAttentionDashboard(report, { classifiedProposals: [], heldProposals: [] } as never, {
+    proposals: [aggregate("EIP-9001", ["post-a-1", "post-a-2"], 1), aggregate("EIP-9002", ["post-b-1"], 1), aggregate("ERC-9003", [], 0)],
+    developerAttentionSet: {
+      scopeType: "developer_attention_set",
+      activeThreadCount: 2,
+      activeThreadIds: ["thread-a", "thread-b"],
+      rawPostIds: ["post-a-1", "post-a-2", "post-b-1"],
+      rawPostCount: 3,
+      validTechnicalPostIds: null,
+      uniqueParticipantIds: [],
+      uniqueParticipantCount: 0,
+      authorResponses: 0,
+      windowStart: "2026-08-01T00:00:00.000Z",
+      windowEnd: "2026-08-08T00:00:00.000Z",
+    },
+  } as never);
+  assert.deepEqual(attention.activity.map((item) => item.proposalId), ["EIP-9001", "EIP-9002"]);
+  assert.equal(attention.activity.length, attention.summary.activeThreads);
+  assert.equal(new Set(attention.activity.flatMap((item) => item.rawPostIds)).size, attention.summary.rawPosts);
+});
+
+test("V3 Magicians cards expose proposal identity for dashboard search", () => {
+  const fixture = dashboardV3QualityFixture({ repositoryAdditions: 0, rawPosts: 4, activeThreads: 2 });
+  const html = withDashboardFilterScript(fixture.html);
+  const cards = html.match(/<article class="dash-thread-card dash-filterable[^>]*>/g) ?? [];
+  assert.equal(cards.length, 2);
+  assert.ok(cards.every((card) => /data-kind="proposal"/.test(card)));
+  assert.ok(cards.every((card) => /data-open-proposal="(?:EIP|ERC)-\d+"/.test(card)));
+  assert.deepEqual(__qualityTestHooks.dashboardFilterSearchFailures(html), []);
+  assert.equal(__qualityTestHooks.dashboardFilterSearchFunctional(html), true, __qualityTestHooks.dashboardFilterObserved(html));
+});
+
 function visibleReportHtml(html: string): string {
   return html
     .replace(/<style>[\s\S]*?<\/style>/, "")
