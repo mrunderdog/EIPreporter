@@ -1960,16 +1960,38 @@ test("dashboard search accepts legacy mixed-case metadata using browser semantic
   assert.deepEqual(__qualityTestHooks.dashboardFilterSearchAffectedIds(html), []);
 });
 
-test("dashboard search identifies the proposal missing from normalized metadata", () => {
-  const html = withDashboardFilterScript('<input data-proposal-search><article class="kgld-watch-item v2-filterable" data-kind="proposal" data-open-proposal="EIP-9999" data-search="mixed case title"></article>');
+test("dashboard search accepts the V2 runtime with valid proposal metadata", () => {
+  const html = withDashboardV2FilterScript('<input data-proposal-search><article class="kgld-watch-item v2-filterable" data-kind="proposal" data-open-proposal="EIP-9999" data-search="EIP-9999 Mixed Case Title"></article>');
+  assert.equal(__qualityTestHooks.dashboardFilterSearchFunctional(html), true, __qualityTestHooks.dashboardFilterObserved(html));
+  assert.deepEqual(__qualityTestHooks.dashboardFilterSearchAffectedIds(html), []);
+});
+
+test("dashboard search global runtime failure serializes without proposal affected IDs", () => {
+  const html = '<input data-proposal-search><article class="kgld-watch-item v2-filterable" data-kind="proposal" data-open-proposal="EIP-9999" data-search="eip-9999 mixed case title"></article>';
   assert.equal(__qualityTestHooks.dashboardFilterSearchFunctional(html), false, __qualityTestHooks.dashboardFilterObserved(html));
-  assert.deepEqual(__qualityTestHooks.dashboardFilterSearchAffectedIds(html), ["EIP-9999"]);
-  assert.throws(() => __qualityTestHooks.qualityCheck(
+  assert.deepEqual(__qualityTestHooks.dashboardFilterSearchAffectedIds(html), []);
+  const check = __qualityTestHooks.qualityCheck(
     "dashboard-filter-search-functional",
     false,
     "fail",
     __qualityTestHooks.dashboardFilterObserved(html),
     "search input filters data-search metadata",
+  );
+  assert.equal(check.passed, false);
+  assert.deepEqual(check.affectedIds, []);
+});
+
+test("dashboard search identifies the proposal missing from normalized metadata", () => {
+  const html = withDashboardFilterScript('<input data-proposal-search><article class="kgld-watch-item v2-filterable" data-kind="proposal" data-open-proposal="EIP-9999" data-search="mixed case title"></article>');
+  assert.equal(__qualityTestHooks.dashboardFilterSearchFunctional(html), false, __qualityTestHooks.dashboardFilterObserved(html));
+  assert.deepEqual(__qualityTestHooks.dashboardFilterSearchAffectedIds(html), ["EIP-9999"]);
+  assert.doesNotThrow(() => __qualityTestHooks.qualityCheck(
+    "dashboard-filter-search-functional",
+    false,
+    "fail",
+    __qualityTestHooks.dashboardFilterObserved(html),
+    "search input filters data-search metadata",
+    ["EIP-9999"],
   ));
 });
 
@@ -2015,12 +2037,25 @@ function visibleReportHtml(html: string): string {
 
 function withDashboardFilterScript(html: string): string {
   return `${html}<script>
+    const searchInput={value:""};
     function matches(node){
       const d=node.dataset;
       if(state.status!=="all"&&d.status!==state.status&&d.status!=="all")return false;
       if(state.query&&!(d.search||"").toLowerCase().includes(state.query))return false;
       return true;
     }
+    searchInput.addEventListener("input",()=>{state.query=searchInput.value.toLowerCase();});
+  </script>`;
+}
+
+function withDashboardV2FilterScript(html: string): string {
+  return `${html}<script>
+    const state={query:""};
+    const matches=(node)=>{
+      const text=(node.dataset.search||node.textContent||"").toLowerCase();
+      return (!state.query||text.includes(state.query));
+    };
+    document.querySelectorAll("[data-proposal-search]").forEach((input)=>input.addEventListener("input",()=>{state.query=input.value.toLowerCase();}));
   </script>`;
 }
 

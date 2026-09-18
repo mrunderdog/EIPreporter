@@ -56,7 +56,6 @@ type OfficialSpecificationSourceState =
 
 const PROPOSAL_LEVEL_QUALITY_IDS = new Set([
   "specification-body-coverage",
-  "dashboard-filter-search-functional",
 ]);
 
 type ReportMode = "normal" | "partial" | "incident";
@@ -3123,7 +3122,15 @@ function dashboardFilterSearchFunctional(html: string): boolean {
   return /data-proposal-search/.test(html)
     && explorerRows.length > 0
     && dashboardFilterSearchFailures(html).length === 0
-    && /\(d\.search\|\|""\)\.toLowerCase\(\)\.includes\(state\.query\)/.test(html);
+    && dashboardSearchRuntimeFunctional(html);
+}
+
+function dashboardSearchRuntimeFunctional(html: string): boolean {
+  const queryIsNormalized = /state\.query\s*=\s*\w+\.value\.toLowerCase\(\)/.test(html);
+  const v3SearchPredicate = /\(d\.search\|\|""\)\.toLowerCase\(\)\.includes\(state\.query\)/.test(html);
+  const v2SearchValue = /const text=\(node\.dataset\.search\|\|node\.textContent\|\|""\)\.toLowerCase\(\)/.test(html);
+  const v2SearchPredicate = /\(!state\.query\|\|text\.includes\(state\.query\)\)/.test(html);
+  return queryIsNormalized && (v3SearchPredicate || v2SearchValue && v2SearchPredicate);
 }
 
 function dashboardFilterSearchFailures(html: string): Array<{ proposalId: string | null; reason: string }> {
@@ -3191,7 +3198,7 @@ function dashboardFilterObserved(html: string): string {
     proposalSearchFailureSamples: proposalSearchFailures.slice(0, 5).map(({ proposalId, reason }) => `${proposalId ?? "unknown"}:${reason}`),
     statusPredicate: /state\.status!=="all"&&d\.status!==state\.status/.test(html),
     statusAllBypass: /d\.status!=="all"/.test(html),
-    searchPredicate: /\(d\.search\|\|""\)\.toLowerCase\(\)\.includes\(state\.query\)/.test(html),
+    searchPredicate: dashboardSearchRuntimeFunctional(html),
   });
 }
 
