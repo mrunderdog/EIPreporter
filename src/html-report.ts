@@ -172,9 +172,14 @@ export function generateWeeklyQualityJson(report: WeeklyRadarReport, html = gene
     .replace(/<!-- EIPreporter atlas chart data: [\s\S]*? -->/gi, "")
     .replace(/<script>[\s\S]*?<\/script>/gi, "");
   const visibleText = visibleHtml.replace(/<[^>]+>/g, " ");
-  const segments = visibleHtml.split(/<\/(?:li|tr|article|button)>/i);
+  const canonicalClassifications = [...atlas.classifiedProposals, ...atlas.heldProposals].map((proposal) => ({
+    proposalId: proposal.proposalId,
+    domain: domainDisplayName(proposal.primaryDomain ?? "unknown"),
+    topic: displayTopicForProposal(proposal),
+    technologies: proposal.technologies,
+  }));
   const failedForbiddenPairs = forbiddenPairs
-    .filter(([proposalId, wrongLabel]) => segments.some((segment) => segment.includes(proposalId) && segment.includes(wrongLabel)))
+    .filter(([proposalId, wrongLabel]) => proposalClassificationContainsPair(canonicalClassifications, proposalId, wrongLabel))
     .map(([proposalId, wrongLabel]) => `${proposalId}+${wrongLabel}`);
   const forbiddenPairPassed = failedForbiddenPairs.length === 0;
   const forbiddenTextMatches = visibleText.match(/Blob를|Oracle를|Account Abstraction를|Gas Repricing를|topic confidence|confidence 0\.65|canonical classification|fallback|current7d|previous7d|topic membership|change evidence|classification confidence|대표 topic 부족|Repository sources|Traceability 완전|tokens-finance|identity-compliance|execution-state|accounts-wallets|scaling-data|validators-consensus|confidence 63|confidence 79|active proposal|구현 사례는 제한적|기술 영역:/g) ?? [];
@@ -182,7 +187,7 @@ export function generateWeeklyQualityJson(report: WeeklyRadarReport, html = gene
   const embeddedJson = html.match(/<script type="application\/json" id="technology-platform-api">([\s\S]*?)<\/script>/)?.[1] ?? "{}";
   const embeddedApi = safeJsonParse(embeddedJson);
   const failedForbiddenRelations = forbiddenPairs
-    .filter(([proposalId, wrongLabel]) => jsonObjectContainsPair(embeddedApi, proposalId, wrongLabel))
+    .filter(([proposalId, wrongLabel]) => proposalClassificationContainsPair(embeddedApi, proposalId, wrongLabel))
     .map(([proposalId, wrongLabel]) => `${proposalId}+${wrongLabel}`);
   const subjectRegistryMissingIds = subjectRegistryMissingIdsFromPublicViews(embeddedApi);
   const staleKnowledgeFields = embeddedJson.match(/topicKnowledgePaths|proposalKnowledgeChains|topicGapSignals|knowledgeGraphSummary|knowledgeGraphDiagnostics|ontologyMatches/g) ?? [];
@@ -588,15 +593,31 @@ function safeJsonParse(value: string): unknown {
   }
 }
 
-function jsonObjectContainsPair(value: unknown, left: string, right: string): boolean {
+const PROPOSAL_CLASSIFICATION_FIELDS = [
+  "technology", "technologies", "technologyEvidence", "classification",
+  "primaryDomain", "secondaryDomains", "domainId", "domain", "domainLabelKo", "domainNameKo",
+  "topic", "topicId", "topicIds", "topicNames",
+];
+
+function proposalClassificationContainsPair(value: unknown, proposalId: string, wrongLabel: string): boolean {
   if (!value || typeof value !== "object") return false;
-  if (Array.isArray(value)) return value.some((item) => jsonObjectContainsPair(item, left, right));
-  const entries = Object.values(value as Record<string, unknown>);
-  const text = JSON.stringify(entries.filter((item) =>
-    item === null || typeof item === "string" || typeof item === "number" || typeof item === "boolean"
-  ));
-  if (text.includes(left) && text.includes(right)) return true;
-  return entries.some((item) => jsonObjectContainsPair(item, left, right));
+  if (Array.isArray(value)) return value.some((item) => proposalClassificationContainsPair(item, proposalId, wrongLabel));
+  const record = value as Record<string, unknown>;
+  if ((record.proposalId ?? record.id) === proposalId
+    && PROPOSAL_CLASSIFICATION_FIELDS.some((field) => classificationLabelContains(record[field], proposalId, wrongLabel))) return true;
+  return Object.values(record).some((item) => proposalClassificationContainsPair(item, proposalId, wrongLabel));
+}
+
+function classificationLabelContains(value: unknown, proposalId: string, wrongLabel: string): boolean {
+  if (typeof value === "string") {
+    const normalize = (text: string) => text.toLowerCase().replace(/[-_/]+/g, " ").replace(/\s+/g, " ");
+    return normalize(value).includes(normalize(wrongLabel));
+  }
+  if (Array.isArray(value)) return value.some((item) => classificationLabelContains(item, proposalId, wrongLabel));
+  if (!value || typeof value !== "object") return false;
+  const record = value as Record<string, unknown>;
+  if (record.proposalId && record.proposalId !== proposalId) return false;
+  return [...PROPOSAL_CLASSIFICATION_FIELDS, "name"].some((field) => classificationLabelContains(record[field], proposalId, wrongLabel));
 }
 
 function discussionStatusPayloadInvalid(value: unknown): boolean {

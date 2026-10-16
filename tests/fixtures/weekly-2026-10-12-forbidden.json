@@ -1,0 +1,161 @@
+{
+  "provenance": {
+    "runUrl": "https://github.com/mrunderdog/EIPreporter/actions/runs/38209943525",
+    "artifactId": 11729242429,
+    "proposalPath": "intelligenceSnapshot.views.dashboardV2.proposalIntelligence.proposals[64]"
+  },
+  "proposalIntelligence": {
+    "proposalId": "ERC-8176",
+    "title": "Descriptor Attestations for ERC-7730",
+    "status": "Draft",
+    "domainId": "scaling-data",
+    "domainLabelKo": "확장·데이터",
+    "topic": "Data Availability and Calldata Costs",
+    "rankLabel": "HOT",
+    "rankScore": 117,
+    "simpleSummary": "Ethereum과 L2가 데이터를 게시하고 처리하는 방식을 다루는 제안입니다.",
+    "plainExplanation": "쉽게 말하면 확장·데이터 영역에서 프로젝트마다 다르게 구현할 수 있는 규칙을 공통으로 맞추려는 흐름입니다. Blob 관련 서비스가 같은 의미로 해석할 수 있는 접점을 늘릴 수 있습니다. 실제 구현이나 채택은 별도 근거가 있을 때만 판단합니다.",
+    "changeExplanation": {
+      "before": "Blob 관련 구현을 프로젝트별로 해석",
+      "after": "공통 data handling rule"
+    },
+    "useCases": [
+      {
+        "areaKo": "Scaling Infrastructure",
+        "descriptionKo": "데이터 게시, rollup, availability 관련 비용과 처리 방식을 검토하는 데 활용 가능성이 있습니다.",
+        "evidenceLevel": "SPECIFICATION_POTENTIAL",
+        "evidenceIds": [
+          "spec:ERC-8176"
+        ],
+        "sourceUrls": [
+          "https://ercs.ethereum.org/ERCS/erc-8176"
+        ]
+      }
+    ],
+    "interestedActors": [
+      "Infrastructure Provider"
+    ],
+    "statusExplanation": "Draft: 아직 제안 내용이 변경될 수 있는 초기 단계입니다.",
+    "whyNow": [
+      {
+        "labelKo": "공식 저장소 신규 반영",
+        "detailKo": "공식 명세 · 2026.10.12",
+        "evidenceIds": [
+          "event:ERC-8176:new_proposal:2026-10-12T05:54:12.662Z:737d8e34a7562e46ca7e1a3894316a9b44f325208c2222fd77e1fc2a08b3de0a"
+        ]
+      },
+      {
+        "labelKo": "GitHub PR 활동",
+        "detailKo": "구현 추적 · 2026.10.08",
+        "evidenceIds": [
+          "emerging:github_pr:ethereum/ercs#1789"
+        ]
+      },
+      {
+        "labelKo": "공식 저장소 신규 반영",
+        "detailKo": "공식 명세 · 2026.10.08",
+        "evidenceIds": [
+          "event:ERC-8176:new_proposal:2026-10-08T05:55:16-05:00:ee5363be41aa55f2eb1199c693044c86dd464624"
+        ]
+      }
+    ],
+    "watchNext": [
+      "PR merge 및 specification status 변경 여부"
+    ],
+    "recentActivities": [
+      {
+        "activityId": "proposal-intel:ERC-8176:ERC-8176:new_proposal:2026-10-12T05:54:12.662Z:737d8e34a7562e46ca7e1a3894316a9b44f325208c2222fd77e1fc2a08b3de0a",
+        "proposalId": "ERC-8176",
+        "activityType": "SPEC_CREATED",
+        "category": "공식 명세",
+        "labelKo": "공식 저장소 신규 반영",
+        "occurredAt": "2026-10-12T05:54:12.662Z",
+        "sourceFactIds": [
+          "event:ERC-8176:new_proposal:2026-10-12T05:54:12.662Z:737d8e34a7562e46ca7e1a3894316a9b44f325208c2222fd77e1fc2a08b3de0a"
+        ],
+        "sourceUrls": [
+          "https://github.com/ethereum/ercs/blob/master/ERCS/erc-8176.md"
+        ],
+        "sourceType": "eips_git",
+        "semanticTarget": "proposal",
+        "evidenceCount": 1
+      },
+      {
+        "activityId": "proposal-intel:ERC-8176:emerging:github_pr:ethereum/ercs#1789",
+        "proposalId": "ERC-8176",
+        "activityType": "GITHUB_PR_ACTIVITY",
+        "category": "구현 추적",
+        "labelKo": "GitHub PR 활동",
+        "occurredAt": "2026-10-08T12:41:03Z",
+        "sourceFactIds": [
+          "emerging:github_pr:ethereum/ercs#1789"
+        ],
+        "sourceUrls": [
+          "https://github.com/ethereum/ERCs/pull/1789"
+        ],
+        "sourceType": "github_pr",
+        "semanticTarget": "https://github.com/ethereum/ERCs/pull/1789",
+        "evidenceCount": 1
+      },
+      {
+        "activityId": "proposal-intel:ERC-8176:ERC-8176:new_proposal:2026-10-08T05:55:16-05:00:ee5363be41aa55f2eb1199c693044c86dd464624",
+        "proposalId": "ERC-8176",
+        "activityType": "SPEC_CREATED",
+        "category": "공식 명세",
+        "labelKo": "공식 저장소 신규 반영",
+        "occurredAt": "2026-10-08T05:55:16-05:00",
+        "sourceFactIds": [
+          "event:ERC-8176:new_proposal:2026-10-08T05:55:16-05:00:ee5363be41aa55f2eb1199c693044c86dd464624"
+        ],
+        "sourceUrls": [
+          "https://github.com/ethereum/ercs/blob/master/ERCS/erc-8176.md"
+        ],
+        "sourceType": "eips_git",
+        "semanticTarget": "proposal",
+        "evidenceCount": 1
+      }
+    ],
+    "activityFreshness": "2026.10.12 · 공식 저장소 신규 반영",
+    "recentSignal": "최근 공식 명세 활동",
+    "sourceActions": [
+      {
+        "labelKo": "공식 문서",
+        "sourceType": "official_specification",
+        "url": "https://ercs.ethereum.org/ERCS/erc-8176",
+        "evidenceId": "spec:ERC-8176",
+        "primary": true
+      },
+      {
+        "labelKo": "GitHub PR",
+        "sourceType": "github_pr",
+        "url": "https://github.com/ethereum/ERCs/pull/1789",
+        "evidenceId": "emerging:github_pr:ethereum/ercs#1789",
+        "primary": false
+      }
+    ],
+    "traceability": {
+      "evidenceIds": [
+        "emerging:github_pr:ethereum/ercs#1789",
+        "event:ERC-8176:new_proposal:2026-10-08T05:55:16-05:00:ee5363be41aa55f2eb1199c693044c86dd464624",
+        "event:ERC-8176:new_proposal:2026-10-12T05:54:12.662Z:737d8e34a7562e46ca7e1a3894316a9b44f325208c2222fd77e1fc2a08b3de0a",
+        "spec:ERC-8176"
+      ],
+      "derivedFrom": [
+        "developmentEvents/discussionPosts",
+        "emergingLayer",
+        "specificationEvidence",
+        "technologyAtlas",
+        "topicMembershipFacts"
+      ],
+      "calculationVersion": "proposal-intelligence-1",
+      "ruleVersion": "deterministic-conservative-2"
+    }
+  },
+  "specificationEvidence": {
+    "proposalId": "ERC-8176",
+    "officialTitle": "Descriptor Attestations for ERC-7730",
+    "abstractText": "This ERC defines an attestation format for ERC-7730 clear signing descriptor files using the Ethereum Attestation Service (EAS). An attestation is a signed claim by a specific party that they have reviewed a descriptor with a specific content hash. Attestations use a canonical EAS schema (`bytes32 descriptorHash`) registered on Ethereum mainnet. They may be created onchain (stored in the EAS contract) or offchain (an EIP-712 signed JSON blob distributed alongside descriptors). Verification follows standard EAS rules, plus matching the attested `descriptorHash` against the descriptor. Revocation uses EAS's native primitives. Wallets fetch attestations from sources they trust and maintain their own trust model for which attesters to accept.",
+    "motivationText": "ERC-7730 defines a JSON format that enables wallets to display human-readable transaction details before a user signs. Wallets fetch descriptor files from registries and use them to format transaction data. A malicious or substituted descriptor can cause a wallet to display misleading signing details. This ERC addresses three cases: - **Registry or repository poisoning.** A contributor submits a descriptor that hides or mislabels important fields. - **Man-in-the-middle substitution.** A network attacker modifies a descriptor in transit. - **Supply-chain substitution.** A registry mirror, CDN cache, or pinning gateway serves a forged descriptor. Existing mechanisms leave gaps: - **ERC-7730 context binding** verifies that a descriptor targets the correct contract address and chain, but it does not indicate whether the display formatting has been reviewed by a trusted party. - **Git commit signatures** prove authorship within a repository but do not survive extraction. Once a descriptor file is served via an API or downloaded as a standalone file, the git signature is lost. This ERC defines attestations that can be distributed independently from descriptors, allowing wallets to verify",
+    "specificationIntroText": "The key words \"MUST\", \"MUST NOT\", \"REQUIRED\", \"SHALL\", \"SHALL NOT\", \"SHOULD\", \"SHOULD NOT\", \"RECOMMENDED\", \"NOT RECOMMENDED\", \"MAY\", and \"OPTIONAL\" in this document are to be interpreted as described in RFC 2119 and RFC 8174."
+  }
+}

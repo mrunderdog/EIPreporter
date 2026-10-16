@@ -1,5 +1,6 @@
 ﻿import assert from "node:assert/strict";
 import test from "node:test";
+import { readFileSync } from "node:fs";
 import { generateWeeklyHtml } from "../src/html-report.ts";
 import { buildTechnologyAtlas } from "../src/technology-atlas.ts";
 import type { WeeklyRadarReport } from "../src/types.ts";
@@ -119,6 +120,53 @@ test("Technology Atlas classifies agent credential and proof proposals without r
   assert.notEqual(byId.get("ERC-9005")?.primaryDomain, "execution-state");
   assert.notEqual(byId.get("ERC-9006")?.primaryDomain, "accounts-wallets");
 });
+
+test("Technology Atlas does not classify signed JSON or binary blobs as Blob DA", () => {
+  const fixture = JSON.parse(readFileSync(new URL("./fixtures/weekly-2026-10-12-forbidden.json", import.meta.url), "utf8"));
+  for (const [proposalId, title, text] of [
+    ["ERC-8176", fixture.specificationEvidence.officialTitle, fixture.specificationEvidence.abstractText],
+    ["ERC-9876", "Wallet Descriptor Attestations", "Wallet verification of clear signing descriptors uses an EIP-712 signed JSON blob and EAS attestations."],
+    ["ERC-9877", "Wallet Descriptor Attestations", "Wallet verification uses a signed binary blob or a blob data file as an opaque attestation payload."],
+  ]) {
+    const proposal = classifySingleProposal(proposalId, title, text);
+    assert.ok(!proposal.technologies.includes("Blob"), JSON.stringify(proposal));
+    assert.notEqual(proposal.primaryDomain, "scaling-data");
+    assert.ok(proposal.technologies.includes("Attestation"), JSON.stringify(proposal));
+    assert.ok(proposal.technologyEvidence.some((item) => item.technology === "Attestation" && /descriptor attestation|Ethereum Attestation Service|EAS attestation/i.test(item.matchedText ?? "")));
+  }
+});
+
+test("Technology Atlas preserves explicit EIP-4844 Blob data availability classifications", () => {
+  for (const [proposalId, title, text] of [
+    ["EIP-4844", "Shard Blob Transactions", "EIP-4844 blob transactions publish rollup data for data availability using blob gas and blob sidecars."],
+    ["EIP-9878", "Blobspace Data Availability", "Blobspace provides data availability for rollup data."],
+    ["EIP-9879", "Blob DA Design", "Blob DA supplies data availability; JSON blob metadata carries the commitment."],
+    ["EIP-9880", "Blob Gas for Data Availability", "Adjust blob gas fees for data availability."],
+    ["EIP-9881", "Blob Sidecar Validation", "Verify blob sidecars."],
+  ]) {
+    const proposal = classifySingleProposal(proposalId, title, text);
+    assert.equal(proposal.primaryDomain, "scaling-data", proposalId);
+    assert.ok(proposal.technologies.includes("Blob"), JSON.stringify(proposal));
+    assert.ok(proposal.technologyEvidence.some((item) => item.technology === "Blob" && /EIP-4844|blob[- ]transactions?|blob gas|blob sidecars?|blobspace|blob DA/i.test(item.matchedText ?? "")));
+  }
+});
+
+function classifySingleProposal(proposalId: string, title: string, text: string) {
+  const report = atlasFixtureReport();
+  const item = event(proposalId, title, "Draft", text);
+  report.ethereumTechRadar.themeInsights = [theme("Proposal specification", [item]) as never];
+  report.ethereumTechRadar.recentChanges = {
+    total: 1,
+    byEventType: { new_proposal: 0, status_change: 0, final_transition: 0, withdrawn_transition: 0, content_hash_change: 1 },
+    newProposals: [], statusChanges: [], finalTransitions: [], withdrawnTransitions: [], contentHashChanges: [item as never],
+  };
+  report.ethereumTechRadar.signalLayer.discussionHeat = [];
+  report.ethereumTechRadar.signalLayer.diffIntelligence = [];
+  const atlas = buildTechnologyAtlas(report);
+  const proposal = [...atlas.classifiedProposals, ...atlas.heldProposals].find((proposal) => proposal.proposalId === proposalId);
+  assert.ok(proposal);
+  return proposal;
+}
 
 function atlasFixtureReport(): WeeklyRadarReport {
   const events = [

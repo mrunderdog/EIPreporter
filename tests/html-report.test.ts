@@ -6,7 +6,7 @@ import { chdir, cwd } from "node:process";
 import { gunzipSync } from "node:zlib";
 import test from "node:test";
 import { insertSnapshot, openDatabase } from "../src/db.ts";
-import { __qualityTestHooks, generateWeeklyDebugJson, generateWeeklyHtml, weeklyDebugJsonPath, writeWeeklyHtmlReport } from "../src/html-report.ts";
+import { __qualityTestHooks, generateWeeklyDebugJson, generateWeeklyHtml, generateWeeklyQualityJson, weeklyDebugJsonPath, writeWeeklyHtmlReport } from "../src/html-report.ts";
 import { buildWeeklyReport } from "../src/report.ts";
 import type { ChangeEvent, DiscussionHeatItem, EmergingIssue, ProposalRecord, WeeklyRadarReport } from "../src/types.ts";
 
@@ -35,6 +35,70 @@ function assertNoPublicPathLeakage(html: string, context: string): void {
     /(?:^|[^:])ERCS\\erc-\d+\.md/i,
   ];
   for (const pattern of forbidden) assertHtmlDoesNotContain(html, pattern, context);
+}
+
+test("forbidden regressions do not attribute the exact October 12 descriptor row to its referenced standard", () => {
+  const fixture = JSON.parse(readFileSync(new URL("./fixtures/weekly-2026-10-12-forbidden.json", import.meta.url), "utf8"));
+  const check = forbiddenCheckForProposalRow(fixture.proposalIntelligence);
+  assert.equal(check.passed, true, check.observed);
+  assert.equal(check.severity, "fail");
+  assert.deepEqual(check.affectedIds, []);
+});
+
+test("forbidden regressions block genuine canonical technology domain and topic assignments", () => {
+  const cases = [
+    { proposalId: "ERC-7730", technologies: ["Blob"], pair: "ERC-7730+Blob" },
+    { proposalId: "ERC-7730", technologyEvidence: [{ technology: "Blob", matchedText: "blob gas" }], pair: "ERC-7730+Blob" },
+    { proposalId: "ERC-7730", classification: { technologies: ["Blob"] }, pair: "ERC-7730+Blob" },
+    { proposalId: "ERC-8328", technologies: ["EVM / Opcode"], pair: "ERC-8328+EVM" },
+    { proposalId: "EIP-7904", topic: "Oracle Pricing", pair: "EIP-7904+Oracle" },
+    { proposalId: "EIP-8164", domain: "검증자 운영과 합의 보안", pair: "EIP-8164+검증자" },
+  ];
+  for (const { pair, ...row } of cases) {
+    const check = forbiddenCheckForProposalRow(row);
+    assert.equal(check.passed, false, pair);
+    assert.equal(check.severity, "fail");
+    assert.ok(check.affectedIds.includes(pair), check.observed);
+  }
+});
+
+test("forbidden regressions ignore standard references and prose outside canonical classification", () => {
+  const check = forbiddenCheckForProposalRow({
+    proposalId: "ERC-7730",
+    domainId: "accounts-wallets",
+    technologies: ["Account Abstraction"],
+    description: "Unlike Blob transactions, this proposal describes wallet signing.",
+    relatedStandards: [{ proposalId: "EIP-4844", technologies: ["Blob"] }],
+    title: "ERC-7730 clear signing",
+  });
+  assert.equal(check.passed, true, check.observed);
+});
+
+test("forbidden regressions ignore secondary candidates and broad parent-domain vocabulary", () => {
+  const parentDomain = forbiddenCheckForProposalRow({ proposalId: "ERC-5516", domainId: "tokens-finance", domain: "자산·금융", technologies: ["NFT / Multi-token"] });
+  assert.equal(parentDomain.passed, true, parentDomain.observed);
+  const secondaryCandidate = forbiddenCheckForProposalRow({ proposalId: "EIP-8292", domainId: "validators-consensus", domain: "검증자·합의", technologies: ["Post-Quantum Authentication"] },
+    makeRecord("EIP-8292", "Draft", "fixture", "Post-Quantum Attestation Aggregators governance repository process"));
+  assert.equal(secondaryCandidate.passed, true, secondaryCandidate.observed);
+});
+
+function forbiddenCheckForProposalRow(row: Record<string, unknown>, record = makeRecord()) {
+  const db = openDatabase(":memory:");
+  try {
+    insertSnapshot(db, [record]);
+    const report = buildWeeklyReport(db, new Date("2026-10-12T05:54:18.613Z"));
+    assert.ok(report);
+    const html = generateWeeklyHtml(report);
+    const modified = html.replace(/(<script type="application\/json" id="technology-platform-api">)([\s\S]*?)(<\/script>)/, (_, open, json, close) => {
+      const api = JSON.parse(json);
+      api.intelligenceSnapshot.views.dashboardV2.proposalIntelligence.proposals.push(row);
+      return `${open}${JSON.stringify(api).replace(/</g, "\\u003c")}${close}`;
+    });
+    const quality = JSON.parse(generateWeeklyQualityJson(report, modified));
+    return quality.checks.find((check: { id: string }) => check.id === "forbidden-regressions");
+  } finally {
+    db.close();
+  }
 }
 
 test("generates and writes the Developer Intelligence HTML report", () => {
