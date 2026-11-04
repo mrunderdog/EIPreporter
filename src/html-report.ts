@@ -8945,7 +8945,20 @@ function technologyPlatformApi(report: WeeklyRadarReport, platform: TechnologyPl
   const intelligenceSnapshot = buildIntelligenceSnapshot(report, atlas, dashboard);
   const dashboardV2 = buildDashboardV2View(report);
   (dashboardV2 as Record<string, unknown>).vitalikBlog = (intelligenceSnapshot.views as Record<string, unknown>).vitalikBlog;
-  (dashboardV2 as Record<string, unknown>).proposalIntelligence = buildProposalIntelligenceView(report, atlas, dashboardV2, intelligenceSnapshot.facts);
+  // Emerging-only proposals may appear in Proposal Intelligence without being in the
+  // base Atlas universe. Resolve their official specifications before constructing
+  // public cards; a GitHub PR title must not stand in for an existing EIP/ERC title.
+  const provisionalIntelligence = buildProposalIntelligenceView(report, atlas, dashboardV2, intelligenceSnapshot.facts);
+  const knownSpecificationIds = new Set(intelligenceSnapshot.facts.specificationEvidence.map((fact) => fact.proposalId));
+  const missingPublicIds = provisionalIntelligence.proposals
+    .map((proposal) => proposal.proposalId)
+    .filter((proposalId) => !knownSpecificationIds.has(proposalId));
+  const supplementalOfficialFacts = specificationEvidenceFacts(atlas, missingPublicIds, report.generatedAt)
+    .filter((fact) => fact.officialSourceState === "official_body_parsed" || fact.officialSourceState === "official_file_title_only");
+  intelligenceSnapshot.facts.specificationEvidence.push(...supplementalOfficialFacts);
+  (dashboardV2 as Record<string, unknown>).proposalIntelligence = supplementalOfficialFacts.length > 0
+    ? buildProposalIntelligenceView(report, atlas, dashboardV2, intelligenceSnapshot.facts)
+    : provisionalIntelligence;
   intelligenceSnapshot.views.dashboardV2 = dashboardV2;
   ensureSubjectRegistryCoversPublicViews(intelligenceSnapshot);
   intelligenceSnapshot.metadata.snapshotHash = snapshotHash(intelligenceSnapshot);
