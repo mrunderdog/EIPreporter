@@ -486,7 +486,7 @@ test("emerging-only EIP uses official specification rather than PR title in publ
     );
     assert.equal(fact.officialTitle, "Account Code Restricted ecRecover");
     assert.equal(fact.officialSourceState, "official_body_parsed");
-    assert.match(fact.sourceUrl, /eips\\.ethereum\\.org\\/EIPS\\/eip-8151/);
+    assert.equal(fact.sourceUrl, "https://eips.ethereum.org/EIPS/eip-8151");
     assert.equal(card.title, fact.officialTitle);
     assert.ok(card.sourceActions.some((source: { url: string }) => source.url === "https://github.com/ethereum/EIPs/pull/12605"));
     const titleCheck = JSON.parse(generateWeeklyQualityJson(report, html)).checks.find(
