@@ -429,6 +429,39 @@ test("renders proposal navigation, related proposals, and official URL policy", 
   }
 });
 
+test("summary safety permits verified English official titles, but blocks raw English and Markdown", () => {
+  const officialTitle = "To The Moon—10 Minute Blocks";
+  const api = {
+    intelligenceSnapshot: {
+      facts: { specificationEvidence: [{ proposalId: "EIP-6811", officialTitle }] },
+      views: { dashboardV2: { proposalIntelligence: { proposals: [{
+        proposalId: "EIP-6811",
+        simpleSummary: `이 Proposal은 ${officialTitle}에 관한 Ethereum 표준 제안입니다.`,
+        plainExplanation: `쉽게 말하면 관련 규칙의 변화입니다. ${officialTitle}은 공식 제안 제목입니다.`,
+      }] } } },
+    },
+  };
+  assert.equal(__qualityTestHooks.proposalIntelligenceSummarySafety(api, ""), true);
+  assert.deepEqual(__qualityTestHooks.proposalIntelligenceSummaryFindings(api, ""), []);
+
+  api.intelligenceSnapshot.views.dashboardV2.proposalIntelligence.proposals[0].simpleSummary =
+    `이 Proposal은 ${officialTitle}에 관한 제안입니다. The proposal changes the block time.`;
+  assert.equal(__qualityTestHooks.proposalIntelligenceSummarySafety(api, ""), false);
+  assert.deepEqual(
+    __qualityTestHooks.proposalIntelligenceSummaryFindings(api, "").map((item: { reason: string }) => item.reason),
+    ["raw_english"],
+  );
+
+  api.intelligenceSnapshot.views.dashboardV2.proposalIntelligence.proposals[0].simpleSummary =
+    `이 Proposal은 ${officialTitle}에 관한 제안입니다. [원문](https://example.org)`;
+  assert.equal(__qualityTestHooks.proposalIntelligenceSummarySafety(api, ""), false);
+  assert.deepEqual(
+    __qualityTestHooks.proposalIntelligenceSummaryFindings(api, "").map((item: { reason: string }) => item.reason),
+    ["markdown"],
+  );
+  assert.equal(__qualityTestHooks.proposalIntelligenceSummarySafety(api, "raw abstract"), false);
+});
+
 test("emerging-only EIP uses official specification rather than PR title in public intelligence", () => {
   const db = openDatabase(":memory:");
   const officialRoot = mkdtempSync(join(tmpdir(), "eipreporter-emerging-spec-"));
