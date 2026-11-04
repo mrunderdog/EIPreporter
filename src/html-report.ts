@@ -317,7 +317,14 @@ export function generateWeeklyQualityJson(report: WeeklyRadarReport, html = gene
     qualityCheck("dashboard-filter-empty-state-functional", dashboardFilterEmptyStateFunctional(html), "fail", dashboardFilterObserved(html), "empty sections and implementation not-collected state are explicit"),
     qualityCheck("topic-drawer-data-completeness", topicDrawerDataCompleteness(embeddedApi, html), "fail", "topic drawer", "drawer reads dashboard topic data"),
     qualityCheck("proposal-intelligence-model", proposalIntelligenceModelValid(embeddedApi), "fail", proposalIntelligenceObserved(embeddedApi), "domain proposal watch, detail summaries, use cases, and timeline are source-linked"),
-    qualityCheck("proposal-intelligence-summary-safety", proposalIntelligenceSummarySafety(embeddedApi, visibleText), "fail", "proposal intelligence summaries", "Korean summaries without raw abstract or markdown leakage"),
+    qualityCheck(
+      "proposal-intelligence-summary-safety",
+      proposalIntelligenceSummarySafety(embeddedApi, visibleText),
+      "fail",
+      proposalIntelligenceSummaryFindings(embeddedApi, visibleText).map((issue) => `${issue.proposalId || "rendered"}:${issue.field}:${issue.reason}`).join("; ") || "all summaries valid",
+      "Korean summaries without raw abstract or markdown leakage",
+      [...new Set(proposalIntelligenceSummaryFindings(embeddedApi, visibleText).map((issue) => issue.proposalId).filter(Boolean))],
+    ),
     qualityCheck("proposal-intelligence-adoption-safety", proposalIntelligenceAdoptionSafety(embeddedApi, visibleText), "fail", "proposal intelligence use cases", "strong adoption claims require CONFIRMED_USE evidence"),
     qualityCheck("proposal-intelligence-timeline-lineage", proposalIntelligenceTimelineLineage(embeddedApi), "fail", "proposal intelligence timeline", "timeline items carry source fact ids and source urls"),
     qualityCheck("focus-real-timeseries-only", focusRealTimeseriesOnly(embeddedApi, visibleHtml), "fail", "focus trend", "sparkline uses weeklyTrend or is hidden"),
@@ -977,12 +984,52 @@ function proposalIntelligenceObserved(embeddedApi: unknown): string {
   return `domains=${model?.domains?.length ?? 0} proposals=${model?.proposals?.length ?? 0}`;
 }
 
+type ProposalSummarySafetyFinding = {
+  proposalId: string;
+  field: "simpleSummary" | "plainExplanation" | "rendered";
+  reason: "missing_korean" | "markdown" | "raw_english" | "raw_public_text" | "no_proposals";
+};
+
+function proposalIntelligenceSummaryFindings(embeddedApi: unknown, visibleText: string): ProposalSummarySafetyFinding[] {
+  const model = proposalIntelligenceFromApi(embeddedApi) as {
+    proposals?: Array<{ proposalId?: string; simpleSummary?: string; plainExplanation?: string }>;
+  } | undefined;
+  const proposals = model?.proposals ?? [];
+  const facts = intelligenceSnapshotFromApi(embeddedApi)?.facts.specificationEvidence ?? [];
+  const officialTitles = new Map(facts.map((fact) => [fact.proposalId, fact.officialTitle]));
+  const findings: ProposalSummarySafetyFinding[] = [];
+  if (!proposals.length) findings.push({ proposalId: "", field: "rendered", reason: "no_proposals" });
+
+  for (const proposal of proposals) {
+    const proposalId = proposal.proposalId ?? "";
+    const officialTitle = officialTitles.get(proposalId)?.trim();
+    for (const field of ["simpleSummary", "plainExplanation"] as const) {
+      const summary = proposal[field] ?? "";
+      if (!koreanTextPresent(summary)) {
+        findings.push({ proposalId, field, reason: "missing_korean" });
+        continue;
+      }
+      if (/\x60{3}|#{1,6}\s|\[[^\]]+\]\([^)]+\)/.test(summary)) {
+        findings.push({ proposalId, field, reason: "markdown" });
+      }
+      // English within an authenticated official title is not raw English prose.
+      // Never exempt other English passages or PR metadata.
+      const prose = officialTitle && officialTitle.length >= 5
+        ? summary.split(officialTitle).join(" ")
+        : summary;
+      if (/\b(?:This|The|It|ERC-\d+ is|EIP-\d+ is)\b/.test(prose)) {
+        findings.push({ proposalId, field, reason: "raw_english" });
+      }
+    }
+  }
+  if (/raw abstract|Abstract\s+[A-Z][a-z]+|\x60{3}/.test(visibleText)) {
+    findings.push({ proposalId: "", field: "rendered", reason: "raw_public_text" });
+  }
+  return findings;
+}
+
 function proposalIntelligenceSummarySafety(embeddedApi: unknown, visibleText: string): boolean {
-  const model = proposalIntelligenceFromApi(embeddedApi) as { proposals?: Array<{ simpleSummary?: string; plainExplanation?: string }> } | undefined;
-  const summaries = (model?.proposals ?? []).flatMap((proposal) => [proposal.simpleSummary ?? "", proposal.plainExplanation ?? ""]);
-  if (!summaries.length || !summaries.every(koreanTextPresent)) return false;
-  if (summaries.some((text) => /```|#{1,6}\s|\[[^\]]+\]\([^)]+\)|\b(?:This|The|It|ERC-\d+ is|EIP-\d+ is)\b/.test(text))) return false;
-  return !/raw abstract|Abstract\s+[A-Z][a-z]+|```/.test(visibleText);
+  return proposalIntelligenceSummaryFindings(embeddedApi, visibleText).length === 0;
 }
 
 function proposalIntelligenceAdoptionSafety(embeddedApi: unknown, visibleText: string): boolean {
@@ -3908,6 +3955,8 @@ export const __qualityTestHooks = {
   extractProposalMechanism,
   simpleProposalSummaryKo,
   plainProposalExplanationKo,
+  proposalIntelligenceSummarySafety,
+  proposalIntelligenceSummaryFindings,
   changeExplanationForDomain,
   specificationBodyCoverage,
   specificationBodyCoverageQualityCheck,
@@ -8945,7 +8994,20 @@ function technologyPlatformApi(report: WeeklyRadarReport, platform: TechnologyPl
   const intelligenceSnapshot = buildIntelligenceSnapshot(report, atlas, dashboard);
   const dashboardV2 = buildDashboardV2View(report);
   (dashboardV2 as Record<string, unknown>).vitalikBlog = (intelligenceSnapshot.views as Record<string, unknown>).vitalikBlog;
-  (dashboardV2 as Record<string, unknown>).proposalIntelligence = buildProposalIntelligenceView(report, atlas, dashboardV2, intelligenceSnapshot.facts);
+  // Emerging-only proposals may appear in Proposal Intelligence without being in the
+  // base Atlas universe. Resolve their official specifications before constructing
+  // public cards; a GitHub PR title must not stand in for an existing EIP/ERC title.
+  const provisionalIntelligence = buildProposalIntelligenceView(report, atlas, dashboardV2, intelligenceSnapshot.facts);
+  const knownSpecificationIds = new Set(intelligenceSnapshot.facts.specificationEvidence.map((fact) => fact.proposalId));
+  const missingPublicIds = provisionalIntelligence.proposals
+    .map((proposal) => proposal.proposalId)
+    .filter((proposalId) => !knownSpecificationIds.has(proposalId));
+  const supplementalOfficialFacts = specificationEvidenceFacts(atlas, missingPublicIds, report.generatedAt)
+    .filter((fact) => fact.officialSourceState === "official_body_parsed" || fact.officialSourceState === "official_file_title_only");
+  intelligenceSnapshot.facts.specificationEvidence.push(...supplementalOfficialFacts);
+  (dashboardV2 as Record<string, unknown>).proposalIntelligence = supplementalOfficialFacts.length > 0
+    ? buildProposalIntelligenceView(report, atlas, dashboardV2, intelligenceSnapshot.facts)
+    : provisionalIntelligence;
   intelligenceSnapshot.views.dashboardV2 = dashboardV2;
   ensureSubjectRegistryCoversPublicViews(intelligenceSnapshot);
   intelligenceSnapshot.metadata.snapshotHash = snapshotHash(intelligenceSnapshot);

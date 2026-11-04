@@ -429,6 +429,111 @@ test("renders proposal navigation, related proposals, and official URL policy", 
   }
 });
 
+test("summary safety permits verified English official titles, but blocks raw English and Markdown", () => {
+  const officialTitle = "To The Moon—10 Minute Blocks";
+  const api = {
+    intelligenceSnapshot: {
+      facts: { specificationEvidence: [{ proposalId: "EIP-6811", officialTitle }] },
+      views: { dashboardV2: { proposalIntelligence: { proposals: [{
+        proposalId: "EIP-6811",
+        simpleSummary: `이 Proposal은 ${officialTitle}에 관한 Ethereum 표준 제안입니다.`,
+        plainExplanation: `쉽게 말하면 관련 규칙의 변화입니다. ${officialTitle}은 공식 제안 제목입니다.`,
+      }] } } },
+    },
+  };
+  assert.equal(__qualityTestHooks.proposalIntelligenceSummarySafety(api, ""), true);
+  assert.deepEqual(__qualityTestHooks.proposalIntelligenceSummaryFindings(api, ""), []);
+
+  api.intelligenceSnapshot.views.dashboardV2.proposalIntelligence.proposals[0].simpleSummary =
+    `이 Proposal은 ${officialTitle}에 관한 제안입니다. The proposal changes the block time.`;
+  assert.equal(__qualityTestHooks.proposalIntelligenceSummarySafety(api, ""), false);
+  assert.deepEqual(
+    __qualityTestHooks.proposalIntelligenceSummaryFindings(api, "").map((item: { reason: string }) => item.reason),
+    ["raw_english"],
+  );
+
+  api.intelligenceSnapshot.views.dashboardV2.proposalIntelligence.proposals[0].simpleSummary =
+    `이 Proposal은 ${officialTitle}에 관한 제안입니다. [원문](https://example.org)`;
+  assert.equal(__qualityTestHooks.proposalIntelligenceSummarySafety(api, ""), false);
+  assert.deepEqual(
+    __qualityTestHooks.proposalIntelligenceSummaryFindings(api, "").map((item: { reason: string }) => item.reason),
+    ["markdown"],
+  );
+  assert.equal(__qualityTestHooks.proposalIntelligenceSummarySafety(api, "raw abstract"), false);
+});
+
+test("emerging-only EIP uses official specification rather than PR title in public intelligence", () => {
+  const db = openDatabase(":memory:");
+  const officialRoot = mkdtempSync(join(tmpdir(), "eipreporter-emerging-spec-"));
+  const previousEipPath = process.env.EIP_OFFICIAL_REPO_PATH;
+  try {
+    mkdirSync(join(officialRoot, "EIPS"), { recursive: true });
+    writeFileSync(join(officialRoot, "EIPS", "eip-8151.md"), [
+      "---",
+      "eip: 8151",
+      "title: Account Code Restricted ecRecover",
+      "status: Draft",
+      "---",
+      "",
+      "## Abstract",
+      "",
+      "Restrict ecRecover based on account code constraints.",
+      "",
+    ].join("\n"), "utf8");
+    process.env.EIP_OFFICIAL_REPO_PATH = officialRoot;
+
+    insertSnapshot(db, [makeRecord("ERC-4626", "Final", "hash-vault", "Tokenized Vaults", "ERC")]);
+    const report = buildWeeklyReport(db, new Date("2026-11-02T06:00:00.000Z"));
+    assert.ok(report);
+    const issue = emergingIssue("EIP-8151", 60, 0);
+    issue.title = "Update EIP-8151: treat the 0xef0200 opt-out marker as an eligible EOA";
+    issue.sourceSignals = [{
+      source: "github_pr",
+      sourceId: "ethereum/EIPs#12605",
+      url: "https://github.com/ethereum/EIPs/pull/12605",
+      title: issue.title,
+      primaryProposalId: "EIP-8151",
+      relatedProposalIds: [],
+      extractedEipIds: ["EIP-8151"],
+      collectedAt: report.generatedAt,
+      facts: {},
+    }];
+    report.ethereumTechRadar.emergingLayer = {
+      generatedAt: report.generatedAt,
+      sourceStatus: [],
+      rawSignals: issue.sourceSignals,
+      issues: [issue],
+      whatsHappeningNow: [],
+      emergingSignals: [issue],
+      decisionWatch: [],
+      generatedBy: "deterministic_emerging_signal_engine",
+    };
+
+    const html = generateWeeklyHtml(report);
+    const api = embeddedPlatformApi(html);
+    const fact = api.intelligenceSnapshot.facts.specificationEvidence.find(
+      (row: { proposalId: string }) => row.proposalId === "EIP-8151",
+    );
+    const card = api.intelligenceSnapshot.views.dashboardV2.proposalIntelligence.proposals.find(
+      (row: { proposalId: string }) => row.proposalId === "EIP-8151",
+    );
+    assert.equal(fact.officialTitle, "Account Code Restricted ecRecover");
+    assert.equal(fact.officialSourceState, "official_body_parsed");
+    assert.equal(fact.sourceUrl, "https://eips.ethereum.org/EIPS/eip-8151");
+    assert.equal(card.title, fact.officialTitle);
+    assert.ok(card.sourceActions.some((source: { url: string }) => source.url === "https://github.com/ethereum/EIPs/pull/12605"));
+    const titleCheck = JSON.parse(generateWeeklyQualityJson(report, html)).checks.find(
+      (check: { id: string }) => check.id === "eip-8151-title-sync",
+    );
+    assert.equal(titleCheck.passed, true, titleCheck.failureReason);
+  } finally {
+    db.close();
+    if (previousEipPath === undefined) delete process.env.EIP_OFFICIAL_REPO_PATH;
+    else process.env.EIP_OFFICIAL_REPO_PATH = previousEipPath;
+    rmSync(officialRoot, { recursive: true, force: true });
+  }
+});
+
 test("renders top-N hidden emerging candidates in full Emerging view and collapses empty Decision Watch space", () => {
   const db = openDatabase(":memory:");
   try {
