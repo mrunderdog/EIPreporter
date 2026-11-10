@@ -245,7 +245,7 @@ async function gatherResearchEvidence(
       ) as Record<string, unknown>;
       const hits = Array.isArray(result.items) ? result.items : [];
       for (const hit of hits) {
-        if (foundPrLinks.size >= 4) break;
+        if (foundPrLinks.size >= 2) break;
         const value = hit as Record<string, unknown>;
         const titleAndBody = str(value.title) + " " + str(value.body);
         if (!new RegExp("(^|[^0-9])" + proposalId + "(?![0-9])", "i").test(titleAndBody)) continue;
@@ -258,7 +258,7 @@ async function gatherResearchEvidence(
       // Search errors only reduce coverage; they must not misstate proposal status.
     }
   }
-  for (const prUrl of [...foundPrLinks].slice(0, 4)) {
+  for (const prUrl of [...foundPrLinks].slice(0, 2)) {
     const match = /^https:\/\/github\.com\/ethereum\/(EIPs|ERCs)\/pull\/(\d+)/i.exec(prUrl);
     if (!match) continue;
     const repo = match[1];
@@ -278,14 +278,14 @@ async function gatherResearchEvidence(
         try {
           const comments = await fetchJson(endpoint, options);
           if (!Array.isArray(comments)) continue;
-          for (const comment of comments.slice(-7)) {
+          for (const comment of comments.slice(-4)) {
             const v = comment as Record<string, unknown>;
             const date = str(v.updated_at) || str(v.created_at);
             if (isRecentDate(date, after, options.now)) {
               push("recent_change", str(v.html_url) || prUrl,
                 "PR #" + number + " discussion or review", str(v.body), date);
             }
-            if (entries.length >= 24) break;
+            if (entries.length >= 16) break;
           }
         } catch {
           // A missing review/comment endpoint does not invalidate the PR source.
@@ -319,13 +319,13 @@ async function gatherResearchEvidence(
         const number = Number(p.post_number);
         const permalink = Number.isInteger(number) && number > 0 ? signal.url + "/" + number : signal.url;
         push("recent_change", permalink, "Ethereum Magicians recent reply", str(p.cooked ?? p.raw).replace(/<[^>]+>/g, " "), date);
-        if (entries.length >= 24) break;
+        if (entries.length >= 16) break;
       }
     } catch {
       // Partial source coverage is reflected by absence of evidence, not by invented conclusions.
     }
   }
-  return entries.slice(0, 24);
+  return entries.slice(0, 16);
 }
 
 type FoundationBlogPost = { url: string; text: string; occurredAt: string };
@@ -437,7 +437,7 @@ async function callGemini(
   const fields: ClaimKey[] = ["overview", "weeklyChange", "debate", "significance", "watchNext", "kgldRelevance"];
   // Retry transient 5xx upstream errors once; never retry a quota/permission failure.
   let response: Response | undefined;
-  for (let attempt = 0; attempt < 2; attempt++) {
+  for (let attempt = 0; attempt < 3; attempt++) {
     response = await options.fetchImpl(API_URL, {
     method: "POST",
     headers: {
@@ -462,10 +462,10 @@ async function callGemini(
 
 
     if (response.ok) break;
-    if (![502, 503, 504].includes(response.status) || attempt === 1) {
+    if (![502, 503, 504].includes(response.status) || attempt === 2) {
       throw new Error("Gemini HTTP " + response.status);
     }
-    await new Promise((done) => setTimeout(done, 2000));
+    await new Promise((done) => setTimeout(done, (attempt + 1) * 2500));
   }
   if (!response) throw new Error("Gemini response unavailable");
   const json = await response.json() as { candidates?: Array<{ content?: { parts?: Array<{ text?: string }> } }> };
