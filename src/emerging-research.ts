@@ -446,7 +446,7 @@ async function callGemini(
       occurredAt: entry.occurredAt ?? null,
       label: entry.label,
       url: entry.url,
-      text: entry.text.slice(0, entry.type === "specification" ? 2200 : entry.label.startsWith("Ethereum Foundation") ? 4700 : entry.type === "pull_request" ? 1000 : 700),
+      text: (entry.text ?? "").slice(0, entry.type === "specification" ? 2200 : entry.label.startsWith("Ethereum Foundation") ? 4700 : entry.type === "pull_request" ? 1000 : 700),
     }))),
   ].join("\n");
   const claim = {
