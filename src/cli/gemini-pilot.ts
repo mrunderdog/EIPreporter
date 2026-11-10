@@ -15,14 +15,14 @@ if (!key) {
       signals: [
         {
           source: "github_pr", sourceId: "ethereum/ercs#2122",
-          sourceRepo: "ethereum/ercs",
+          sourceRepo: "ethereum/ercs", facts: {},
           url: "https://github.com/ethereum/ERCs/pull/2122",
           title: "ERC-7943 reference implementation discussion",
           primaryProposalId: "ERC-7943", relatedProposalIds: [], extractedEipIds: ["ERC-7943"],
           collectedAt: now.toISOString(),
         },
         {
-          source: "ethereum_magicians", sourceId: "23972",
+          source: "ethereum_magicians", sourceId: "23972", facts: {},
           url: "https://ethereum-magicians.org/t/erc-universal-rwa-interface/23972",
           title: "ERC-7943 Universal RWA Interface",
           primaryProposalId: "ERC-7943", relatedProposalIds: [], extractedEipIds: ["ERC-7943"],
