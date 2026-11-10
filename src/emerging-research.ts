@@ -212,8 +212,43 @@ async function gatherResearchEvidence(
       }
     }
   }
-  for (const signal of issue.sourceSignals.filter((item) => item.source === "github_pr").slice(0, 2)) {
-    const match = /^https:\/\/github\.com\/ethereum\/(EIPs|ERCs)\/pull\/(\d+)/i.exec(signal.url);
+  // Open-only signal discovery is insufficient: look up recently updated and merged PRs
+  // for each numbered proposal, even when the PR is absent from EmergingRawSignal.
+  const foundPrLinks = new Set(
+    issue.sourceSignals.filter((signal) => signal.source === "github_pr")
+      .map((signal) => signal.url),
+  );
+  if (proposalId && /^(ERC|EIP)-\\d+$/.test(proposalId)) {
+    const repo = proposalId.startsWith("ERC-") ? "ERCs" : "EIPs";
+    const query = [
+      "repo:ethereum/" + repo,
+      "is:pr",
+      '"' + proposalId + '"',
+      "updated:>=" + after.toISOString().slice(0, 10),
+    ].join(" ");
+    try {
+      const result = await fetchJson(
+        "https://api.github.com/search/issues?q=" + encodeURIComponent(query)
+          + "&sort=updated&order=desc&per_page=15",
+        options,
+      ) as Record<string, unknown>;
+      const hits = Array.isArray(result.items) ? result.items : [];
+      for (const hit of hits) {
+        if (foundPrLinks.size >= 4) break;
+        const value = hit as Record<string, unknown>;
+        const titleAndBody = str(value.title) + " " + str(value.body);
+        if (!new RegExp("(^|[^0-9])" + proposalId + "(?![0-9])", "i").test(titleAndBody)) continue;
+        const url = str(value.html_url);
+        if (/^https:\\/\\/github\\.com\\/ethereum\\/(EIPs|ERCs)\\/pull\\/\\d+$/i.test(url)) {
+          foundPrLinks.add(url);
+        }
+      }
+    } catch {
+      // Search errors only reduce coverage; they must not misstate proposal status.
+    }
+  }
+  for (const prUrl of [...foundPrLinks].slice(0, 4)) {
+    const match = /^https:\\/\\/github\\.com\\/ethereum\\/(EIPs|ERCs)\\/pull\\/(\\d+)/i.exec(prUrl);
     if (!match) continue;
     const repo = match[1];
     const number = match[2];
@@ -221,20 +256,37 @@ async function gatherResearchEvidence(
     try {
       const pr = await fetchJson(base + "/pulls/" + number, options);
       const record = pr as Record<string, unknown>;
-      push("pull_request", signal.url, "PR #" + number + " description", str(record.title) + "\n" + str(record.body));
+      const status = record.merged_at ? "merged" : str(record.state);
+      push("pull_request", prUrl, "PR #" + number + " (" + status + ") description",
+        str(record.title) + "\\n" + str(record.body));
       const since = encodeURIComponent(after.toISOString());
-      const comments = await fetchJson(base + "/issues/" + number + "/comments?since=" + since + "&per_page=50", options);
-      if (Array.isArray(comments)) {
-        for (const comment of comments.slice(-10)) {
-          const c = comment as Record<string, unknown>;
-          const date = str(c.updated_at) || str(c.created_at);
-          if (isRecentDate(date, after, options.now)) {
-            push("recent_change", str(c.html_url) || signal.url, "PR discussion", str(c.body), date);
+      for (const endpoint of [
+        base + "/issues/" + number + "/comments?since=" + since + "&per_page=50",
+        base + "/pulls/" + number + "/comments?per_page=100",
+      ]) {
+        try {
+          const comments = await fetchJson(endpoint, options);
+          if (!Array.isArray(comments)) continue;
+          for (const comment of comments.slice(-30)) {
+            const v = comment as Record<string, unknown>;
+            const date = str(v.updated_at) || str(v.created_at);
+            if (isRecentDate(date, after, options.now)) {
+              push("recent_change", str(v.html_url) || prUrl,
+                "PR #" + number + " discussion or review", str(v.body), date);
+            }
+            if (entries.length >= 24) break;
           }
+        } catch {
+          // A missing review/comment endpoint does not invalidate the PR source.
         }
       }
+      const mergedAt = str(record.merged_at);
+      if (isRecentDate(mergedAt, after, options.now)) {
+        push("recent_change", prUrl, "PR #" + number + " merged",
+          "GitHub PR merged on " + mergedAt + ". Title: " + str(record.title), mergedAt);
+      }
     } catch {
-      // Partial third-party source failure must not prevent the weekly report.
+      // One bad PR must not prevent later evidence or the weekly report.
     }
   }
   for (const signal of issue.sourceSignals.filter((item) => item.source === "ethereum_magicians").slice(0, 2)) {
