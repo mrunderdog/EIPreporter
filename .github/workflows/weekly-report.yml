@@ -16,6 +16,7 @@ jobs:
       contents: read
     env:
       GITHUB_TOKEN: ${{ github.token }}
+      GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
       TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
       TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
       EIP_OFFICIAL_REPO_PATH: .sources/EIPs
@@ -77,6 +78,7 @@ jobs:
             data/eipreporter.sqlite
             data/historical-git-cache.json
             data/adoption-evidence-cache.json
+            data/emerging-research-cache.json
           key: eipreporter-data-${{ runner.os }}-${{ github.run_id }}
           restore-keys: |
             eipreporter-data-${{ runner.os }}-
@@ -92,6 +94,7 @@ jobs:
             data/eipreporter.sqlite
             data/historical-git-cache.json
             data/adoption-evidence-cache.json
+            data/emerging-research-cache.json
           key: eipreporter-data-${{ runner.os }}-${{ github.run_id }}
 
       - name: Determine report date
