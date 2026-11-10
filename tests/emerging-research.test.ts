@@ -46,7 +46,7 @@ function payload(ids: string[]) {
 }
 
 test("research preserves confirmed historical Final date while only current-window evidence supports weekly changes", () => {
-  const result = validateResearchPayload(payload(["S2"]), evidence, "gemini-2.5-flash", now);
+  const result = validateResearchPayload(payload(["S2"]), evidence, "gemini-3.5-flash-lite", now);
   assert.ok(result);
   assert.equal(result.finalTransitionAt, "2026-05-05T16:30:48Z");
   assert.deepEqual(result.weeklyChange.evidenceIds, ["S2"]);
@@ -54,7 +54,7 @@ test("research preserves confirmed historical Final date while only current-wind
 });
 
 test("historical evidence cannot support a this-week claim", () => {
-  const result = validateResearchPayload(payload(["S3"]), evidence, "gemini-2.5-flash", now);
+  const result = validateResearchPayload(payload(["S3"]), evidence, "gemini-3.5-flash-lite", now);
   assert.ok(result);
   assert.equal(result.weeklyChange.text, "최근 7일 내 확인된 실질적 변경 없음.");
   assert.deepEqual(result.weeklyChange.evidenceIds, []);
@@ -63,7 +63,7 @@ test("historical evidence cannot support a this-week claim", () => {
 test("unknown source IDs are discarded and unsupported fields are suppressed", () => {
   const bad = payload(["S404"]);
   bad.debate = { text: "근거가 없는 주장", evidenceIds: ["S404"] };
-  const result = validateResearchPayload(bad, evidence, "gemini-2.5-flash", now);
+  const result = validateResearchPayload(bad, evidence, "gemini-3.5-flash-lite", now);
   assert.ok(result);
   assert.equal(result.debate.text, "");
   assert.deepEqual(result.weeklyChange.evidenceIds, []);
@@ -72,7 +72,7 @@ test("unknown source IDs are discarded and unsupported fields are suppressed", (
 test("empty or ungrounded overview prevents publishing research", () => {
   const bad = payload(["S2"]);
   bad.overview = { text: "검증되지 않음", evidenceIds: ["S404"] };
-  assert.equal(validateResearchPayload(bad, evidence, "gemini-2.5-flash", now), null);
+  assert.equal(validateResearchPayload(bad, evidence, "gemini-3.5-flash-lite", now), null);
 });
 
 test("candidate selection deduplicates issues across sections and respects the cap", () => {
