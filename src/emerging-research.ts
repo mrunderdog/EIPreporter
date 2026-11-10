@@ -5,7 +5,7 @@ import { dirname, join, resolve } from "node:path";
 import { resolveOfficialProposalSource } from "./source-resolver.ts";
 import type { EmergingIssue, EmergingLayer, EmergingResearch, EmergingResearchClaim, EmergingResearchEvidence } from "./types.ts";
 
-const MODEL = "gemini-2.5-flash";
+const MODEL = "gemini-3.5-flash-lite";
 const API_URL = "https://generativelanguage.googleapis.com/v1beta/models/" + MODEL + ":generateContent";
 const CACHE_PATH = resolve("data", "emerging-research-cache.json");
 const SEVEN_DAYS_MS = 7 * 24 * 60 * 60 * 1000;
