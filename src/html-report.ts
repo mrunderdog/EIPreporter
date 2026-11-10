@@ -5009,7 +5009,7 @@ function renderEmergingResearch(issue: EmergingIssue): string {
   const research = issue.research;
   if (!research) return "";
   const evidence = research.evidence;
-  const finalAt = research.finalTransitionAt ? `<small>Final 전환: ${escapeHtml(research.finalTransitionAt.slice(0, 10))} (UTC)</small>` : "";
+  const finalAt = research.finalTransitionAt ? `<small>Final 전환: ${escapeHtml(new Date(research.finalTransitionAt).toISOString().slice(0, 10))} (UTC)</small>` : "";
   const detail = [
     renderEmergingResearchClaim("주요 논쟁", research.debate, evidence),
     renderEmergingResearchClaim("기술적 의미", research.significance, evidence),
