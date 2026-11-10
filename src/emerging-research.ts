@@ -370,15 +370,15 @@ async function fetchEthereumFoundationPosts(
       const page = await options.fetchImpl(url, { signal: AbortSignal.timeout(9000) });
       if (page.ok) {
         const raw = (await page.text()).slice(0, 600_000);
-        const body = /<main\\b[^>]*>([\\s\\S]*?)<\\/main>/i.exec(raw)?.[1]
-          ?? /<article\\b[^>]*>([\\s\\S]*?)<\\/article>/i.exec(raw)?.[1];
+        const body = /<main\b[^>]*>([\s\S]*?)<\/main>/i.exec(raw)?.[1]
+          ?? /<article\b[^>]*>([\s\S]*?)<\/article>/i.exec(raw)?.[1];
         if (body) {
           const clean = body
-            .replace(/<(script|style)\\b[^>]*>[\\s\\S]*?<\\/\\1>/gi, " ")
+            .replace(/<(script|style)\b[^>]*>[\s\S]*?<\/\1>/gi, " ")
             .replace(/<[^>]+>/g, " ")
             .replace(/&nbsp;|&#160;/g, " ")
             .replace(/&amp;/g, "&")
-            .replace(/\\s+/g, " ").trim();
+            .replace(/\s+/g, " ").trim();
           if (clean.length > 300) article = clean;
         }
       }
