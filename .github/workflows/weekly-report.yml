@@ -16,7 +16,7 @@ jobs:
       contents: read
     env:
       GITHUB_TOKEN: ${{ github.token }}
-      GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+      GEMINI_API_KEY: ${{ github.event_name == 'pull_request' && '' || secrets.GEMINI_API_KEY }}
       TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
       TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
       EIP_OFFICIAL_REPO_PATH: .sources/EIPs
