@@ -133,7 +133,7 @@ npm run send:weekly
 
 ## Optional Gemini Emerging Research (free-tier compatible)
 
-The weekly report can enrich the top 8 Emerging Signals with Korean, source-cited AI research using Google's Gemini API. Set `GEMINI_API_KEY` in **GitHub Actions → Repository secrets** (or locally as an environment variable). The default model is `gemini-2.5-flash`. Availability, free-tier quotas, data-use terms and regional eligibility must be checked in the connected Google AI Studio project; a ChatGPT subscription is not an API credential.
+The weekly report can enrich the top 8 Emerging Signals with Korean, source-cited AI research using Google's Gemini API. Set `GEMINI_API_KEY` in **GitHub Actions → Repository secrets** (or locally as an environment variable). The default model is `gemini-3.5-flash-lite` (current recommended free-tier candidate for newly created projects; verify model availability and free quota in AI Studio). Availability, free-tier quotas, data-use terms and regional eligibility must be checked in the connected Google AI Studio project; a ChatGPT subscription is not an API credential.
 
 - Analysis uses the official EIP/ERC source files, local 7-day Git history, selected GitHub PR comments, and recent Ethereum Magicians posts.
 - Research distinguishes the proposal overview, recent changes, debates and follow-up questions, and preserves an evidence link for each displayed claim. Final status transition dates are historical, not new weekly events.
