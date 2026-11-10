@@ -301,7 +301,7 @@ async function callGemini(
     "Do not use outside knowledge. Cite source IDs only from the provided evidence.",
     "A proposal's old status (Final, Draft etc.) is not itself a change in the last 7 days.",
     "weeklyChange MUST ONLY cite recent_change evidence whose occurredAt falls inside the reporting window.",
-    "If there is no verified recent substantive change, weeklyChange.text MUST say: 최근 7일 내 확인된 실질적 변경 없음.",
+    "If there is no verified recent substantive change in COLLECTED evidence, weeklyChange.text MUST say: 최근 7일 내 수집한 근거에서 실질적 변경을 확인하지 못했습니다. This does NOT prove absence of changes outside collected sources.",
     "Distinguish proposal background, current debate, implementation/activation and adoption.",
     "Avoid claiming that a discussion is a verified security vulnerability or merged fix unless evidence explicitly proves it.",
     "KGLD relevance is a conditional technical assessment, not confirmed implementation.",
@@ -389,8 +389,8 @@ export function validateResearchPayload(
   });
   const safeWeekly = validWeeklyIds.length > 0
     ? { text: weeklyChange.text, evidenceIds: validWeeklyIds }
-    : { text: "최근 7일 내 확인된 실질적 변경 없음.", evidenceIds: [] };
-  if (!safeWeekly.text) safeWeekly.text = "최근 7일 내 확인된 실질적 변경 없음.";
+    : { text: "최근 7일 내 수집한 근거에서 실질적 변경을 확인하지 못했습니다.", evidenceIds: [] };
+  if (!safeWeekly.text) safeWeekly.text = "최근 7일 내 수집한 근거에서 실질적 변경을 확인하지 못했습니다.";
   const finalEvidence = evidence.find((entry) => entry.type === "status_history"
     && /Final transition/.test(entry.label));
   return {
