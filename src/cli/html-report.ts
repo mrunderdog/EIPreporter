@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { enrichEmergingLayerWithGemini } from "../emerging-research.ts";
 import { readFileSync } from "node:fs";
 import { parseArgs, resolveDatabasePath } from "../config.ts";
 import { openDatabase } from "../db.ts";
@@ -43,6 +44,19 @@ async function main(): Promise<void> {
       throw new Error("스냅샷이 없습니다. 먼저 `npm run collect`를 실행하세요.");
     }
     report.vitalikBlog = await collectVitalikBlogSource(generatedAt);
+    if (process.env.GEMINI_API_KEY && report.ethereumTechRadar.emergingLayer) {
+      try {
+        const research = await enrichEmergingLayerWithGemini(report.ethereumTechRadar.emergingLayer, {
+          apiKey: process.env.GEMINI_API_KEY,
+          githubToken: process.env.GITHUB_TOKEN,
+          now: generatedAt,
+          limit: 8,
+        });
+        console.log("Emerging research:", JSON.stringify(research));
+      } catch (error) {
+        console.warn("Gemini emerging research unavailable; keeping original weekly report:", error);
+      }
+    }
     if (args["skip-preflight"] !== true) validateWeeklyCollectionPreflight(report);
     console.log(writeWeeklyHtmlReport(report, outputDirectory, { debug: args.debug === true }));
   } finally {

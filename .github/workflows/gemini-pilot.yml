@@ -1,0 +1,44 @@
+name: EIPreporter Gemini Research Pilot
+
+on:
+  pull_request:
+    paths:
+      - ".github/workflows/gemini-pilot.yml"
+      - "src/emerging-research.ts"
+      - "src/cli/gemini-pilot.ts"
+      - "src/types.ts"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  gemini-live-pilot:
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-latest
+    env:
+      GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+      GITHUB_TOKEN: ${{ github.token }}
+      EIP_OFFICIAL_REPO_PATH: .sources/EIPs
+      ERC_OFFICIAL_REPO_PATH: .sources/ERCs
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/checkout@v4
+        with:
+          repository: ethereum/EIPs
+          path: .sources/EIPs
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/checkout@v4
+        with:
+          repository: ethereum/ERCs
+          path: .sources/ERCs
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "26"
+          cache: npm
+      - run: npm ci
+      - name: Run 2-signal authenticated Gemini proof-of-concept
+        run: node --experimental-strip-types src/cli/gemini-pilot.ts

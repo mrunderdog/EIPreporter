@@ -131,6 +131,17 @@ Weekly Dashboard 발송:
 npm run send:weekly
 ```
 
+## Optional Gemini Emerging Research (free-tier compatible)
+
+The weekly report can enrich the top 8 Emerging Signals with Korean, source-cited AI research using Google's Gemini API. Set `GEMINI_API_KEY` in **GitHub Actions → Repository secrets** (or locally as an environment variable). The default model is `gemini-3.5-flash-lite` (current recommended free-tier candidate for newly created projects; verify model availability and free quota in AI Studio). Availability, free-tier quotas, data-use terms and regional eligibility must be checked in the connected Google AI Studio project; a ChatGPT subscription is not an API credential.
+
+- Analysis uses the official EIP/ERC source files, local 7-day Git history, selected GitHub PR comments, and recent Ethereum Magicians posts.
+- Research distinguishes the proposal overview, recent changes, debates and follow-up questions, and preserves an evidence link for each displayed claim. Final status transition dates are historical, not new weekly events.
+- API responses are schema-checked; unrecognized evidence IDs are stripped. This is **citation validation**, not independent semantic fact-checking of every claim, so manual review is recommended for security or protocol-impact assertions.
+- A generated `data/emerging-research-cache.json` reduces repeat calls; the GitHub Actions cache restores/saves it.
+- If the key is missing, requests fail, or quotas are exhausted, existing deterministic summaries remain and the weekly report continues. API errors are reported in action logs.
+- Run `npm test`, `npm run typecheck` and the weekly CI before merging. To verify a real model call, configure a Gemini key and manually dispatch the weekly workflow on a non-production branch or use a local controlled fixture.
+
 ## Emerging Signal Detection
 
 EIPreporter treats emerging intelligence as a source-first layer inside the weekly intelligence report. Production operation is weekly, not real-time or 6-hour alerting.
