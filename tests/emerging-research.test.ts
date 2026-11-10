@@ -56,7 +56,7 @@ test("research preserves confirmed historical Final date while only current-wind
 test("historical evidence cannot support a this-week claim", () => {
   const result = validateResearchPayload(payload(["S3"]), evidence, "gemini-3.5-flash-lite", now);
   assert.ok(result);
-  assert.equal(result.weeklyChange.text, "최근 7일 내 확인된 실질적 변경 없음.");
+  assert.equal(result.weeklyChange.text, "최근 7일 내 수집한 근거에서 실질적 변경을 확인하지 못했습니다.");
   assert.deepEqual(result.weeklyChange.evidenceIds, []);
 });
 
