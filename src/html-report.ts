@@ -4995,6 +4995,39 @@ function latestEmergingActivityMs(issue: EmergingIssue): number {
   return timestamps.length ? Math.max(...timestamps) : 0;
 }
 
+function renderEmergingResearchClaim(label: string, claim: { text: string; evidenceIds: string[] } | undefined, evidence: NonNullable<EmergingIssue["research"]>["evidence"]): string {
+  if (!claim?.text) return "";
+  const citations = claim.evidenceIds
+    .map((id) => evidence.find((item) => item.id === id))
+    .filter(Boolean)
+    .map((item) => `<a href="${escapeHtml(item.url)}" target="_blank" rel="noopener noreferrer">${escapeHtml(item.id)}</a>`)
+    .join(" ");
+  return `<p><b>${escapeHtml(label)}</b> ${escapeHtml(claim.text)} ${citations ? `<small>근거 ${citations}</small>` : ""}</p>`;
+}
+
+function renderEmergingResearch(issue: EmergingIssue): string {
+  const research = issue.research;
+  if (!research) return "";
+  const evidence = research.evidence;
+  const finalAt = research.finalTransitionAt ? `<small>Final 전환: ${escapeHtml(research.finalTransitionAt.slice(0, 10))} (UTC)</small>` : "";
+  const detail = [
+    renderEmergingResearchClaim("주요 논쟁", research.debate, evidence),
+    renderEmergingResearchClaim("기술적 의미", research.significance, evidence),
+    renderEmergingResearchClaim("KGLD 검토", research.kgldRelevance, evidence),
+    renderEmergingResearchClaim("추적할 사항", research.watchNext, evidence),
+  ].join("");
+  return `<div class="dash-emerging-research" data-research-model="${escapeHtml(research.model)}">
+    <small>AI 근거 기반 요약 · ${escapeHtml(research.confidence)} ${finalAt}</small>
+    ${renderEmergingResearchClaim("제안 개요", research.overview, evidence)}
+    ${renderEmergingResearchClaim("최근 7일 변화", research.weeklyChange, evidence)}
+    <details class="dash-compact-details"><summary>상세 분석 보기</summary>
+      ${detail || "<p>근거가 충분하지 않아 상세 분석을 생략했습니다.</p>"}
+      <div class="dash-emerging-links">${evidence.map((item) =>
+        `<a href="${escapeHtml(item.url)}" target="_blank" rel="noopener noreferrer">${escapeHtml(item.id)} · ${escapeHtml(item.label)}</a>`).join(" ")}</div>
+    </details>
+  </div>`;
+}
+
 function renderEmergingIssueCard(issue: EmergingIssue): string {
   const velocity24 = issue.metrics.velocity.find((item) => item.windowHours === 24);
   const sourceLinks = renderEmergingSourceActions(issue);
@@ -5009,10 +5042,11 @@ function renderEmergingIssueCard(issue: EmergingIssue): string {
       <div><dt>24h views</dt><dd>${formatOptionalDelta(velocity24?.viewDelta)}</dd></div>
       <div><dt>participants</dt><dd>${formatUnknownNumber(issue.metrics.participantCount)}</dd></div>
     </dl>
+    ${issue.research ? renderEmergingResearch(issue) : `
     <p><b>What's happening</b>${escapeHtml(issue.summaries.whatIsHappening)}</p>
     <p><b>Why moving</b>${escapeHtml(issue.summaries.whyMoving)}</p>
     <p><b>Why it matters</b>${escapeHtml(issue.summaries.whyItMatters)}</p>
-    <p><b>Watch next</b>${escapeHtml(issue.summaries.watchNext)}</p>
+    <p><b>Watch next</b>${escapeHtml(issue.summaries.watchNext)}</p>`}
     ${related.length ? `<p class="dash-related"><b>Related</b> ${related.map((id) => proposalLink(id)).join(" ")}</p>` : ""}
     ${renderProposalDetails(primary, issue)}
     <div class="dash-emerging-links">${sourceLinks}</div>
@@ -5026,7 +5060,7 @@ function renderEmergingIssueRow(issue: EmergingIssue): string {
     <span class="dash-state">${escapeHtml(issue.status)}</span>
     <strong>${primary ? `${proposalDetailTrigger(primary, primary)} ${escapeHtml(issue.title)}` : `UNNUMBERED DRAFT ${escapeHtml(issue.title)}`}</strong>
     <em>Heat ${issue.heatScore}${issue.heatChange ? ` +${issue.heatChange}` : ""} · Confidence ${issue.confidenceScore}</em>
-    <small>${escapeHtml(issue.summaries.whyMoving)}</small>
+    ${issue.research ? renderEmergingResearch(issue) : `<small>${escapeHtml(issue.summaries.whyMoving)}</small>`}
     <span class="dash-emerging-row-actions">${renderEmergingSourceActions(issue)}${related.length ? ` Related: ${related.map((id) => proposalLink(id)).join(" ")}` : ""}</span>
   </article>`;
 }
