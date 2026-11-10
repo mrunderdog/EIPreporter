@@ -543,6 +543,34 @@ export type EmergingVelocity = {
 export type EmergingIssueStatus = "EARLY_SIGNAL" | "HOT_ISSUE" | "DECISION_WATCH" | "IMPLEMENTATION_WATCH";
 export type EmergingIssueStage = "DISCUSSION" | "PRE_MERGE" | "STANDARDIZING" | "PRE_DECISION" | "IMPLEMENTATION" | "UNKNOWN";
 
+export type EmergingResearchClaim = {
+  text: string;
+  evidenceIds: string[];
+};
+
+export type EmergingResearchEvidence = {
+  id: string;
+  type: "specification" | "recent_change" | "pull_request" | "discussion" | "status_history";
+  url: string;
+  label: string;
+  text?: string;
+  occurredAt?: string;
+};
+
+export type EmergingResearch = {
+  generatedAt: string;
+  model: string;
+  confidence: "partial" | "limited";
+  finalTransitionAt?: string;
+  overview: EmergingResearchClaim;
+  weeklyChange: EmergingResearchClaim;
+  debate: EmergingResearchClaim;
+  significance: EmergingResearchClaim;
+  watchNext: EmergingResearchClaim;
+  kgldRelevance: EmergingResearchClaim;
+  evidence: EmergingResearchEvidence[];
+};
+
 export type EmergingIssue = {
   issueId: string;
   title: string;
@@ -565,6 +593,7 @@ export type EmergingIssue = {
     velocity: EmergingVelocity[];
   };
   scoreBreakdown: ScoreBreakdownItem[];
+  research?: EmergingResearch;
   sourceSignals: EmergingRawSignal[];
   summaries: {
     whatIsHappening: string;
