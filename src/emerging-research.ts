@@ -325,7 +325,7 @@ async function gatherResearchEvidence(
       // Partial source coverage is reflected by absence of evidence, not by invented conclusions.
     }
   }
-  return entries.slice(0, 16);
+  return entries.slice(0, 12);
 }
 
 type FoundationBlogPost = { url: string; text: string; occurredAt: string };
@@ -446,7 +446,7 @@ async function callGemini(
       occurredAt: entry.occurredAt ?? null,
       label: entry.label,
       url: entry.url,
-      text: entry.text,
+      text: entry.text.slice(0, entry.type === "specification" ? 2200 : entry.label.startsWith("Ethereum Foundation") ? 4700 : entry.type === "pull_request" ? 1000 : 700),
     }))),
   ].join("\n");
   const claim = {
