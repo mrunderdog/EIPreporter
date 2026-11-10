@@ -218,7 +218,7 @@ async function gatherResearchEvidence(
     issue.sourceSignals.filter((signal) => signal.source === "github_pr")
       .map((signal) => signal.url),
   );
-  if (proposalId && /^(ERC|EIP)-\\d+$/.test(proposalId)) {
+  if (proposalId && /^(ERC|EIP)-\d+$/.test(proposalId)) {
     const repo = proposalId.startsWith("ERC-") ? "ERCs" : "EIPs";
     const query = [
       "repo:ethereum/" + repo,
@@ -239,7 +239,7 @@ async function gatherResearchEvidence(
         const titleAndBody = str(value.title) + " " + str(value.body);
         if (!new RegExp("(^|[^0-9])" + proposalId + "(?![0-9])", "i").test(titleAndBody)) continue;
         const url = str(value.html_url);
-        if (/^https:\\/\\/github\\.com\\/ethereum\\/(EIPs|ERCs)\\/pull\\/\\d+$/i.test(url)) {
+        if (/^https:\/\/github\.com\/ethereum\/(EIPs|ERCs)\/pull\/\d+$/i.test(url)) {
           foundPrLinks.add(url);
         }
       }
@@ -248,7 +248,7 @@ async function gatherResearchEvidence(
     }
   }
   for (const prUrl of [...foundPrLinks].slice(0, 4)) {
-    const match = /^https:\\/\\/github\\.com\\/ethereum\\/(EIPs|ERCs)\\/pull\\/(\\d+)/i.exec(prUrl);
+    const match = /^https:\/\/github\.com\/ethereum\/(EIPs|ERCs)\/pull\/(\d+)/i.exec(prUrl);
     if (!match) continue;
     const repo = match[1];
     const number = match[2];
@@ -258,7 +258,7 @@ async function gatherResearchEvidence(
       const record = pr as Record<string, unknown>;
       const status = record.merged_at ? "merged" : str(record.state);
       push("pull_request", prUrl, "PR #" + number + " (" + status + ") description",
-        str(record.title) + "\\n" + str(record.body));
+        str(record.title) + "\n" + str(record.body));
       const since = encodeURIComponent(after.toISOString());
       for (const endpoint of [
         base + "/issues/" + number + "/comments?since=" + since + "&per_page=50",
@@ -345,12 +345,12 @@ async function fetchEthereumFoundationPosts(
     foundationFeedCache.set(options.fetchImpl, ongoing);
   }
   const xml = await ongoing;
-  const items = [...xml.matchAll(/<item(?:\\s[^>]*)?>([\\s\\S]*?)<\\/item>/gi)].slice(0, 35);
+  const items = [...xml.matchAll(/<item(?:\s[^>]*)?>([\s\S]*?)<\/item>/gi)].slice(0, 35);
   const result: FoundationBlogPost[] = [];
   const dateFloor = options.now.getTime() - SEVEN_DAYS_MS;
   const readXml = (xmlPart: string, name: string) => {
-    const match = new RegExp("<" + name + "(?:\\s[^>]*)?>([\\s\\S]*?)<\\/" + name + ">", "i").exec(xmlPart);
-    return match?.[1]?.replace(/^<!\\[CDATA\\[|\\]\\]>$/g, "").trim() ?? "";
+    const match = new RegExp("<" + name + "(?:\s[^>]*)?>([\s\S]*?)<\/" + name + ">", "i").exec(xmlPart);
+    return match?.[1]?.replace(/^<!\[CDATA\[|\]\]>$/g, "").trim() ?? "";
   };
   for (const match of items) {
     const item = match[1] ?? "";
@@ -360,10 +360,10 @@ async function fetchEthereumFoundationPosts(
     const title = readXml(item, "title");
     const description = readXml(item, "description");
     const content = readXml(item, "content:encoded");
-    const summary = (title + " " + description + " " + content).replace(/<[^>]*>/g, " ").replace(/\\s+/g, " ").slice(0, 10500);
+    const summary = (title + " " + description + " " + content).replace(/<[^>]*>/g, " ").replace(/\s+/g, " ").slice(0, 10500);
     if (!summary.toLowerCase().includes(proposalId.toLowerCase())) continue;
     const url = readXml(item, "link");
-    if (!/^https:\\/\\/blog\\.ethereum\\.org\\//i.test(url)) continue;
+    if (!/^https:\/\/blog\.ethereum\.org\//i.test(url)) continue;
     result.push({ url, text: "Official blog published " + pub + ": " + summary.slice(0, 5800), occurredAt: new Date(time).toISOString() });
     if (result.length >= 2) break;
   }
