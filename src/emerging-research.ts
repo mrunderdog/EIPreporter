@@ -349,7 +349,7 @@ async function fetchEthereumFoundationPosts(
   const result: FoundationBlogPost[] = [];
   const dateFloor = options.now.getTime() - SEVEN_DAYS_MS;
   const readXml = (xmlPart: string, name: string) => {
-    const match = new RegExp("<" + name + "(?:\s[^>]*)?>([\s\S]*?)<\/" + name + ">", "i").exec(xmlPart);
+    const match = new RegExp("<" + name + "(?:\\s[^>]*)?>([\\s\\S]*?)<\\/" + name + ">", "i").exec(xmlPart);
     return match?.[1]?.replace(/^<!\[CDATA\[|\]\]>$/g, "").trim() ?? "";
   };
   for (const match of items) {
