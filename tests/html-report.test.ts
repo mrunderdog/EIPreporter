@@ -592,11 +592,12 @@ test("Gemini Emerging research remains in a full-width row on desktop and mobile
       generatedBy: "deterministic_emerging_signal_engine",
     };
     const html = generateWeeklyHtml(report);
-    assert.match(html, /<article class="dash-emerging-row">[\\s\\S]*?<div class="dash-emerging-research"/);
-    assert.match(html, /\\.dash-emerging-row>\\.dash-emerging-research,\\.dash-emerging-row>\\.dash-emerging-row-actions\\{grid-column:1\\/-1/);
-    assert.match(html, /\\.dash-emerging-row>strong\\{min-width:0;overflow-wrap:anywhere/);
-    assert.match(html, /\\.dash-emerging-split-full\\{grid-template-columns:minmax\\(0,1fr\\)\\}/);
-    assert.match(html, /\\.dash-emerging-row>em,\\.dash-emerging-row>small,\\.dash-emerging-row>\\.dash-emerging-row-actions\\{grid-column:1\\/-1\\}/);
+    assert.ok(html.includes('<article class="dash-emerging-row">'));
+    assert.ok(html.includes('<div class="dash-emerging-research"'));
+    assert.ok(html.includes('.dash-emerging-row>.dash-emerging-research,.dash-emerging-row>.dash-emerging-row-actions{grid-column:1/-1'));
+    assert.ok(html.includes('.dash-emerging-row>strong{min-width:0;overflow-wrap:anywhere'));
+    assert.ok(html.includes('.dash-emerging-split-full{grid-template-columns:minmax(0,1fr)}'));
+    assert.ok(html.includes('.dash-emerging-row>em,.dash-emerging-row>small,.dash-emerging-row>.dash-emerging-row-actions{grid-column:1/-1}'));
   } finally {
     db.close();
   }
