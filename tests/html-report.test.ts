@@ -1764,7 +1764,7 @@ test("V3 displays canonical usable count when weekly ranking is reliable", () =>
     })));
     const html = generateWeeklyHtml(report);
     const visibleHtml = visibleReportHtml(html);
-    const api = JSON.parse(html.match(/<script type="application\\/json" id="technology-platform-api">([\\s\\S]*?)<\\/script>/)?.[1] ?? "{}");
+    const api = JSON.parse(html.match(/<script type="application\/json" id="technology-platform-api">([\s\S]*?)<\/script>/)?.[1] ?? "{}");
     const dashboard = api.intelligenceSnapshot.views;
     assert.equal(dashboard.dataQuality.current7dUsableEventCount, 2);
     assert.notEqual(dashboard.dataQuality.weeklyRankingValidity, "invalid");
