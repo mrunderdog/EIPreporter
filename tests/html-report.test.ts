@@ -562,6 +562,47 @@ test("renders top-N hidden emerging candidates in full Emerging view and collaps
   }
 });
 
+test("Gemini Emerging research remains in a full-width row on desktop and mobile", () => {
+  const db = openDatabase(":memory:");
+  try {
+    insertSnapshot(db, [makeRecord("EIP-8141", "Draft", "hash-layout", "Frame Transactions", "Core")]);
+    const report = buildWeeklyReport(db, new Date("2026-08-10T00:00:00.000Z"));
+    assert.ok(report);
+    const issue = emergingIssue("EIP-8141", 53, 0);
+    issue.research = {
+      generatedAt: report.generatedAt,
+      model: "gemini-3.5-flash-lite",
+      confidence: "partial",
+      overview: { text: "트랜잭션 실행 방식을 설명합니다.", evidenceIds: ["S1"] },
+      weeklyChange: { text: "최근 변경 사항을 확인합니다.", evidenceIds: ["S1"] },
+      debate: { text: "위험 경계를 검토합니다.", evidenceIds: ["S1"] },
+      significance: { text: "온체인 실행에 미치는 영향을 확인합니다.", evidenceIds: ["S1"] },
+      watchNext: { text: "후속 PR을 추적합니다.", evidenceIds: ["S1"] },
+      kgldRelevance: { text: "", evidenceIds: [] },
+      evidence: [{id: "S1", type: "recent_change", url: "https://github.com/ethereum/EIPs/commit/example", label: "Test source"}],
+    };
+    report.ethereumTechRadar.emergingLayer = {
+      generatedAt: report.generatedAt,
+      sourceStatus: [],
+      rawSignals: issue.sourceSignals,
+      issues: [issue],
+      whatsHappeningNow: [],
+      emergingSignals: [issue],
+      decisionWatch: [],
+      generatedBy: "deterministic_emerging_signal_engine",
+    };
+    const html = generateWeeklyHtml(report);
+    assert.ok(html.includes('<article class="dash-emerging-row">'));
+    assert.ok(html.includes('<div class="dash-emerging-research"'));
+    assert.ok(html.includes('.dash-emerging-row>.dash-emerging-research,.dash-emerging-row>.dash-emerging-row-actions{grid-column:1/-1'));
+    assert.ok(html.includes('.dash-emerging-row>strong{min-width:0;overflow-wrap:anywhere'));
+    assert.ok(html.includes('.dash-emerging-split-full{grid-template-columns:minmax(0,1fr)}'));
+    assert.ok(html.includes('.dash-emerging-row>em,.dash-emerging-row>small,.dash-emerging-row>.dash-emerging-row-actions{grid-column:1/-1}'));
+  } finally {
+    db.close();
+  }
+});
+
 test("renders every meaningful emerging issue status in the full Emerging view", () => {
   const db = openDatabase(":memory:");
   try {
