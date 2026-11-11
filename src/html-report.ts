@@ -1068,9 +1068,7 @@ function weeklyConfidenceLimitCanonical(embeddedApi: unknown, visibleHtml: strin
   const usableCount = dashboard.dataQuality.current7dUsableEventCount;
   const rawCount = dashboard.dataQuality.current7dRawEventCount;
   const embeddedReason = dashboard.executivePulse.confidenceLimits.find((item) => item.label === "Weekly specification trend")?.reason;
-  const publicReason = dashboard.dataQuality.weeklyRankingValidity === "invalid"
-    ? `최근 7일 분석 반영 이벤트는 ${usableCount}/${rawCount}건이며, 데이터 품질 기준에 따라 변화 강도 비교는 제공하지 않습니다.`
-    : `최근 7일 분석 반영 이벤트는 ${usableCount}건입니다.`;
+  const publicReason = publicWeeklyConfidenceReason(usableCount, rawCount, dashboard.dataQuality.weeklyRankingValidity);
   const staleZeroReason = /usable event가 0건/.test(visibleHtml) || /usable event가 0건/.test(embeddedReason ?? "");
   const countMatches = (visibleHtml.includes(reason) || visibleHtml.includes(publicReason))
     && embeddedReason === reason
@@ -5415,9 +5413,15 @@ function monitoringScopeSentence(scope: DashboardV3Presentation["scope"]): strin
   return `총 ${scope.discoveredProposalCount}건의 EIP/ERC Proposal을 발견했고, 이 중 ${scope.publicExplorerCount}건을 주간 탐색과 진행 단계 분포 대상으로 선정했습니다. 탐색 대상에서 제외한 기준 Proposal은 ${scope.explorerExcludedBaselineProposalCount}건입니다. 이 중 ${scope.concentratedMonitoringCount}건을 주간 집중 모니터링하며, 최근 활동을 상세 표시한 Proposal은 ${scope.detailedActivityCardCount}건입니다.`;
 }
 
+function publicWeeklyConfidenceReason(usableCount: number, rawCount: number, rankingValidity: string): string {
+  return rankingValidity === "invalid"
+    ? `최근 7일 분석 반영 이벤트는 ${usableCount}/${rawCount}건이며, 데이터 품질 기준에 따라 변화 강도 비교는 제공하지 않습니다.`
+    : `최근 7일 분석 반영 이벤트는 ${usableCount}건입니다.`;
+}
+
 function renderDashboardV3Evidence(p: DashboardV3Presentation): string {
   const q = p.view.evidenceQuality;
-  const weeklyReason = `최근 7일 분석 반영 이벤트는 ${q.usableEvents}/${q.rawEvents}건이며, 데이터 품질 기준에 따라 변화 강도 비교는 제공하지 않습니다.`;
+  const weeklyReason = publicWeeklyConfidenceReason(q.usableEvents, q.rawEvents, q.weeklyRankingValidity);
   const viewMetadata = p.view.metadata as Record<string, unknown>;
   const snapshotId = String(p.snapshotMetadata.snapshotId ?? viewMetadata.snapshotId ?? `weekly-${p.reportDate}`);
   const inputSnapshotHash = String(p.snapshotMetadata.inputSnapshotHash ?? viewMetadata.inputSnapshotHash ?? "");

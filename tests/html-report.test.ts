@@ -1751,6 +1751,30 @@ test("weekly confidence limit reason uses canonical usable and raw counts when r
   }
 });
 
+test("V3 displays canonical usable count when weekly ranking is reliable", () => {
+  const db = openDatabase(":memory:");
+  try {
+    insertSnapshot(db, [makeRecord()]);
+    const report = buildWeeklyReport(db, new Date("2026-06-12T12:00:00.000Z"));
+    assert.ok(report);
+    setReportEvents(report, Array.from({ length: 2 }, (_, index) => makeChangeEvent(index + 1, `reliable-${index + 1}`, {
+      changeSemanticType: "normative_specification",
+      occurredAtSource: "git_commit",
+      timestampConfidence: "high",
+    })));
+    const html = generateWeeklyHtml(report);
+    const visibleHtml = visibleReportHtml(html);
+    const api = JSON.parse(html.match(/<script type="application\/json" id="technology-platform-api">([\s\S]*?)<\/script>/)?.[1] ?? "{}");
+    const dashboard = api.intelligenceSnapshot.views;
+    assert.equal(dashboard.dataQuality.current7dUsableEventCount, 2);
+    assert.notEqual(dashboard.dataQuality.weeklyRankingValidity, "invalid");
+    assert.match(visibleHtml, /최근 7일 분석 반영 이벤트는 2건입니다/);
+    assert.equal(__qualityTestHooks.weeklyConfidenceLimitCanonical(api, visibleHtml), true);
+  } finally {
+    db.close();
+  }
+});
+
 test("current-window-fallback-ratio passes when high-ratio fallback events are isolated from core views", () => {
   const scenario = weeklySignalScenario(17, 28);
   const ratio = 11 / 28;
